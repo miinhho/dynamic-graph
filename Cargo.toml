@@ -19,3 +19,4 @@ graph-world = { path = "crates/graph-world" }
 graph-engine = { path = "crates/graph-engine" }
 graph-tx = { path = "crates/graph-tx" }
 graph-testkit = { path = "crates/graph-testkit" }
+rustc-hash = "2.1.1"

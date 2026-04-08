@@ -21,6 +21,7 @@ name = "graph-testkit"
 version = "0.1.0"
 dependencies = [
  "graph-core",
+ "graph-engine",
  "graph-world",
 ]
 
