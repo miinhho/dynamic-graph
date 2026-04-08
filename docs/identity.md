@@ -5,22 +5,28 @@ stability means in it*. When `architecture.md` and this file disagree, this
 file wins. `architecture.md` is the design playground; this file is the
 contract.
 
+`redesign.md` extended this document with a new ontology. The decisions there
+are now folded in below. Where the two previously disagreed, `redesign.md`
+won; this file now reflects the settled resolution.
+
 ## 1. What this is
 
 A graph dynamics engine where:
 
-- nodes hold state
-- edges hold interaction laws that transform state
-- both nodes **and** edges evolve over time
-- topology itself can change as part of normal operation
-- the value of the system is in observing **how things change**, not in the
-  values themselves at any single tick
+- **loci** hold state — discrete positions in the substrate where programs run
+- **changes** are the atomic events — first-class objects with causal predecessors
+- **relationships** emerge automatically from cross-locus change-flow
+- **entities** are recognized as coherent patterns of relationships — they are
+  never declared upfront, always derived
+- both the topology of relationships and the identity of entities evolve as
+  part of normal operation
+- the value of the system is in observing **how things change and why**, not
+  in the values themselves at any single batch
 
-The unit of interest is the *transformation* — input received, transformation
-applied, resulting change — not the post-transformation value alone. Causal
-chains between transformations should be reconstructable from the engine's
-output (this falls out of recorded transactions plus history; it does not
-need to be a first-class object in the type system).
+The unit of interest is the *transformation* — input received, kind of
+influence, causal chain, resulting change — not the post-transformation value
+alone. Causal chains between transformations are reconstructable by walking
+the change DAG backwards from any change of interest.
 
 ## 2. What this is not
 
@@ -33,11 +39,13 @@ need to be a first-class object in the type system).
   consensus, opinion dynamics etc. are valid *workloads to run on top* but
   none of them are the project. The project is the substrate.
 - **Not a place to encode product semantics.** Domain laws live in the
-  programs and laws supplied by callers, not in the engine.
+  programs and influence kind configs supplied by callers, not in the engine.
+- **Not an entity–relationship database.** Entities are not registered. They
+  are recognized from relationship patterns by user-supplied perspectives.
 
 ## 3. Stability is a guard rail, not a goal
 
-This is the most important reframing in this document.
+This is the most important framing in this document.
 
 Past iterations of this project (and much of `architecture.md`'s §7) treat
 stability as a first-class requirement, listing damping, leak, trust region,
@@ -55,98 +63,153 @@ make the system *boring*.
 
 Concretely:
 
-- `BasicStabilizer` (alpha blending, decay, saturation, trust region) is the
-  guard rail. It survives unchanged from phase 1.
-- `AdaptiveStabilizer` raises the guard rail when external shocks are pushing
+- `StabilizationConfig` (alpha blending, saturation, trust region) is the
+  guard rail. It is applied per-kind at commit time by the engine.
+- `AdaptiveGuardRail` raises the guard rail when external shocks are pushing
   the system toward divergence and lowers it when nothing is happening. It
   does **not** treat oscillation or limit cycles as problems to suppress.
-- The regime classifier (formerly the "convergence classifier") sorts the
-  current behaviour into observation regimes, of which only one — `Diverging`
-  — calls for the guard rail to push back.
+- The regime classifier sorts the current behaviour into observation regimes,
+  of which only one — `Diverging` — calls for the guard rail to push back.
+- The `AdaptiveGuardRail` is *not* integrated into the batch loop
+  automatically. The caller observes the regime, feeds it to the guard rail,
+  and reads back the effective alpha. This is deliberate: callers choose when
+  adaptation matters.
 
 ## 4. Regime classification
 
-`DynamicsRegime` (formerly `RuntimeStatus`) is a classification of the
-*current observation regime*, not a verdict of success or failure:
+`DynamicsRegime` is a classification of the *current observation regime*, not
+a verdict of success or failure:
 
 | Regime | Meaning | Guard rail action |
 |---|---|---|
 | `Initializing` | Not enough history to classify yet | none |
-| `Settling` | Per-tick deltas are decreasing — system is in a transient | none |
-| `Quiescent` | Per-tick deltas are at the noise floor — currently no observable change | relax (allow guard rail to weaken) |
-| `Oscillating` | Bounded sign-flipping behaviour | none — this is a valid regime |
-| `LimitCycleSuspect` | Recent samples show a repeated pattern | none — this is a valid regime |
-| `Diverging` | Energy or per-tick delta is growing past the configured ratio | tighten (shrink alpha) |
+| `Settling` | Per-batch deltas are decreasing — system is in a transient | none |
+| `Quiescent` | Per-batch deltas are at the noise floor — no observable change | relax (allow guard rail to weaken) |
+| `Oscillating` | Bounded sign-flipping behaviour | none — valid regime |
+| `LimitCycleSuspect` | Recent samples show a repeated pattern | none — valid regime |
+| `Diverging` | Energy or per-batch delta is growing past the configured ratio | tighten (shrink alpha) |
 
 `Quiescent` and `Diverging` are the only two regimes the guard rail acts on.
 Everything else is a regime to *observe*, not a regime to *correct*.
 
-## 5. Phase 1+2 retrospective under this framing
+## 5. The ontology (post-redesign)
 
-| What we built | Survives? | Notes |
-|---|---|---|
-| `BasicStabilizer` (saturation, trust region) | yes | This is the guard rail. Exact match for the new framing. |
-| Regime classifier (was "convergence classifier") | yes, renamed | `RuntimeStatus` → `DynamicsRegime`, `Converging` → `Settling`, `Converged` → `Quiescent`, etc. The doc comments and the meaning of variants changed; the structure did not. |
-| `AdaptiveStabilizer` | yes, behaviour adjusted | Old behaviour shrunk on `Oscillating`/`LimitCycleSuspect`. New behaviour leaves both alone — they are valid regimes. Only `Diverging` triggers shrink; `Quiescent` triggers recovery. |
-| SCC primitive | yes | When topology becomes mutable (Layer C) this becomes more important, not less, because the SCC plan will need to be recomputed per tick. |
-| Scheduled iterative driver | parked | Its purpose was to "iterate cyclic blocks toward convergence". Under the new framing, convergence is not a goal, so iterative settling is not generally desirable. We keep the code for now in case a workload wants it, but it is not on the critical path. |
+The substrate is layered. Each layer derives from the layer below by pattern
+recognition. Each layer is observable.
 
-## 6. Resolved questions from architecture.md §17
+```
+Layer 4: Cohere       — clusters of relationships/entities under a perspective
+            ▲                                       (output, derived, ephemeral)
+Layer 3: Entity       — coherent bundles of relationships (sedimentary)
+            ▲                                       (output, derived)
+Layer 2: Relationship — observed coupling between loci, derived from change-flow
+            ▲                                       (output, derived, entity-like)
+Layer 1: Change       — atomic event with causal predecessors
+            ▲                                       (primitive, recorded)
+Layer 0: Locus        — labeled position with state and program
+                                                    (primitive, user-registered)
+```
 
-These are the answers committed by this document. `architecture.md` §17
-should be considered superseded by these.
+### Locus (Layer 0)
 
-| Question | Answer |
+The substrate primitive. Users register loci with an id, a kind tag, an
+initial `StateVector`, and a `LocusProgram`. A locus is not the same as the
+user's mental "entity" — it is just a *position* where state lives and
+changes can arrive.
+
+### Change (Layer 1)
+
+The atomic event. Everything that happens is a change. Changes are
+first-class — recorded, queried, and the basis of all higher layers.
+
+Each change carries: subject locus, influence kind, causal predecessors
+(other `ChangeId`s), before/after `StateVector`, and batch index. The set of
+all changes forms a DAG. A *batch* is a maximal antichain — changes that are
+causally independent and processed together by the batch loop.
+
+### Relationship (Layer 2)
+
+Automatically detected when cross-locus change-flow is observed. When change
+A at locus L₁ has change B at locus L₂ in its predecessors, the engine
+recognizes a relationship of the relevant kind from L₂ to L₁. Relationships
+have their own ID, state (including an activity score that decays per batch),
+and lineage.
+
+### Entity (Layer 3)
+
+Recognized — never declared. Users supply an `EmergencePerspective`; the
+engine runs it on-demand and reconciles proposals against the existing entity
+store. Entities are **sedimentary**: each significant event deposits a new
+layer on top of the existing stack rather than replacing it. Entities are
+never deleted — they may become dormant, but remain in the store.
+
+### Cohere (Layer 4)
+
+Clusters of relationships and/or entities under a user-supplied
+`CoherePerspective`. Multiple perspectives can be active simultaneously.
+Cohere sets are ephemeral (recomputed on demand); they are not sedimentary.
+
+## 6. Key resolved design decisions
+
+These supersede the old §6 ("Resolved questions from architecture.md §17").
+
+| Decision | Resolution |
 |---|---|
-| Minimal state representation: scalar/vector/enum/hybrid? | **Vector (`StateVector`)**, generic over component count. The engine does not branch on state shape; programs do. |
-| Are laws static per edge type or customizable per edge instance? | **Per edge instance.** Each `Channel` carries its own `LawId` and parameters. Laws themselves are static functions in the `LawCatalog`, but their parameterisation is per-channel. |
-| Can topology change during a tick, or only between ticks? | **Between ticks only**, for now. Layer C will introduce structural mutation as a tick-level operation that takes effect at the next tick boundary, never mid-tick. |
-| How much determinism across platforms? | **Bit-identical replay on the same platform/toolchain.** Cross-platform determinism is not promised and is explicitly out of scope. |
-| Should delays be part of the MVP? | **No.** Out of scope for now. The current `cooldown` field is the only time-distance concept and that suffices. |
-| Synchronous only or selective async? | **Synchronous tick boundaries**, with parallel compute inside a tick. No async propagation. |
+| State representation | `StateVector` (Vec<f32>) — generic over component count, programs interpret semantics |
+| Time model | Logical batches (causal partial order), no wall clock |
+| Entity registration | None — entities are recognized by `EmergencePerspective`, not declared |
+| Influence kinds | Per-kind `InfluenceKindId` with separate decay, stabilization config, and regime tracking |
+| Relationship kind | `RelationshipKindId = InfluenceKindId` (same dimension, resolved O8) |
+| Cross-platform determinism | Bit-identical on the same platform/toolchain; cross-platform not promised |
+| Relationship subject in changes | Deferred — `ChangeSubject` is currently `Locus(LocusId)` only |
+| Structural mutation (topology change) | Between ticks only, for now |
 
-## 7. Roadmap (post-phase-2)
+## 7. Phase 1+2 retrospective
 
-Layers in order, with rationale:
+| What we built | Status | Notes |
+|---|---|---|
+| `BasicStabilizer` (alpha blend, saturation, trust region) | **Ported and active** as `StabilizationConfig`; applied per-kind at commit time |
+| Regime classifier | **Ported and renamed**: `RuntimeStatus` → `DynamicsRegime`, `Converging` → `Settling`, `Converged` → `Quiescent` |
+| `AdaptiveStabilizer` | **Ported and corrected** as `AdaptiveGuardRail`: no longer shrinks on Oscillating/LimitCycleSuspect — those are valid regimes; only Diverging shrinks |
+| SCC primitive | **Parked** — becomes relevant when structural mutation lands |
+| Channel / Entity as primitives | **Replaced**: channels → Relationships (emergent), entities → Entities (emergent); old primitive-first model discarded |
+| `TickId` wall clock | **Replaced**: `BatchId` (logical batch index, causal partial order) |
 
-### Layer A — Identity alignment (this document + rename)
-*In progress.* Code change is small. Purpose is to align the mental model
-before any new work, so subsequent layers do not inherit the old "stability
-is the goal" framing.
+## 8. Roadmap (post-redesign)
 
-### Layer B — Edge plasticity (smallest form)
-Channels can adapt their parameters (weight, attenuation) based on the signal
-that has flowed through them. Hebbian-style is the easiest first kernel. The
-existing stabilization layer is reused as the guard rail on the channel
-parameters themselves: max weight, decay, trust region per tick. Topology is
-**not** touched in this layer — only edge parameters evolve.
+The substrate redesign is **complete**. All five layers (Locus, Change,
+Relationship, Entity, Cohere) are implemented across the five crates
+(`graph-core`, `graph-world`, `graph-engine`, `graph-tx`, `graph-testkit`).
 
-### Layer D — Causal logging
-`TickTransaction` history is retained in `graph-tx`'s WAL (which finally has
-a real purpose). The user can reconstruct causal chains by walking the log
-backwards from a delta of interest. This is **logging**, not a query API:
-the log format is structured enough to enable post-hoc analysis, but the
-engine does not provide a `LineageQuery` interface in this layer.
+### Near-term
 
-This is intentional: building the query API before topology is mutable would
-constrain it in ways we would later regret.
+- **Weathering** — entity layer compression and change log trimming.
+  `EntityLayer` already has `CompressionLevel`; the engine needs a
+  `WeatheringPolicy` trait and a default implementation.
+- **Relationship subjects in changes** — currently `ChangeSubject` is
+  `Locus(LocusId)` only. Lifting this restriction enables richer
+  higher-layer programs.
 
-### Layer C — Structural mutation as a first-class operation
-The biggest layer. Channel creation/deletion/rewiring becomes part of normal
-tick output, recorded in `TickTransaction` alongside state deltas. Programs
-can issue mutation commands the same way they currently emit signals. SCC
-plans must be recomputed each tick, which is the performance concern noted
-during the phase-2 design discussion. Layer A→B→D must be in place first
-because (a) the regime framing must be settled before adapting topology, (b)
-the plasticity guard rails will be reused as topology guard rails, and (c)
-the causal log format must already handle "the channel that produced this
-delta no longer exists at the current tick".
+### Medium-term
 
-## 8. What this document does *not* do
+- **Edge plasticity** — relationships adapt their parameters (weight,
+  attenuation) based on signal flow. Hebbian-style learning as the first
+  kernel. The stabilization guard rail is reused on the relationship
+  parameters themselves.
+- **Structural mutation** — relationship creation/deletion becomes part of
+  tick output. Programs can issue topology-change proposals alongside state
+  changes.
 
-- It does not list every architectural decision. `architecture.md` is still
-  the design playground for ideas not yet committed.
+### Longer-term
+
+- **Causal lineage queries** — a query API over the change DAG once the log
+  format and topology mutation semantics are stable.
+
+## 9. What this document does *not* do
+
+- It does not list every architectural decision. `architecture.md` is the
+  design playground for ideas not yet committed.
 - It does not specify performance targets. Performance work is driven by
-  measurement on real workloads, which we do not yet have.
-- It does not commit to a specific edge plasticity model. Layer B will pick
-  one and document it; this file just commits to the existence of the layer.
+  measurement on real workloads.
+- It does not commit to a specific edge plasticity model. The plasticity
+  layer will pick one and document it here when it lands.
