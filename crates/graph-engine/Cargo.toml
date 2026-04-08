@@ -1,0 +1,28 @@
+[package]
+name = "graph-engine"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+graph-core.workspace = true
+graph-tx.workspace = true
+graph-world.workspace = true
+rayon.workspace = true
+rustc-hash.workspace = true
+smallvec.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+graph-testkit.workspace = true
+
+[[bench]]
+name = "runtime_bench"
+harness = false
+
+[[bench]]
+name = "internal_runtime_bench"
+harness = false
+
+[lib]
+path = "src/lib.rs"

@@ -1,0 +1,12 @@
+[package]
+name = "graph-testkit"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+graph-core.workspace = true
+graph-world.workspace = true
+
+[lib]
+path = "src/lib.rs"
