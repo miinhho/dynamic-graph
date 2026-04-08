@@ -7,9 +7,13 @@
 mod cohere;
 mod emergence;
 mod engine;
+mod regime;
 mod registry;
 
 pub use cohere::{CoherePerspective, DefaultCoherePerspective};
 pub use emergence::{DefaultEmergencePerspective, EmergencePerspective};
 pub use engine::{Engine, EngineConfig, TickResult};
+pub use regime::{
+    BatchHistory, BatchMetrics, DefaultRegimeClassifier, DynamicsRegime, RegimeClassifier,
+};
 pub use registry::{InfluenceKindConfig, InfluenceKindRegistry, LocusKindRegistry};
