@@ -9,10 +9,14 @@ pub mod change;
 pub mod ids;
 pub mod locus;
 pub mod program;
+pub mod relationship;
 pub mod state;
 
 pub use change::{Change, ChangeSubject};
 pub use ids::{BatchId, ChangeId, InfluenceKindId, LocusId, LocusKindId};
 pub use locus::Locus;
 pub use program::{LocusProgram, ProposedChange};
+pub use relationship::{
+    EndpointKey, Endpoints, Relationship, RelationshipId, RelationshipKindId, RelationshipLineage,
+};
 pub use state::StateVector;

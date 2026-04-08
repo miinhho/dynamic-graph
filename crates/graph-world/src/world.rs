@@ -15,10 +15,12 @@ use graph_core::{BatchId, Change, ChangeId, Locus, LocusId};
 
 use crate::change_log::ChangeLog;
 use crate::locus_store::LocusStore;
+use crate::relationship_store::RelationshipStore;
 
 #[derive(Debug, Default, Clone)]
 pub struct World {
     loci: LocusStore,
+    relationships: RelationshipStore,
     log: ChangeLog,
     current_batch: BatchId,
     next_change_id: u64,
@@ -43,6 +45,16 @@ impl World {
 
     pub fn loci(&self) -> &LocusStore {
         &self.loci
+    }
+
+    pub fn relationships(&self) -> &RelationshipStore {
+        &self.relationships
+    }
+
+    /// Engine-only mutable handle to the relationship store. Used by
+    /// the auto-emergence path on commit.
+    pub fn relationships_mut(&mut self) -> &mut RelationshipStore {
+        &mut self.relationships
     }
 
     pub fn log(&self) -> &ChangeLog {
