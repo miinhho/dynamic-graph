@@ -6,6 +6,7 @@
 //! Cohere) land in follow-up commits as the substrate is rebuilt.
 
 pub mod change;
+pub mod cohere;
 pub mod entity;
 pub mod ids;
 pub mod locus;
@@ -18,6 +19,7 @@ pub use change::{Change, ChangeSubject};
 pub use ids::{BatchId, ChangeId, InfluenceKindId, LocusId, LocusKindId};
 pub use locus::Locus;
 pub use program::{LocusProgram, ProposedChange};
+pub use cohere::{Cohere, CohereId, CohereMembers};
 pub use entity::{
     CompressedTransition, CompressionLevel, Entity, EntityId, EntityLayer, EntityLineage,
     EntitySnapshot, EntityStatus, LayerTransition,
