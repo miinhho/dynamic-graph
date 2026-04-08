@@ -1,5 +1,14 @@
-//! graph-world: in-memory locus store and snapshot views.
+//! graph-world: in-memory locus store, change log, and the world that
+//! ties them together.
 //!
-//! Cleared in preparation for the redesign described in `docs/redesign.md`.
-//! The new world holds Locus state plus the Change log that downstream
-//! emergent layers consume; types land in follow-up commits.
+//! See `docs/redesign.md` for the framing. Higher-layer stores
+//! (Relationship, Entity, Cohere) join `World` as their respective
+//! layers land.
+
+pub mod change_log;
+pub mod locus_store;
+pub mod world;
+
+pub use change_log::ChangeLog;
+pub use locus_store::LocusStore;
+pub use world::World;
