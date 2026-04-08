@@ -13,6 +13,7 @@ pub mod locus;
 pub mod perspective;
 pub mod program;
 pub mod relationship;
+pub mod stabilization;
 pub mod state;
 
 pub use change::{Change, ChangeSubject};
@@ -25,6 +26,7 @@ pub use entity::{
     EntitySnapshot, EntityStatus, LayerTransition,
 };
 pub use perspective::EmergenceProposal;
+pub use stabilization::{SaturationMode, StabilizationConfig};
 pub use relationship::{
     EndpointKey, Endpoints, Relationship, RelationshipId, RelationshipKindId, RelationshipLineage,
 };

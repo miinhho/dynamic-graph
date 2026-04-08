@@ -17,23 +17,29 @@
 
 use std::collections::HashMap;
 
-use graph_core::{InfluenceKindId, LocusKindId, LocusProgram};
+use graph_core::{InfluenceKindId, LocusKindId, LocusProgram, StabilizationConfig};
 
-/// Per-influence-kind configuration. Held verbatim by the
-/// `InfluenceKindRegistry`. Tunables that the guard rail and regime
-/// classifier consume land here in later commits; for now this is just
-/// a name + a continuous-decay default so the type carries something
-/// real.
+/// Per-influence-kind configuration held by `InfluenceKindRegistry`.
+///
+/// Two classes of tunable live here:
+/// - **Decay**: per-batch multiplicative factor for relationship
+///   activity (continuous decay from `docs/redesign.md` §3.5).
+/// - **Stabilization**: guard-rail parameters (alpha, saturation,
+///   trust region) applied when committing changes of this kind. This
+///   is the per-kind port of `BasicStabilizer` from phase 1+2, now
+///   opinionated about *which kind of influence* needs clamping rather
+///   than clamping everything uniformly.
 #[derive(Debug, Clone)]
 pub struct InfluenceKindConfig {
-    /// Human-readable label for diagnostics. Not used by the engine.
+    /// Human-readable label for diagnostics.
     pub name: String,
-    /// Per-batch multiplicative decay applied to relationship activity
-    /// of this kind. `1.0` means "no decay"; smaller means "fades
-    /// faster". This is the *continuous decay* mode from
-    /// `docs/redesign.md` §3.5, not the staged-transformation mode
-    /// used by entity sediment.
+    /// Per-batch multiplicative decay on relationship activity. `1.0`
+    /// = no decay; smaller = fades faster.
     pub decay_per_batch: f32,
+    /// Guard-rail parameters for state updates of this kind. Default:
+    /// `StabilizationConfig::default()` (alpha=1.0, no saturation, no
+    /// trust region — effectively transparent).
+    pub stabilization: StabilizationConfig,
 }
 
 impl InfluenceKindConfig {
@@ -41,11 +47,17 @@ impl InfluenceKindConfig {
         Self {
             name: name.into(),
             decay_per_batch: 1.0,
+            stabilization: StabilizationConfig::default(),
         }
     }
 
     pub fn with_decay(mut self, decay_per_batch: f32) -> Self {
         self.decay_per_batch = decay_per_batch;
+        self
+    }
+
+    pub fn with_stabilization(mut self, config: StabilizationConfig) -> Self {
+        self.stabilization = config;
         self
     }
 }

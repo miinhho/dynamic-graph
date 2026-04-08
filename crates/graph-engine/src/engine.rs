@@ -147,13 +147,22 @@ impl Engine {
                     })
                     .collect();
 
+                // Apply the kind's guard rail before committing. The
+                // stabilized value is what actually lands on the locus
+                // and in the change record's `after` field — both the
+                // state and the log must agree on what was committed.
+                let stabilized_after = match influence_registry.get(kind) {
+                    Some(cfg) => cfg.stabilization.stabilize(&before, proposed.after),
+                    None => proposed.after,
+                };
+
                 let change = Change {
                     id,
                     subject: ChangeSubject::Locus(locus_id),
                     kind,
                     predecessors,
                     before,
-                    after: proposed.after.clone(),
+                    after: stabilized_after.clone(),
                     batch,
                 };
 
@@ -161,7 +170,7 @@ impl Engine {
                 // change in the log. Order matters: state must reflect
                 // the change before any program runs against it.
                 if let Some(locus) = world.locus_mut(locus_id) {
-                    locus.state = proposed.after;
+                    locus.state = stabilized_after;
                 }
                 world.append_change(change);
 
