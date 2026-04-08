@@ -20,7 +20,7 @@ pub mod weathering;
 pub use change::{Change, ChangeSubject};
 pub use ids::{BatchId, ChangeId, InfluenceKindId, LocusId, LocusKindId};
 pub use locus::Locus;
-pub use program::{LocusProgram, ProposedChange};
+pub use program::{LocusProgram, ProposedChange, StructuralProposal};
 pub use cohere::{Cohere, CohereId, CohereMembers};
 pub use entity::{
     CompressedTransition, CompressionLevel, Entity, EntityId, EntityLayer, EntityLineage,

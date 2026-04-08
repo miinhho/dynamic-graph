@@ -195,7 +195,7 @@ mod tests {
             },
             state: StateVector::from_slice(&[activity]),
             lineage: RelationshipLineage {
-                created_by: ChangeId(0),
+                created_by: None,
                 last_touched_by: ChangeId(0),
                 change_count: 1,
                 kinds_observed: vec![InfluenceKindId(1)],

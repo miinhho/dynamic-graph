@@ -27,7 +27,8 @@ use std::collections::HashMap;
 use graph_core::{
     apply_skeleton, Change, ChangeId, ChangeSubject, EmergenceProposal, Endpoints, Entity,
     EntityLayer, EntityLineage, EntityStatus, EntityWeatheringPolicy, LayerTransition, LocusId,
-    ProposedChange, Relationship, RelationshipLineage, StateVector, WeatheringEffect,
+    ProposedChange, Relationship, RelationshipLineage, StateVector, StructuralProposal,
+    WeatheringEffect,
 };
 use graph_world::World;
 
@@ -235,7 +236,9 @@ impl Engine {
 
             // Dispatch programs for every locus that just received at
             // least one change. Each program returns its proposed
-            // follow-up changes, which we queue for the next batch.
+            // follow-up state changes (queued for next batch) and any
+            // structural proposals (applied at end of this batch).
+            let mut structural_proposals: Vec<StructuralProposal> = Vec::new();
             for locus_id in &affected_loci {
                 let Some(locus) = world.locus(*locus_id) else {
                     continue;
@@ -256,15 +259,20 @@ impl Engine {
                     })
                     .unwrap_or_default();
 
-                let proposals = program.process(locus, &inbox);
+                let state_proposals = program.process(locus, &inbox);
+                let structural = program.structural_proposals(locus, &inbox);
                 let derived: Vec<ChangeId> =
                     inbox.iter().map(|c| c.id).collect();
 
-                pending.extend(proposals.into_iter().map(|p| PendingChange {
+                pending.extend(state_proposals.into_iter().map(|p| PendingChange {
                     proposed: p,
                     derived_predecessors: derived.clone(),
                 }));
+                structural_proposals.extend(structural);
             }
+
+            // Apply structural proposals at end-of-batch.
+            apply_structural_proposals(world, structural_proposals);
 
             // End-of-batch: apply Hebbian plasticity updates. Each
             // observation (rel_id, kind, pre, post) contributes
@@ -546,13 +554,56 @@ fn auto_emerge_relationship(
             endpoints,
             state: StateVector::from_slice(&[1.0, 0.0]),
             lineage: RelationshipLineage {
-                created_by: change_id,
+                created_by: Some(change_id),
                 last_touched_by: change_id,
                 change_count: 1,
                 kinds_observed: vec![kind],
             },
         });
         new_id
+    }
+}
+
+/// Apply structural proposals collected during a batch's program-dispatch phase.
+///
+/// `CreateRelationship`: if the (endpoints, kind) pair already exists,
+/// treat it as an activity touch. Otherwise mint and insert a new
+/// relationship with `created_by: None` (no originating change).
+///
+/// `DeleteRelationship`: remove from the store. The relationship's past
+/// changes in the log remain intact.
+fn apply_structural_proposals(world: &mut World, proposals: Vec<StructuralProposal>) {
+    for proposal in proposals {
+        match proposal {
+            StructuralProposal::CreateRelationship { endpoints, kind } => {
+                let key = endpoints.key();
+                let store = world.relationships_mut();
+                if let Some(rel_id) = store.lookup(&key, kind) {
+                    let rel = store.get_mut(rel_id).expect("indexed id must exist");
+                    if let Some(a) = rel.state.as_mut_slice().get_mut(Relationship::ACTIVITY_SLOT) {
+                        *a += 1.0;
+                    }
+                    rel.lineage.change_count += 1;
+                } else {
+                    let new_id = store.mint_id();
+                    store.insert(Relationship {
+                        id: new_id,
+                        kind,
+                        endpoints,
+                        state: StateVector::from_slice(&[1.0, 0.0]),
+                        lineage: RelationshipLineage {
+                            created_by: None,
+                            last_touched_by: graph_core::ChangeId(u64::MAX),
+                            change_count: 1,
+                            kinds_observed: vec![kind],
+                        },
+                    });
+                }
+            }
+            StructuralProposal::DeleteRelationship { rel_id } => {
+                world.relationships_mut().remove(rel_id);
+            }
+        }
     }
 }
 
@@ -1213,6 +1264,186 @@ mod tests {
                 "both layers should still be Full"
             );
         }
+    }
+
+    // ─── Structural mutation tests ────────────────────────────────────────
+
+    /// Program that proposes to create a Directed relationship L1→L3
+    /// when it receives a stimulus, and proposes to delete L1→L2 if one
+    /// already exists (by scanning the world — tests use RelationshipId(0)).
+    struct WiringProgram {
+        new_target: LocusId,
+        delete_rel: Option<graph_core::RelationshipId>,
+    }
+    impl LocusProgram for WiringProgram {
+        fn process(&self, _: &Locus, _: &[Change]) -> Vec<ProposedChange> {
+            Vec::new()
+        }
+        fn structural_proposals(&self, _: &Locus, incoming: &[Change]) -> Vec<StructuralProposal> {
+            // Only act on stimuli.
+            if incoming.iter().all(|c| c.predecessors.is_empty()) {
+                let mut out = vec![StructuralProposal::CreateRelationship {
+                    endpoints: Endpoints::Directed {
+                        from: LocusId(1),
+                        to: self.new_target,
+                    },
+                    kind: InfluenceKindId(1),
+                }];
+                if let Some(rid) = self.delete_rel {
+                    out.push(StructuralProposal::DeleteRelationship { rel_id: rid });
+                }
+                out
+            } else {
+                Vec::new()
+            }
+        }
+    }
+
+    #[test]
+    fn structural_proposal_creates_relationship() {
+        let mut world = World::new();
+        world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+        world.insert_locus(Locus::new(LocusId(3), LocusKindId(2), StateVector::zeros(1)));
+        let mut loci = LocusKindRegistry::new();
+        loci.insert(
+            LocusKindId(1),
+            Box::new(WiringProgram { new_target: LocusId(3), delete_rel: None }),
+        );
+        loci.insert(LocusKindId(2), Box::new(SinkProgram));
+        let mut inf = InfluenceKindRegistry::new();
+        inf.insert(InfluenceKindId(1), crate::registry::InfluenceKindConfig::new("t"));
+        let engine = Engine::default();
+
+        assert_eq!(world.relationships().len(), 0);
+        engine.tick(
+            &mut world,
+            &loci,
+            &inf,
+            vec![ProposedChange::new(
+                ChangeSubject::Locus(LocusId(1)),
+                InfluenceKindId(1),
+                StateVector::from_slice(&[1.0]),
+            )],
+        );
+        // WiringProgram proposed CreateRelationship L1→L3.
+        assert_eq!(world.relationships().len(), 1, "one relationship created");
+        let key = Endpoints::Directed { from: LocusId(1), to: LocusId(3) }.key();
+        assert!(
+            world.relationships().lookup(&key, InfluenceKindId(1)).is_some(),
+            "L1→L3 must exist"
+        );
+    }
+
+    #[test]
+    fn structural_proposal_create_existing_is_activity_touch() {
+        // If L1→L3 already exists and WiringProgram proposes CreateRelationship
+        // again, it should increment activity, not panic or duplicate.
+        let mut world = World::new();
+        world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+        world.insert_locus(Locus::new(LocusId(3), LocusKindId(2), StateVector::zeros(1)));
+        let mut loci = LocusKindRegistry::new();
+        loci.insert(
+            LocusKindId(1),
+            Box::new(WiringProgram { new_target: LocusId(3), delete_rel: None }),
+        );
+        loci.insert(LocusKindId(2), Box::new(SinkProgram));
+        let mut inf = InfluenceKindRegistry::new();
+        inf.insert(InfluenceKindId(1), crate::registry::InfluenceKindConfig::new("t"));
+        let engine = Engine::default();
+
+        let stim = || ProposedChange::new(
+            ChangeSubject::Locus(LocusId(1)),
+            InfluenceKindId(1),
+            StateVector::from_slice(&[1.0]),
+        );
+        engine.tick(&mut world, &loci, &inf, vec![stim()]);
+        engine.tick(&mut world, &loci, &inf, vec![stim()]);
+
+        // Still exactly one relationship — second proposal was a touch.
+        assert_eq!(world.relationships().len(), 1);
+        let rel = world.relationships().iter().next().unwrap();
+        // Activity after two stimuli: +1.0 on first creation, +1.0 on second
+        // touch, then each batch applies decay=1.0 → 2.0. (decay=1.0 default)
+        assert!(rel.activity() > 1.0, "activity should have grown after two touches");
+    }
+
+    #[test]
+    fn structural_proposal_deletes_relationship() {
+        // First tick: auto-emerge L1→L2 via ForwarderProgram.
+        // Second tick: WiringProgram deletes RelationshipId(0).
+        let mut world = World::new();
+        world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+        world.insert_locus(Locus::new(LocusId(2), LocusKindId(2), StateVector::zeros(1)));
+        let mut loci = LocusKindRegistry::new();
+        loci.insert(LocusKindId(1), Box::new(ForwarderProgram { downstream: LocusId(2) }));
+        loci.insert(LocusKindId(2), Box::new(SinkProgram));
+        let mut inf = InfluenceKindRegistry::new();
+        inf.insert(InfluenceKindId(1), crate::registry::InfluenceKindConfig::new("t"));
+        let engine = Engine::default();
+
+        // Tick 1: establish relationship.
+        engine.tick(
+            &mut world,
+            &loci,
+            &inf,
+            vec![ProposedChange::new(
+                ChangeSubject::Locus(LocusId(1)),
+                InfluenceKindId(1),
+                StateVector::from_slice(&[1.0]),
+            )],
+        );
+        assert_eq!(world.relationships().len(), 1, "relationship emerged");
+        let rel_id = world.relationships().iter().next().unwrap().id;
+
+        // Now swap the program on kind 1 to a deleter.
+        let mut loci2 = LocusKindRegistry::new();
+        loci2.insert(
+            LocusKindId(1),
+            Box::new(WiringProgram {
+                new_target: LocusId(2), // ignored by this test
+                delete_rel: Some(rel_id),
+            }),
+        );
+        loci2.insert(LocusKindId(2), Box::new(SinkProgram));
+
+        // Tick 2: WiringProgram deletes the relationship.
+        engine.tick(
+            &mut world,
+            &loci2,
+            &inf,
+            vec![ProposedChange::new(
+                ChangeSubject::Locus(LocusId(1)),
+                InfluenceKindId(1),
+                StateVector::from_slice(&[1.0]),
+            )],
+        );
+        assert_eq!(
+            world.relationships().len(),
+            0,
+            "relationship should be deleted"
+        );
+    }
+
+    #[test]
+    fn structural_proposals_default_is_empty_for_existing_programs() {
+        // Existing programs (ForwarderProgram, DampOnceProgram, etc.) should
+        // return empty structural proposals — the default impl is a no-op.
+        let (mut world, loci, influences) = setup();
+        let engine = Engine::default();
+        let result = engine.tick(
+            &mut world,
+            &loci,
+            &influences,
+            vec![ProposedChange::new(
+                ChangeSubject::Locus(LocusId(1)),
+                InfluenceKindId(1),
+                StateVector::from_slice(&[1.0, 0.0]),
+            )],
+        );
+        // DampOnceProgram produces a self-loop (no relationships) and then
+        // quiesces in 2 batches. No structural proposals → no extra relationships.
+        assert!(!result.hit_batch_cap);
+        assert_eq!(world.relationships().len(), 0, "no structural proposals emitted");
     }
 
     // ─── Edge plasticity (Hebbian) tests ──────────────────────────────────

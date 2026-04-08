@@ -81,7 +81,10 @@ pub enum EndpointKey {
 /// (later) entity-emergence perspective.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RelationshipLineage {
-    pub created_by: ChangeId,
+    /// The change that caused this relationship to first emerge.
+    /// `None` for relationships created via `StructuralProposal` or in
+    /// test helpers (no single originating change).
+    pub created_by: Option<ChangeId>,
     pub last_touched_by: ChangeId,
     pub change_count: u64,
     /// Influence kinds the engine has seen flow through this

@@ -21,6 +21,7 @@
 use crate::change::{Change, ChangeSubject};
 use crate::ids::{ChangeId, InfluenceKindId};
 use crate::locus::Locus;
+use crate::relationship::{Endpoints, RelationshipId, RelationshipKindId};
 use crate::state::StateVector;
 
 /// A change a locus program wants to make. The engine assigns the final
@@ -51,6 +52,36 @@ impl ProposedChange {
     }
 }
 
+/// A structural change to the relationship graph proposed by a program.
+///
+/// Structural proposals are applied at end-of-batch, after all state
+/// changes have been committed and programs have run. They take effect
+/// immediately (in the same batch's cleanup), so the new or removed
+/// relationship is visible to the next batch.
+///
+/// Unlike `ProposedChange`, structural proposals are not recorded as
+/// `Change`s in the log. Causal logging of structural changes is
+/// deferred to the lineage query layer.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StructuralProposal {
+    /// Create a new relationship connecting `endpoints` of `kind`.
+    ///
+    /// If a relationship with the same `(endpoints.key(), kind)` already
+    /// exists, this is treated as an activity touch rather than a
+    /// duplicate — same semantics as `auto_emerge_relationship`.
+    CreateRelationship {
+        endpoints: Endpoints,
+        kind: RelationshipKindId,
+    },
+    /// Remove a relationship from the world.
+    ///
+    /// The relationship's history in the change log is preserved (changes
+    /// that targeted it still exist); only its live presence in the
+    /// relationship store is removed. After deletion the relationship id
+    /// becomes dangling — do not reuse it.
+    DeleteRelationship { rel_id: RelationshipId },
+}
+
 /// User-supplied behavior for a single locus kind.
 ///
 /// One impl is registered per `LocusKindId`; every locus carrying that
@@ -61,4 +92,14 @@ pub trait LocusProgram: Send + Sync {
     /// committed changes that fired *into* this locus during the batch
     /// being processed.
     fn process(&self, locus: &Locus, incoming: &[Change]) -> Vec<ProposedChange>;
+
+    /// Propose structural changes to the relationship topology.
+    ///
+    /// Called with the same `locus` and `incoming` as `process`, at the
+    /// same point in the batch loop. The default implementation returns
+    /// an empty vec — programs only override this when they need topology
+    /// mutation. Backwards compatible: existing programs need not change.
+    fn structural_proposals(&self, _locus: &Locus, _incoming: &[Change]) -> Vec<StructuralProposal> {
+        Vec::new()
+    }
 }

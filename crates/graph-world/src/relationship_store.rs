@@ -70,6 +70,18 @@ impl RelationshipStore {
         self.by_key.get(&(key.clone(), kind)).copied()
     }
 
+    /// Remove a relationship by id. Returns the removed record, or `None`
+    /// if the id was not found.
+    ///
+    /// Both indices (`by_id` and `by_key`) are updated. After removal the
+    /// id is dangling — do not re-insert with the same id.
+    pub fn remove(&mut self, id: RelationshipId) -> Option<Relationship> {
+        let rel = self.by_id.remove(&id)?;
+        let key = (rel.endpoints.key(), rel.kind);
+        self.by_key.remove(&key);
+        Some(rel)
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &Relationship> {
         self.by_id.values()
     }
@@ -96,7 +108,7 @@ mod tests {
             },
             state: StateVector::from_slice(&[0.0]),
             lineage: RelationshipLineage {
-                created_by: ChangeId(0),
+                created_by: None,
                 last_touched_by: ChangeId(0),
                 change_count: 0,
                 kinds_observed: vec![InfluenceKindId(kind)],

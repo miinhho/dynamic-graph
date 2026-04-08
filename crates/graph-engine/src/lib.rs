@@ -15,7 +15,7 @@ pub use cohere::{CoherePerspective, DefaultCoherePerspective};
 pub use emergence::{DefaultEmergencePerspective, EmergencePerspective};
 pub use adaptive::{AdaptiveConfig, AdaptiveGuardRail};
 pub use engine::{Engine, EngineConfig, TickResult};
-pub use graph_core::{DefaultEntityWeathering, EntityWeatheringPolicy, WeatheringEffect};
+pub use graph_core::{DefaultEntityWeathering, EntityWeatheringPolicy, StructuralProposal, WeatheringEffect};
 pub use regime::{
     BatchHistory, BatchMetrics, DefaultRegimeClassifier, DynamicsRegime, RegimeClassifier,
 };
