@@ -24,7 +24,10 @@
 
 use std::collections::HashMap;
 
-use graph_core::{Change, ChangeId, ChangeSubject, LocusId, ProposedChange};
+use graph_core::{
+    Change, ChangeId, ChangeSubject, Endpoints, LocusId, ProposedChange, Relationship,
+    RelationshipLineage, StateVector,
+};
 use graph_world::World;
 
 use crate::registry::{InfluenceKindRegistry, LocusKindRegistry};
@@ -79,7 +82,7 @@ impl Engine {
         &self,
         world: &mut World,
         loci_registry: &LocusKindRegistry,
-        _influence_registry: &InfluenceKindRegistry,
+        influence_registry: &InfluenceKindRegistry,
         stimuli: Vec<ProposedChange>,
     ) -> TickResult {
         let mut result = TickResult::default();
@@ -125,10 +128,25 @@ impl Engine {
                 predecessors.extend(proposed.extra_predecessors.iter().copied());
 
                 let id = world.mint_change_id();
+                let kind = proposed.kind;
+
+                // Resolve cross-locus predecessors *before* moving the
+                // change into the log: we need to read the predecessor
+                // changes' subjects, and we'll mutate the relationship
+                // store next, so the borrows can't overlap.
+                let cross_locus_preds: Vec<LocusId> = predecessors
+                    .iter()
+                    .filter_map(|pid| world.log().get(*pid))
+                    .filter_map(|pred| {
+                        let ChangeSubject::Locus(pl) = pred.subject;
+                        (pl != locus_id).then_some(pl)
+                    })
+                    .collect();
+
                 let change = Change {
                     id,
                     subject: ChangeSubject::Locus(locus_id),
-                    kind: proposed.kind,
+                    kind,
                     predecessors,
                     before,
                     after: proposed.after.clone(),
@@ -142,6 +160,14 @@ impl Engine {
                     locus.state = proposed.after;
                 }
                 world.append_change(change);
+
+                // Auto-emerge or update a directed relationship for
+                // each cross-locus predecessor. Per docs/redesign.md
+                // §3.3, observing "change at A precedes change at B of
+                // kind K" *is* a relationship of kind K from A to B.
+                for from_locus in cross_locus_preds {
+                    auto_emerge_relationship(world, from_locus, locus_id, kind, id);
+                }
 
                 committed_ids_by_locus.entry(locus_id).or_default().push(id);
                 if !affected_loci.contains(&locus_id) {
@@ -183,11 +209,67 @@ impl Engine {
                 }));
             }
 
+            // End-of-batch continuous decay on all relationship
+            // activity scores, per docs/redesign.md §3.5. Each kind
+            // carries its own per-batch decay factor in the influence
+            // registry.
+            for rel in world.relationships_mut().iter_mut() {
+                let decay = influence_registry
+                    .get(rel.kind)
+                    .map(|cfg| cfg.decay_per_batch)
+                    .unwrap_or(1.0);
+                if let Some(slot) = rel.state.as_mut_slice().get_mut(Relationship::ACTIVITY_SLOT) {
+                    *slot *= decay;
+                }
+            }
+
             world.advance_batch();
             result.batches_committed += 1;
         }
 
         result
+    }
+}
+
+/// Recognize or update a directed relationship of `kind` going from
+/// `from` to `to`, attributing the touch to `change_id`. Adds 1.0 to
+/// the relationship's activity slot per touch — the contribution per
+/// observation is constant for now; a kind-driven contribution lands
+/// when guard rails do.
+fn auto_emerge_relationship(
+    world: &mut World,
+    from: LocusId,
+    to: LocusId,
+    kind: graph_core::InfluenceKindId,
+    change_id: ChangeId,
+) {
+    let endpoints = Endpoints::Directed { from, to };
+    let key = endpoints.key();
+    let store = world.relationships_mut();
+    if let Some(rel_id) = store.lookup(&key, kind) {
+        let rel = store.get_mut(rel_id).expect("indexed id must exist");
+        if let Some(slot) = rel.state.as_mut_slice().get_mut(Relationship::ACTIVITY_SLOT) {
+            *slot += 1.0;
+        }
+        rel.lineage.last_touched_by = change_id;
+        rel.lineage.change_count += 1;
+        if !rel.lineage.kinds_observed.contains(&kind) {
+            rel.lineage.kinds_observed.push(kind);
+        }
+    } else {
+        let new_id = store.mint_id();
+        store.insert(Relationship {
+            id: new_id,
+            kind,
+            endpoints,
+            state: StateVector::from_slice(&[1.0]),
+            lineage: RelationshipLineage {
+                created_by: change_id,
+                last_touched_by: change_id,
+                change_count: 1,
+                kinds_observed: vec![kind],
+            },
+        });
     }
 }
 
@@ -496,5 +578,144 @@ mod tests {
             .map(|c| c.after.as_slice()[0])
             .collect();
         assert_eq!(to_locus, vec![0.3, 0.2, 0.1]);
+    }
+
+    fn forwarder_world(decay: f32) -> (World, LocusKindRegistry, InfluenceKindRegistry) {
+        let mut world = World::new();
+        world.insert_locus(Locus::new(
+            LocusId(1),
+            LocusKindId(1),
+            StateVector::zeros(2),
+        ));
+        world.insert_locus(Locus::new(
+            LocusId(2),
+            LocusKindId(2),
+            StateVector::zeros(2),
+        ));
+        let mut loci = LocusKindRegistry::new();
+        loci.insert(
+            LocusKindId(1),
+            Box::new(ForwarderProgram {
+                downstream: LocusId(2),
+            }),
+        );
+        loci.insert(LocusKindId(2), Box::new(SinkProgram));
+        let mut influences = InfluenceKindRegistry::new();
+        influences.insert(
+            InfluenceKindId(1),
+            crate::registry::InfluenceKindConfig::new("excite").with_decay(decay),
+        );
+        (world, loci, influences)
+    }
+
+    fn fire_stimulus(value: f32) -> ProposedChange {
+        ProposedChange::new(
+            ChangeSubject::Locus(LocusId(1)),
+            InfluenceKindId(1),
+            StateVector::from_slice(&[value, 0.0]),
+        )
+    }
+
+    #[test]
+    fn cross_locus_flow_emerges_one_directed_relationship() {
+        // First time L1 forwards to L2, the engine should mint exactly
+        // one Directed{1->2} relationship of kind 1 with activity = 1.
+        let (mut world, loci, influences) = forwarder_world(1.0);
+        let engine = Engine::default();
+        engine.tick(&mut world, &loci, &influences, vec![fire_stimulus(0.5)]);
+
+        assert_eq!(world.relationships().len(), 1);
+        let rel = world.relationships().iter().next().unwrap();
+        assert_eq!(
+            rel.endpoints,
+            Endpoints::Directed {
+                from: LocusId(1),
+                to: LocusId(2),
+            }
+        );
+        assert_eq!(rel.kind, InfluenceKindId(1));
+        // Activity = 1.0 because decay = 1.0 (no decay).
+        assert!((rel.activity() - 1.0).abs() < 1e-6);
+        assert_eq!(rel.lineage.change_count, 1);
+    }
+
+    #[test]
+    fn repeated_cross_locus_flow_increments_activity_and_change_count() {
+        // Drive three independent stimuli through the forwarder. With
+        // decay = 1.0 the activity should land on exactly 3.0 and the
+        // change_count on 3.
+        let (mut world, loci, influences) = forwarder_world(1.0);
+        let engine = Engine::default();
+        for v in [0.1, 0.2, 0.3_f32] {
+            engine.tick(&mut world, &loci, &influences, vec![fire_stimulus(v)]);
+        }
+        assert_eq!(world.relationships().len(), 1);
+        let rel = world.relationships().iter().next().unwrap();
+        assert!((rel.activity() - 3.0).abs() < 1e-6);
+        assert_eq!(rel.lineage.change_count, 3);
+    }
+
+    #[test]
+    fn relationship_activity_decays_each_batch() {
+        // With decay = 0.5 and a single forwarding stimulus, the loop
+        // commits two batches. After batch 0 the relationship doesn't
+        // exist yet (the cross-locus change happens in batch 1). After
+        // batch 1, activity = 1.0 then decay -> 0.5.
+        let (mut world, loci, influences) = forwarder_world(0.5);
+        let engine = Engine::default();
+        engine.tick(&mut world, &loci, &influences, vec![fire_stimulus(0.5)]);
+
+        let rel = world.relationships().iter().next().unwrap();
+        assert!(
+            (rel.activity() - 0.5).abs() < 1e-6,
+            "expected activity 0.5 after one decay tick, got {}",
+            rel.activity()
+        );
+
+        // Second tick: another forwarding event. Trace:
+        //   batch start: 0.5
+        //   batch 2 commits stimulus at L1 (no relationship touch),
+        //     end-of-batch decay: 0.25
+        //   batch 3 commits forwarded change at L2 (+1.0): 1.25
+        //     end-of-batch decay: 0.625
+        engine.tick(&mut world, &loci, &influences, vec![fire_stimulus(0.5)]);
+        let rel = world.relationships().iter().next().unwrap();
+        assert!(
+            (rel.activity() - 0.625).abs() < 1e-6,
+            "expected activity 0.625 after second tick, got {}",
+            rel.activity()
+        );
+    }
+
+    #[test]
+    fn self_targeted_change_does_not_emerge_relationship() {
+        // The DampOnceProgram from earlier produces a self-targeted
+        // follow-up. Self-loops are not relationships under the
+        // current emergence rule (cross-locus only).
+        let mut world = World::new();
+        world.insert_locus(Locus::new(
+            LocusId(1),
+            LocusKindId(1),
+            StateVector::zeros(2),
+        ));
+        let mut loci = LocusKindRegistry::new();
+        loci.insert(LocusKindId(1), Box::new(DampOnceProgram));
+        let mut influences = InfluenceKindRegistry::new();
+        influences.insert(
+            InfluenceKindId(1),
+            crate::registry::InfluenceKindConfig::new("self"),
+        );
+        let engine = Engine::default();
+        engine.tick(
+            &mut world,
+            &loci,
+            &influences,
+            vec![ProposedChange::new(
+                ChangeSubject::Locus(LocusId(1)),
+                InfluenceKindId(1),
+                StateVector::from_slice(&[1.0, 1.0]),
+            )],
+        );
+        assert_eq!(world.relationships().len(), 0);
     }
 }
