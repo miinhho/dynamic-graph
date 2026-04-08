@@ -4,8 +4,10 @@
 //! follow-up commits; this commit only exposes the kind registries the
 //! batch loop will consume.
 
+mod emergence;
 mod engine;
 mod registry;
 
+pub use emergence::{DefaultEmergencePerspective, EmergencePerspective};
 pub use engine::{Engine, EngineConfig, TickResult};
 pub use registry::{InfluenceKindConfig, InfluenceKindRegistry, LocusKindRegistry};

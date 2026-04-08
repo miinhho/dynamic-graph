@@ -9,6 +9,7 @@ pub mod change;
 pub mod entity;
 pub mod ids;
 pub mod locus;
+pub mod perspective;
 pub mod program;
 pub mod relationship;
 pub mod state;
@@ -21,6 +22,7 @@ pub use entity::{
     CompressedTransition, CompressionLevel, Entity, EntityId, EntityLayer, EntityLineage,
     EntitySnapshot, EntityStatus, LayerTransition,
 };
+pub use perspective::EmergenceProposal;
 pub use relationship::{
     EndpointKey, Endpoints, Relationship, RelationshipId, RelationshipKindId, RelationshipLineage,
 };

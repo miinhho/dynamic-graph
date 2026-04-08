@@ -25,10 +25,13 @@
 use std::collections::HashMap;
 
 use graph_core::{
-    Change, ChangeId, ChangeSubject, Endpoints, LocusId, ProposedChange, Relationship,
+    Change, ChangeId, ChangeSubject, EmergenceProposal, Endpoints, Entity, EntityLayer,
+    EntityLineage, EntityStatus, LayerTransition, LocusId, ProposedChange, Relationship,
     RelationshipLineage, StateVector,
 };
 use graph_world::World;
+
+use crate::emergence::EmergencePerspective;
 
 use crate::registry::{InfluenceKindRegistry, LocusKindRegistry};
 
@@ -228,6 +231,107 @@ impl Engine {
         }
 
         result
+    }
+
+    /// Apply an `EmergencePerspective` to the current world state and
+    /// commit its proposals to the entity store.
+    ///
+    /// This is *on-demand*, not called automatically by `tick`. The
+    /// caller decides when entity recognition should happen — once per
+    /// tick, once per N ticks, or on explicit request. Per
+    /// `docs/redesign.md` §6 step 7: "Optional, on-demand."
+    pub fn recognize_entities(
+        &self,
+        world: &mut World,
+        perspective: &dyn EmergencePerspective,
+    ) {
+        let batch = world.current_batch();
+        let proposals =
+            perspective.recognize(world.relationships(), world.entities(), batch);
+        apply_proposals(world, proposals, batch);
+    }
+}
+
+/// Apply a list of emergence proposals to the entity store.
+fn apply_proposals(world: &mut World, proposals: Vec<EmergenceProposal>, batch: graph_core::BatchId) {
+    for proposal in proposals {
+        match proposal {
+            EmergenceProposal::Born { members, coherence, parents } => {
+                use graph_core::EntitySnapshot;
+                let snapshot = EntitySnapshot {
+                    members,
+                    member_relationships: Vec::new(),
+                    coherence,
+                };
+                let store = world.entities_mut();
+                let id = store.mint_id();
+                let mut entity = Entity::born(id, batch, snapshot);
+                entity.lineage = EntityLineage { parents, children: Vec::new() };
+                store.insert(entity);
+            }
+            EmergenceProposal::DepositLayer { entity, layer } => {
+                if let Some(e) = world.entities_mut().get_mut(entity) {
+                    e.current = layer.snapshot.clone().unwrap_or_default();
+                    e.layers.push(layer);
+                }
+            }
+            EmergenceProposal::Dormant { entity } => {
+                if let Some(e) = world.entities_mut().get_mut(entity) {
+                    e.status = EntityStatus::Dormant;
+                    e.layers.push(EntityLayer::new(
+                        batch,
+                        e.current.clone(),
+                        LayerTransition::BecameDormant,
+                    ));
+                }
+            }
+            EmergenceProposal::Revive { entity, snapshot } => {
+                if let Some(e) = world.entities_mut().get_mut(entity) {
+                    e.status = EntityStatus::Active;
+                    e.deposit(batch, snapshot, LayerTransition::Revived);
+                }
+            }
+            EmergenceProposal::Split { source, offspring } => {
+                let mut child_ids = Vec::new();
+                for (members, coherence) in offspring {
+                    use graph_core::EntitySnapshot;
+                    let snapshot = EntitySnapshot { members, member_relationships: Vec::new(), coherence };
+                    let store = world.entities_mut();
+                    let child_id = store.mint_id();
+                    let child = Entity::born(child_id, batch, snapshot);
+                    store.insert(child);
+                    child_ids.push(child_id);
+                }
+                if let Some(e) = world.entities_mut().get_mut(source) {
+                    e.deposit(batch, e.current.clone(), LayerTransition::Split {
+                        offspring: child_ids.clone(),
+                    });
+                    e.lineage.children.extend(child_ids);
+                }
+            }
+            EmergenceProposal::Merge { absorbed, into, new_members, coherence } => {
+                for absorbed_id in &absorbed {
+                    if let Some(e) = world.entities_mut().get_mut(*absorbed_id) {
+                        e.status = EntityStatus::Dormant;
+                        e.layers.push(EntityLayer::new(
+                            batch,
+                            e.current.clone(),
+                            LayerTransition::Merged { absorbed: vec![into] },
+                        ));
+                    }
+                }
+                use graph_core::EntitySnapshot;
+                let snapshot = EntitySnapshot {
+                    members: new_members,
+                    member_relationships: Vec::new(),
+                    coherence,
+                };
+                if let Some(e) = world.entities_mut().get_mut(into) {
+                    e.deposit(batch, snapshot, LayerTransition::Merged { absorbed: absorbed.clone() });
+                    e.lineage.children.extend(absorbed);
+                }
+            }
+        }
     }
 }
 
@@ -685,6 +789,64 @@ mod tests {
             "expected activity 0.625 after second tick, got {}",
             rel.activity()
         );
+    }
+
+    // --- entity recognition integration tests ----------------------------
+
+    fn two_locus_world_after_forwarding_tick() -> World {
+        let mut world = World::new();
+        world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+        world.insert_locus(Locus::new(LocusId(2), LocusKindId(2), StateVector::zeros(1)));
+        let mut loci = LocusKindRegistry::new();
+        loci.insert(LocusKindId(1), Box::new(ForwarderProgram { downstream: LocusId(2) }));
+        loci.insert(LocusKindId(2), Box::new(SinkProgram));
+        let mut influences = InfluenceKindRegistry::new();
+        influences.insert(InfluenceKindId(1), crate::registry::InfluenceKindConfig::new("e"));
+        let engine = Engine::default();
+        let stimulus = ProposedChange::new(
+            ChangeSubject::Locus(LocusId(1)),
+            InfluenceKindId(1),
+            StateVector::from_slice(&[0.5]),
+        );
+        engine.tick(&mut world, &loci, &influences, vec![stimulus]);
+        world
+    }
+
+    #[test]
+    fn recognize_entities_after_forwarding_tick_produces_one_entity() {
+        let mut world = two_locus_world_after_forwarding_tick();
+        let engine = Engine::default();
+        let perspective = crate::emergence::DefaultEmergencePerspective::default();
+        engine.recognize_entities(&mut world, &perspective);
+
+        assert_eq!(world.entities().active_count(), 1);
+        let entity = world.entities().active().next().unwrap();
+        let mut members = entity.current.members.clone();
+        members.sort();
+        assert_eq!(members, vec![LocusId(1), LocusId(2)]);
+        assert_eq!(entity.layer_count(), 1); // only Born layer
+    }
+
+    #[test]
+    fn entity_becomes_dormant_when_relationship_decays_below_threshold() {
+        let mut world = two_locus_world_after_forwarding_tick();
+        let engine = Engine::default();
+        let perspective = crate::emergence::DefaultEmergencePerspective {
+            min_activity_threshold: 0.8,
+            ..Default::default()
+        };
+        // After one forwarding tick the activity is 1.0 * decay^1 = 0.5
+        // (decay=1.0 in this test world so it stays 1.0). Use a high
+        // threshold so the component is below it, triggering dormancy.
+        let perspective_high = crate::emergence::DefaultEmergencePerspective {
+            min_activity_threshold: 2.0, // impossible to meet
+            ..Default::default()
+        };
+        engine.recognize_entities(&mut world, &perspective);
+        assert_eq!(world.entities().active_count(), 1);
+        engine.recognize_entities(&mut world, &perspective_high);
+        assert_eq!(world.entities().active_count(), 0);
+        assert_eq!(world.entities().len(), 1); // still in store, just dormant
     }
 
     #[test]

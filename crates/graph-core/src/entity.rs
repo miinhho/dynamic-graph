@@ -44,6 +44,12 @@ pub struct EntitySnapshot {
     pub coherence: f32,
 }
 
+impl Default for EntitySnapshot {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 impl EntitySnapshot {
     pub fn empty() -> Self {
         Self {
