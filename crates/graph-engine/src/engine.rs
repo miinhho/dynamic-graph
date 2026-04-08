@@ -1,28 +1,18 @@
 //! The substrate batch loop.
 //!
-//! Implements the core of `docs/redesign.md` §6: take a set of pending
-//! changes, commit them as the current batch, dispatch each affected
-//! locus's program, queue any newly proposed changes for the next
-//! batch, and repeat until quiescent or until a configurable cap fires.
+//! Implements `docs/redesign.md` §6: commit pending changes, dispatch
+//! each affected locus's program, queue follow-ups, repeat until
+//! quiescent or the batch cap fires.
 //!
-//! This commit handles the simplest case: a stimulus that flows into
-//! one locus, whose program may produce zero or more follow-up changes
-//! that target the same locus. Cross-locus change flow lands in a
-//! follow-up commit, which will also bring per-kind stabilization and
-//! the relationship-emergence path.
-//!
-//! Design decisions in force here, all from `docs/redesign.md` §8:
-//! - **Predecessors are auto-derived** (O1 hybrid, automatic side):
-//!   internal changes inherit the ids of the changes that fired into
-//!   their subject locus during the same batch. `extra_predecessors`
-//!   on a `ProposedChange` are unioned in if present.
-//! - **Stimulus = Change with empty predecessors** (O9): user-injected
-//!   `ProposedChange`s are committed with no predecessors.
-//! - **Single-subject changes only** (O7 tentative).
-//! - **Locus state = `change.after`** on commit. The previous state
-//!   becomes `change.before`.
+//! Design decisions (`docs/redesign.md` §8):
+//! - **Predecessors are auto-derived** (O1): internal changes inherit
+//!   the ids of changes that fired into their subject locus during the
+//!   same batch. `extra_predecessors` on a `ProposedChange` are merged.
+//! - **Stimulus = Change with empty predecessors** (O9).
+//! - **Single-subject changes only** (O7).
+//! - **Locus state = `change.after`** on commit.
 
-use std::collections::HashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use graph_core::{
     apply_skeleton, Change, ChangeId, ChangeSubject, EmergenceProposal, Endpoints, Entity,
@@ -110,8 +100,9 @@ impl Engine {
             // each locus, so the next batch's auto-predecessor logic
             // has somewhere to look.
             let batch = world.current_batch();
-            let mut committed_ids_by_locus: HashMap<LocusId, Vec<ChangeId>> = HashMap::new();
+            let mut committed_ids_by_locus: FxHashMap<LocusId, Vec<ChangeId>> = FxHashMap::default();
             let mut affected_loci: Vec<LocusId> = Vec::new();
+            let mut affected_loci_set: FxHashSet<LocusId> = FxHashSet::default();
             // Plasticity: collect (rel_id, kind, pre_signal, post_signal) tuples
             // during cross-locus detection; apply Hebbian updates at end-of-batch.
             let mut plasticity_obs: Vec<(graph_core::RelationshipId, graph_core::InfluenceKindId, f32, f32)> = Vec::new();
@@ -152,8 +143,11 @@ impl Engine {
                             })
                             .collect();
 
+                        // Cache per-kind config once; used for stabilization and plasticity.
+                        let kind_cfg = influence_registry.get(kind);
+
                         // Apply the kind's guard rail before committing.
-                        let stabilized_after = match influence_registry.get(kind) {
+                        let stabilized_after = match kind_cfg {
                             Some(cfg) => cfg.stabilization.stabilize(&before, proposed.after),
                             None => proposed.after,
                         };
@@ -180,8 +174,7 @@ impl Engine {
                         // Auto-emerge or update a directed relationship for
                         // each cross-locus predecessor. Collect plasticity
                         // observations if the kind has learning enabled.
-                        let plasticity_active = influence_registry
-                            .get(kind)
+                        let plasticity_active = kind_cfg
                             .map(|cfg| cfg.plasticity.is_active())
                             .unwrap_or(false);
                         for (from_locus, pre_signal) in cross_locus_preds {
@@ -192,7 +185,7 @@ impl Engine {
                         }
 
                         committed_ids_by_locus.entry(locus_id).or_default().push(id);
-                        if !affected_loci.contains(&locus_id) {
+                        if affected_loci_set.insert(locus_id) {
                             affected_loci.push(locus_id);
                         }
                     }
@@ -223,7 +216,7 @@ impl Engine {
 
                         if let Some(rel) = world.relationships_mut().get_mut(rel_id) {
                             rel.state = stabilized_after;
-                            rel.lineage.last_touched_by = id;
+                            rel.lineage.last_touched_by = Some(id);
                             rel.lineage.change_count += 1;
                         }
                         world.append_change(change);
@@ -539,7 +532,7 @@ fn auto_emerge_relationship(
         if let Some(slot) = rel.state.as_mut_slice().get_mut(Relationship::ACTIVITY_SLOT) {
             *slot += 1.0;
         }
-        rel.lineage.last_touched_by = change_id;
+        rel.lineage.last_touched_by = Some(change_id);
         rel.lineage.change_count += 1;
         if !rel.lineage.kinds_observed.contains(&kind) {
             rel.lineage.kinds_observed.push(kind);
@@ -555,7 +548,7 @@ fn auto_emerge_relationship(
             state: StateVector::from_slice(&[1.0, 0.0]),
             lineage: RelationshipLineage {
                 created_by: Some(change_id),
-                last_touched_by: change_id,
+                last_touched_by: Some(change_id),
                 change_count: 1,
                 kinds_observed: vec![kind],
             },
@@ -593,7 +586,7 @@ fn apply_structural_proposals(world: &mut World, proposals: Vec<StructuralPropos
                         state: StateVector::from_slice(&[1.0, 0.0]),
                         lineage: RelationshipLineage {
                             created_by: None,
-                            last_touched_by: graph_core::ChangeId(u64::MAX),
+                            last_touched_by: None,
                             change_count: 1,
                             kinds_observed: vec![kind],
                         },
@@ -1184,7 +1177,7 @@ mod tests {
 
     #[test]
     fn weather_entities_compresses_old_non_significant_layers() {
-        use graph_core::{CompressionLevel, DefaultEntityWeathering, WeatheringEffect};
+        use graph_core::{CompressionLevel, WeatheringEffect};
 
         // Policy: age >= 1 → Compress, age >= 2 → Skeleton, age >= 3 → Remove
         struct AggressiveWeathering;
@@ -1639,7 +1632,7 @@ mod tests {
         downstream: LocusId,
     }
     impl LocusProgram for RelationshipWriterProgram {
-        fn process(&self, locus: &Locus, incoming: &[Change]) -> Vec<ProposedChange> {
+        fn process(&self, _locus: &Locus, incoming: &[Change]) -> Vec<ProposedChange> {
             // Only act on stimuli.
             if !incoming.iter().all(|c| c.predecessors.is_empty()) {
                 return Vec::new();
@@ -1650,37 +1643,6 @@ mod tests {
                 InfluenceKindId(1),
                 StateVector::from_slice(&[1.0]),
             )]
-        }
-    }
-
-    /// A program that, after receiving an internal change, proposes a
-    /// relationship-subject change to update the incoming relationship's
-    /// state. Finds the relationship by scanning the world — in real usage
-    /// callers would cache the id.
-    struct RelationshipBoosterProgram {
-        upstream: LocusId,
-        boost_value: f32,
-    }
-    impl LocusProgram for RelationshipBoosterProgram {
-        fn process(&self, _locus: &Locus, incoming: &[Change]) -> Vec<ProposedChange> {
-            // Propose a relationship-subject change for each incoming
-            // predecessor change that has a known predecessor. We use a
-            // fixed relationship id placeholder here; the test wires it up.
-            incoming
-                .iter()
-                .filter(|c| !c.predecessors.is_empty())
-                .filter_map(|c| {
-                    // Find the cross-locus predecessor to learn the rel id.
-                    // In the test we just use the relationship id that we
-                    // know was auto-emerged: RelationshipId(0).
-                    let _ = c; // suppress unused
-                    Some(ProposedChange::new(
-                        ChangeSubject::Relationship(graph_core::RelationshipId(0)),
-                        InfluenceKindId(1),
-                        StateVector::from_slice(&[self.boost_value]),
-                    ))
-                })
-                .collect()
         }
     }
 

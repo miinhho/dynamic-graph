@@ -5,14 +5,13 @@
 //! perspective key. The store is indexed by a user-supplied perspective
 //! name so multiple perspectives can coexist.
 
-use std::collections::HashMap;
-
 use graph_core::{Cohere, CohereId};
+use rustc_hash::FxHashMap;
 
 #[derive(Debug, Default, Clone)]
 pub struct CohereStore {
     /// Perspective name → current set of coheres for that perspective.
-    by_perspective: HashMap<String, Vec<Cohere>>,
+    by_perspective: FxHashMap<String, Vec<Cohere>>,
     next_id: u64,
 }
 

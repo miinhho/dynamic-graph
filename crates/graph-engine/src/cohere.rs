@@ -68,8 +68,9 @@ impl CoherePerspective for DefaultCoherePerspective {
         relationships: &RelationshipStore,
         next_id: &mut dyn FnMut() -> graph_core::CohereId,
     ) -> Vec<Cohere> {
-        use std::collections::{HashMap, HashSet, VecDeque};
+        use std::collections::VecDeque;
         use graph_core::Endpoints;
+        use rustc_hash::{FxHashMap, FxHashSet};
 
         let active: Vec<EntityId> = entities.active().map(|e| e.id).collect();
         if active.is_empty() {
@@ -78,7 +79,7 @@ impl CoherePerspective for DefaultCoherePerspective {
 
         // Build bridge map: entity_id -> Vec<entity_id> with
         // total cross-entity activity >= threshold.
-        let mut bridges: HashMap<EntityId, Vec<EntityId>> = HashMap::new();
+        let mut bridges: FxHashMap<EntityId, Vec<EntityId>> = FxHashMap::default();
 
         for &ea in &active {
             for &eb in &active {
@@ -111,7 +112,7 @@ impl CoherePerspective for DefaultCoherePerspective {
         }
 
         // BFS connected components over the bridge graph.
-        let mut visited: HashSet<EntityId> = HashSet::new();
+        let mut visited: FxHashSet<EntityId> = FxHashSet::default();
         let mut coheres: Vec<Cohere> = Vec::new();
 
         for &start in &active {
@@ -168,7 +169,7 @@ impl CoherePerspective for DefaultCoherePerspective {
 mod tests {
     use super::*;
     use graph_core::{
-        BatchId, ChangeId, Entity, EntitySnapshot, Endpoints, InfluenceKindId, LocusId,
+        BatchId, Entity, EntitySnapshot, Endpoints, InfluenceKindId, LocusId,
         Relationship, RelationshipLineage, StateVector,
     };
     use graph_world::{EntityStore, RelationshipStore};
@@ -196,7 +197,7 @@ mod tests {
             state: StateVector::from_slice(&[activity]),
             lineage: RelationshipLineage {
                 created_by: None,
-                last_touched_by: ChangeId(0),
+                last_touched_by: None,
                 change_count: 1,
                 kinds_observed: vec![InfluenceKindId(1)],
             },

@@ -1,9 +1,8 @@
-//! graph-world: in-memory locus store, change log, and the world that
-//! ties them together.
+//! graph-world: in-memory stores and the `World` facade.
 //!
-//! See `docs/redesign.md` for the framing. Higher-layer stores
-//! (Relationship, Entity, Cohere) join `World` as their respective
-//! layers land.
+//! Owns all five layer stores (Locus, Change, Relationship, Entity, Cohere)
+//! and the `World` type that ties them together for the engine. See
+//! `docs/identity.md` for the ontology.
 
 pub mod change_log;
 pub mod cohere_store;

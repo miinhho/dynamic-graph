@@ -1,9 +1,10 @@
 //! graph-core: foundational primitives for the substrate.
 //!
-//! See `docs/redesign.md` for the framing. This crate currently exposes
-//! Layer 0 (Locus) and Layer 1 (Change) plus their ID newtypes and a
-//! plain numeric `StateVector`. Higher-layer types (Relationship, Entity,
-//! Cohere) land in follow-up commits as the substrate is rebuilt.
+//! See `docs/redesign.md` for design rationale and `docs/identity.md`
+//! for the settled ontology. Exposes all five layers:
+//! Layer 0 (Locus), Layer 1 (Change), Layer 2 (Relationship),
+//! Layer 3 (Entity), Layer 4 (Cohere), plus shared support types
+//! (StateVector, stabilization, weathering).
 
 pub mod change;
 pub mod cohere;

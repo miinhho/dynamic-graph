@@ -46,6 +46,19 @@ pub trait EntityWeatheringPolicy: Send + Sync {
     fn effect(&self, layer: &EntityLayer, age_in_batches: u64) -> WeatheringEffect;
 }
 
+/// Strip a `Full` layer's snapshot and return `(coherence, member_count,
+/// transition_kind)`. Shared by `apply_compress` and `apply_skeleton`.
+fn strip_full(layer: &mut EntityLayer) -> (f32, u32, CompressedTransition) {
+    let (coherence, member_count) = layer
+        .snapshot
+        .as_ref()
+        .map(|s| (s.coherence, s.members.len() as u32))
+        .unwrap_or((0.0, 0));
+    let kind = CompressedTransition::from(&layer.transition);
+    layer.snapshot = None;
+    (coherence, member_count, kind)
+}
+
 /// Apply a `Compress` effect to a layer in-place.
 ///
 /// Exposed so callers can compress on demand outside the engine's batch
@@ -53,20 +66,13 @@ pub trait EntityWeatheringPolicy: Send + Sync {
 pub fn apply_compress(layer: &mut EntityLayer) {
     match layer.compression {
         CompressionLevel::Full => {
-            let (coherence, member_count) = layer
-                .snapshot
-                .as_ref()
-                .map(|s| (s.coherence, s.members.len() as u32))
-                .unwrap_or((0.0, 0));
-            let kind = CompressedTransition::from(&layer.transition);
-            layer.snapshot = None;
+            let (coherence, member_count, transition_kind) = strip_full(layer);
             layer.compression = CompressionLevel::Compressed {
                 coherence,
                 member_count,
-                transition_kind: kind,
+                transition_kind,
             };
         }
-        // Already compressed or skeleton — nothing to do.
         CompressionLevel::Compressed { .. } | CompressionLevel::Skeleton { .. } => {}
     }
 }
@@ -78,17 +84,11 @@ pub fn apply_compress(layer: &mut EntityLayer) {
 pub fn apply_skeleton(layer: &mut EntityLayer) {
     match &layer.compression {
         CompressionLevel::Full => {
-            let (coherence, member_count) = layer
-                .snapshot
-                .as_ref()
-                .map(|s| (s.coherence, s.members.len() as u32))
-                .unwrap_or((0.0, 0));
-            let kind = CompressedTransition::from(&layer.transition);
-            layer.snapshot = None;
+            let (coherence, member_count, transition_kind) = strip_full(layer);
             layer.compression = CompressionLevel::Skeleton {
                 coherence,
                 member_count,
-                transition_kind: kind,
+                transition_kind,
             };
         }
         CompressionLevel::Compressed {

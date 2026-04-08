@@ -73,9 +73,9 @@ pub struct BatchMetrics {
 
 impl BatchMetrics {
     /// Build from the changes committed in one batch.
-    pub fn from_changes<'a>(changes: impl Iterator<Item = (&'a graph_core::Change, )>) -> Self {
+    pub fn from_changes<'a>(changes: impl Iterator<Item = &'a graph_core::Change>) -> Self {
         let mut m = Self::default();
-        for (change,) in changes {
+        for change in changes {
             m.change_count += 1;
             let delta_norm = {
                 let before = &change.before;
@@ -299,7 +299,7 @@ mod tests {
             after: StateVector::from_slice(&[3.0, 4.0]),
             batch: BatchId(0),
         };
-        let m = BatchMetrics::from_changes(std::iter::once((&change,)));
+        let m = BatchMetrics::from_changes(std::iter::once(&change));
         // delta norm: ||(3,4) - (0,0)|| = 5
         assert!((m.total_delta_norm - 5.0).abs() < 1e-5);
         // energy: ||(3,4)|| = 5

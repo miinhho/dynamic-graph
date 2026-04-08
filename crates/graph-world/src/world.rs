@@ -11,7 +11,7 @@
 //! threaded into ticks. Keeping the world free of program references
 //! makes snapshots cheap and replay clean.
 
-use graph_core::{BatchId, Change, ChangeId, Locus, LocusId};
+use graph_core::{BatchId, Change, ChangeId, EntityId, EntityLayer, Locus, LocusId, RelationshipId};
 
 use crate::change_log::ChangeLog;
 use crate::cohere_store::CohereStore;
@@ -110,6 +110,44 @@ impl World {
     pub fn advance_batch(&mut self) -> BatchId {
         self.current_batch = BatchId(self.current_batch.0 + 1);
         self.current_batch
+    }
+
+    // ── Query conveniences ────────────────────────────────────────────────
+
+    /// Iterate changes to a locus, newest first. Delegates to
+    /// `ChangeLog::changes_to_locus`; O(k) where k is the number of
+    /// changes targeting this locus.
+    pub fn changes_to_locus(&self, id: LocusId) -> impl Iterator<Item = &Change> {
+        self.log.changes_to_locus(id)
+    }
+
+    /// Iterate changes to a relationship, newest first.
+    pub fn changes_to_relationship(&self, id: RelationshipId) -> impl Iterator<Item = &Change> {
+        self.log.changes_to_relationship(id)
+    }
+
+    /// Direct predecessor changes of `change_id`. Delegates to
+    /// `ChangeLog::predecessors`.
+    pub fn predecessors(&self, change_id: ChangeId) -> impl Iterator<Item = &Change> {
+        self.log.predecessors(change_id)
+    }
+
+    /// All causal ancestors of `change_id` in BFS order. Delegates to
+    /// `ChangeLog::causal_ancestors`.
+    pub fn causal_ancestors(&self, change_id: ChangeId) -> Vec<&Change> {
+        self.log.causal_ancestors(change_id)
+    }
+
+    /// Most recent entity layer at or before `batch`. Delegates to
+    /// `EntityStore::layer_at_batch`.
+    pub fn entity_at_batch(&self, id: EntityId, batch: BatchId) -> Option<&EntityLayer> {
+        self.entities.layer_at_batch(id, batch)
+    }
+
+    /// Returns `true` if `ancestor` is a causal ancestor of `descendant`.
+    /// Delegates to `ChangeLog::is_ancestor_of`.
+    pub fn is_ancestor_of(&self, ancestor: ChangeId, descendant: ChangeId) -> bool {
+        self.log.is_ancestor_of(ancestor, descendant)
     }
 }
 

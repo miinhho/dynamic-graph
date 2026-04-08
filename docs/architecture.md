@@ -296,7 +296,12 @@ This is useful for:
 
 ## 7. Stabilization Strategy
 
-Stability is the most important non-functional requirement.
+> **Note**: This section reflects the Phase 1+2 framing and is now
+> superseded. `identity.md` §3 establishes the correct framing: stability is
+> a **guard rail**, not a goal. The mechanisms below (alpha blending,
+> saturation, trust region, decay) are implemented as `StabilizationConfig`
+> and `AdaptiveGuardRail`; their purpose is to keep dynamics *observable*,
+> not to drive the system toward a fixed point.
 
 The system should combine multiple stabilizers rather than rely on one theorem or heuristic.
 

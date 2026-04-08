@@ -6,13 +6,13 @@
 //! change log by the relationship layer (Layer 2). See
 //! `docs/redesign.md` §3.3.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use graph_core::{Locus, LocusId};
 
 #[derive(Debug, Default, Clone)]
 pub struct LocusStore {
-    loci: HashMap<LocusId, Locus>,
+    loci: FxHashMap<LocusId, Locus>,
 }
 
 impl LocusStore {

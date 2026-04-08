@@ -10,14 +10,13 @@
 //! causal flow is observed for the first time. The store does not
 //! enforce who is allowed to insert; that policy lives in the engine.
 
-use std::collections::HashMap;
-
 use graph_core::{EndpointKey, Relationship, RelationshipId, RelationshipKindId};
+use rustc_hash::FxHashMap;
 
 #[derive(Debug, Default, Clone)]
 pub struct RelationshipStore {
-    by_id: HashMap<RelationshipId, Relationship>,
-    by_key: HashMap<(EndpointKey, RelationshipKindId), RelationshipId>,
+    by_id: FxHashMap<RelationshipId, Relationship>,
+    by_key: FxHashMap<(EndpointKey, RelationshipKindId), RelationshipId>,
     next_id: u64,
 }
 
@@ -95,7 +94,7 @@ impl RelationshipStore {
 mod tests {
     use super::*;
     use graph_core::{
-        ChangeId, Endpoints, InfluenceKindId, LocusId, RelationshipLineage, StateVector,
+        Endpoints, InfluenceKindId, LocusId, RelationshipLineage, StateVector,
     };
 
     fn rel(id: RelationshipId, from: u64, to: u64, kind: u64) -> Relationship {
@@ -109,7 +108,7 @@ mod tests {
             state: StateVector::from_slice(&[0.0]),
             lineage: RelationshipLineage {
                 created_by: None,
-                last_touched_by: ChangeId(0),
+                last_touched_by: None,
                 change_count: 0,
                 kinds_observed: vec![InfluenceKindId(kind)],
             },

@@ -13,10 +13,9 @@
 //! sub-kinds (e.g., "thermal radiation" vs "thermal conduction") is
 //! deferred until a real use case asks for it.
 //!
-//! Relationships are themselves entity-like: they have stable IDs, they
-//! evolve, and they will eventually become valid `ChangeSubject`s in
-//! their own right (added when relationship-state changes need to feed
-//! the higher emergent layers).
+//! Relationships are entity-like: they have stable IDs, they evolve, and
+//! they are valid `ChangeSubject`s — relationship-subject changes update
+//! their state and feed higher emergent layers.
 
 use crate::ids::{ChangeId, InfluenceKindId, LocusId};
 use crate::state::StateVector;
@@ -79,13 +78,18 @@ pub enum EndpointKey {
 /// been over the run. The framework consumes this both for the
 /// relationship's own state evolution and as one of the inputs to the
 /// (later) entity-emergence perspective.
+///
+/// Both `created_by` and `last_touched_by` are `None` for relationships
+/// created via `StructuralProposal` or test helpers. `last_touched_by`
+/// is filled in by the first engine change that touches the relationship
+/// after its creation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RelationshipLineage {
-    /// The change that caused this relationship to first emerge.
-    /// `None` for relationships created via `StructuralProposal` or in
-    /// test helpers (no single originating change).
+    /// The change that first auto-emerged this relationship; `None` if
+    /// created structurally (no single originating change).
     pub created_by: Option<ChangeId>,
-    pub last_touched_by: ChangeId,
+    /// The most recent engine change that touched this relationship.
+    pub last_touched_by: Option<ChangeId>,
     pub change_count: u64,
     /// Influence kinds the engine has seen flow through this
     /// relationship. Often a single entry, but kept open in case the

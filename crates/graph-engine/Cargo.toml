@@ -6,14 +6,22 @@ version.workspace = true
 
 [dependencies]
 graph-core.workspace = true
-graph-tx.workspace = true
 graph-world.workspace = true
+rustc-hash.workspace = true
 
 [dev-dependencies]
 graph-testkit.workspace = true
+criterion.workspace = true
 
 [lib]
 path = "src/lib.rs"
 
 [[example]]
 name = "signal_propagation"
+
+[[example]]
+name = "ring_dynamics"
+
+[[bench]]
+name = "engine"
+harness = false

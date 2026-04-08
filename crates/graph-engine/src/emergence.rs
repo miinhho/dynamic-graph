@@ -10,7 +10,7 @@
 //! EmergencePerspective>` safely alongside parallel locus processing.
 
 use graph_core::{
-    BatchId, EmergenceProposal, Entity, EntityId, EntityLayer, EntitySnapshot, EntityStatus,
+    BatchId, EmergenceProposal, Entity, EntityId, EntityLayer, EntitySnapshot,
     LayerTransition, LocusId, Relationship,
 };
 use graph_world::{EntityStore, RelationshipStore};
@@ -129,10 +129,11 @@ fn find_connected_components(
     store: &RelationshipStore,
     threshold: f32,
 ) -> Vec<Vec<LocusId>> {
-    use std::collections::{HashMap, HashSet, VecDeque};
+    use std::collections::VecDeque;
+    use rustc_hash::{FxHashMap, FxHashSet};
 
     // Build undirected adjacency (direction irrelevant for clustering).
-    let mut adj: HashMap<LocusId, Vec<LocusId>> = HashMap::new();
+    let mut adj: FxHashMap<LocusId, Vec<LocusId>> = FxHashMap::default();
     for rel in store.iter() {
         if rel.activity() < threshold {
             continue;
@@ -143,7 +144,7 @@ fn find_connected_components(
     }
 
     let all_loci: Vec<LocusId> = adj.keys().copied().collect();
-    let mut visited: HashSet<LocusId> = HashSet::new();
+    let mut visited: FxHashSet<LocusId> = FxHashSet::default();
     let mut components: Vec<Vec<LocusId>> = Vec::new();
 
     for &start in &all_loci {
@@ -265,7 +266,7 @@ fn membership_delta(entity: &Entity, new: &EntitySnapshot) -> LayerTransition {
 mod tests {
     use super::*;
     use graph_core::{
-        ChangeId, Endpoints, InfluenceKindId, LocusId, RelationshipLineage, StateVector,
+        Endpoints, InfluenceKindId, LocusId, RelationshipLineage, StateVector,
     };
     use graph_world::{RelationshipStore, EntityStore};
     use graph_core::Relationship;
@@ -287,7 +288,7 @@ mod tests {
             state: StateVector::from_slice(&[activity]),
             lineage: RelationshipLineage {
                 created_by: None,
-                last_touched_by: ChangeId(0),
+                last_touched_by: None,
                 change_count: 1,
                 kinds_observed: vec![InfluenceKindId(1)],
             },

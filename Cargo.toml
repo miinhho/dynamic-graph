@@ -3,7 +3,6 @@ members = [
     "crates/graph-core",
     "crates/graph-world",
     "crates/graph-engine",
-    "crates/graph-tx",
     "crates/graph-testkit",
 ]
 resolver = "2"
@@ -17,6 +16,6 @@ version = "0.1.0"
 graph-core = { path = "crates/graph-core" }
 graph-world = { path = "crates/graph-world" }
 graph-engine = { path = "crates/graph-engine" }
-graph-tx = { path = "crates/graph-tx" }
 graph-testkit = { path = "crates/graph-testkit" }
 rustc-hash = "2.1.1"
+criterion = { version = "0.6", features = ["html_reports"] }

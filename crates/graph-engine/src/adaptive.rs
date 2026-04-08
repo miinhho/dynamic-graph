@@ -26,10 +26,10 @@
 //! let alpha = guard.effective_alpha(kind_id, base_alpha);
 //! ```
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use graph_core::InfluenceKindId;
+use rustc_hash::FxHashMap;
 
 use crate::regime::DynamicsRegime;
 
@@ -68,14 +68,14 @@ impl Default for AdaptiveConfig {
 /// via `observe` or `effective_alpha`.
 pub struct AdaptiveGuardRail {
     config: AdaptiveConfig,
-    scales: HashMap<InfluenceKindId, AtomicU32>,
+    scales: FxHashMap<InfluenceKindId, AtomicU32>,
 }
 
 impl AdaptiveGuardRail {
     pub fn new(config: AdaptiveConfig) -> Self {
         Self {
             config,
-            scales: HashMap::new(),
+            scales: FxHashMap::default(),
         }
     }
 

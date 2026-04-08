@@ -161,8 +161,8 @@ These supersede the old §6 ("Resolved questions from architecture.md §17").
 | Influence kinds | Per-kind `InfluenceKindId` with separate decay, stabilization config, and regime tracking |
 | Relationship kind | `RelationshipKindId = InfluenceKindId` (same dimension, resolved O8) |
 | Cross-platform determinism | Bit-identical on the same platform/toolchain; cross-platform not promised |
-| Relationship subject in changes | Deferred — `ChangeSubject` is currently `Locus(LocusId)` only |
-| Structural mutation (topology change) | Between ticks only, for now |
+| Relationship subject in changes | **Done** — `ChangeSubject::Relationship(RelationshipId)` |
+| Structural mutation (topology change) | **Done** — `StructuralProposal` (CreateRelationship / DeleteRelationship) emitted per batch |
 
 ## 7. Phase 1+2 retrospective
 
@@ -178,32 +178,30 @@ These supersede the old §6 ("Resolved questions from architecture.md §17").
 ## 8. Roadmap (post-redesign)
 
 The substrate redesign is **complete**. All five layers (Locus, Change,
-Relationship, Entity, Cohere) are implemented across the five crates
-(`graph-core`, `graph-world`, `graph-engine`, `graph-tx`, `graph-testkit`).
+Relationship, Entity, Cohere) are implemented across four crates
+(`graph-core`, `graph-world`, `graph-engine`, `graph-testkit`).
 
-### Near-term
+### Completed
 
-- **Weathering** — entity layer compression and change log trimming.
-  `EntityLayer` already has `CompressionLevel`; the engine needs a
-  `WeatheringPolicy` trait and a default implementation.
-- **Relationship subjects in changes** — currently `ChangeSubject` is
-  `Locus(LocusId)` only. Lifting this restriction enables richer
-  higher-layer programs.
+- **Weathering** ✓ — `EntityWeatheringPolicy` trait + `DefaultEntityWeathering`;
+  entity layer compression (Full → Compressed → Skeleton) and change log
+  trimming via `ChangeLog::trim_before_batch`.
+- **Relationship subjects in changes** ✓ — `ChangeSubject::Relationship(RelationshipId)`.
+- **Edge plasticity** ✓ — `PlasticityConfig` (Hebbian: `Δweight = η × pre × post`)
+  on `InfluenceKindConfig`; opt-in per influence kind.
+- **Structural mutation** ✓ — `StructuralProposal` (CreateRelationship /
+  DeleteRelationship) collected from `LocusProgram::structural_proposals` and
+  applied at end-of-batch.
+- **Causal lineage queries** ✓ — full query surface on `ChangeLog` and `World`:
+  `predecessors`, `causal_ancestors` (BFS), `is_ancestor_of` (DFS with
+  ID-based pruning); reverse indices (`by_locus`, `by_relationship`,
+  `by_batch`) make subject/batch queries O(k); `get()` is O(1) via ChangeId
+  density invariant.
 
-### Medium-term
+### Open
 
-- **Edge plasticity** — relationships adapt their parameters (weight,
-  attenuation) based on signal flow. Hebbian-style learning as the first
-  kernel. The stabilization guard rail is reused on the relationship
-  parameters themselves.
-- **Structural mutation** — relationship creation/deletion becomes part of
-  tick output. Programs can issue topology-change proposals alongside state
-  changes.
-
-### Longer-term
-
-- **Causal lineage queries** — a query API over the change DAG once the log
-  format and topology mutation semantics are stable.
+No open roadmap items at this time. The substrate is feature-complete across
+all five layers. Future work is driven by measurement on real workloads.
 
 ## 9. What this document does *not* do
 

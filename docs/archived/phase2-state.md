@@ -1,4 +1,10 @@
-# Current Engine State
+# Current Engine State (Archived — Phase 1+2)
+
+> **This document is archived.** It describes the Phase 1+2 engine that was
+> replaced by the substrate redesign. See `docs/identity.md` and
+> `docs/redesign.md` for the current architecture.
+
+---
 
 ## 1. Scope
 

@@ -155,6 +155,35 @@ pub fn accumulator_world(gain: f32) -> (World, LocusKindRegistry, InfluenceKindR
     (world, loci_reg, inf_reg)
 }
 
+/// A ring of `n` loci: L0 → L1 → … → L(n-1) → L0.
+///
+/// Each locus runs `ForwardProgram` pointing to the next locus (mod n),
+/// scaled by `gain`. With `gain < 1` the ring attenuates and quiesces;
+/// with `gain ≥ 1` it diverges. Useful for testing: cyclic relationship
+/// emergence, Hebbian weight accumulation over multiple ticks, and
+/// feedback-driven entity recognition.
+pub fn ring_world(n: u64, gain: f32) -> (World, LocusKindRegistry, InfluenceKindRegistry) {
+    assert!(n >= 2, "ring must have at least 2 loci");
+    let mut world = World::new();
+    let mut loci_reg = LocusKindRegistry::new();
+    let inf_reg = base_influence_registry();
+
+    for i in 0..n {
+        let locus_id = LocusId(i);
+        let kind_id = locus_kind(locus_id);
+        world.insert_locus(Locus::new(locus_id, kind_id, StateVector::zeros(1)));
+        loci_reg.insert(
+            kind_id,
+            Box::new(ForwardProgram {
+                downstream: LocusId((i + 1) % n),
+                gain,
+            }),
+        );
+    }
+
+    (world, loci_reg, inf_reg)
+}
+
 /// The locus id of the first (or only) locus in any testkit fixture.
 pub const FIRST_LOCUS: LocusId = LocusId(0);
 

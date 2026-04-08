@@ -15,9 +15,8 @@
 //! and returns `None` in release builds — debug-only panics are how O6
 //! mitigates the loss of compile-time type safety.
 
-use std::collections::HashMap;
-
 use graph_core::{InfluenceKindId, LocusKindId, LocusProgram, StabilizationConfig};
+use rustc_hash::FxHashMap;
 
 /// Hebbian plasticity parameters for one influence kind.
 ///
@@ -55,7 +54,7 @@ impl Default for PlasticityConfig {
 
 impl PlasticityConfig {
     /// True when plasticity is effectively enabled for this config.
-    pub fn is_active(&self) -> bool {
+    pub(crate) fn is_active(&self) -> bool {
         self.learning_rate > 0.0
     }
 }
@@ -115,7 +114,7 @@ impl InfluenceKindConfig {
 /// Owns the per-locus-kind program implementations.
 #[derive(Default)]
 pub struct LocusKindRegistry {
-    programs: HashMap<LocusKindId, Box<dyn LocusProgram>>,
+    programs: FxHashMap<LocusKindId, Box<dyn LocusProgram>>,
 }
 
 impl LocusKindRegistry {
@@ -159,7 +158,7 @@ impl LocusKindRegistry {
 /// classifier, and relationship layer.
 #[derive(Debug, Default, Clone)]
 pub struct InfluenceKindRegistry {
-    configs: HashMap<InfluenceKindId, InfluenceKindConfig>,
+    configs: FxHashMap<InfluenceKindId, InfluenceKindConfig>,
 }
 
 impl InfluenceKindRegistry {
@@ -181,6 +180,14 @@ impl InfluenceKindRegistry {
         let found = self.get(kind);
         debug_assert!(found.is_some(), "unregistered InfluenceKindId: {kind:?}");
         found
+    }
+
+    pub fn get_mut(&mut self, kind: InfluenceKindId) -> Option<&mut InfluenceKindConfig> {
+        self.configs.get_mut(&kind)
+    }
+
+    pub fn kinds(&self) -> impl Iterator<Item = InfluenceKindId> + '_ {
+        self.configs.keys().copied()
     }
 
     pub fn len(&self) -> usize {

@@ -8,13 +8,12 @@
 //! mark an entity dormant flips its `status` field; the record remains
 //! in the store indefinitely.
 
-use std::collections::HashMap;
-
-use graph_core::{Entity, EntityId, EntityStatus};
+use graph_core::{BatchId, Entity, EntityId, EntityLayer, EntityStatus};
+use rustc_hash::FxHashMap;
 
 #[derive(Debug, Default, Clone)]
 pub struct EntityStore {
-    by_id: HashMap<EntityId, Entity>,
+    by_id: FxHashMap<EntityId, Entity>,
     next_id: u64,
 }
 
@@ -71,6 +70,17 @@ impl EntityStore {
     pub fn active_count(&self) -> usize {
         self.by_id.values().filter(|e| e.status == EntityStatus::Active).count()
     }
+
+    /// Return the most recent layer deposited at or before `batch`, or `None`
+    /// if the entity does not exist or had no layers by that point.
+    pub fn layer_at_batch(&self, id: EntityId, batch: BatchId) -> Option<&EntityLayer> {
+        let entity = self.get(id)?;
+        // Layers are stored oldest-first (monotonically increasing batch).
+        // partition_point gives the index of the first layer with batch > target,
+        // so the layer immediately before that is the most recent one at or before target.
+        let pos = entity.layers.partition_point(|l| l.batch <= batch);
+        entity.layers.get(pos.wrapping_sub(1))
+    }
 }
 
 #[cfg(test)]
@@ -104,6 +114,33 @@ mod tests {
         let id = store.mint_id();
         store.insert(born(id));
         store.insert(born(id));
+    }
+
+    #[test]
+    fn layer_at_batch_returns_correct_snapshot() {
+        let mut store = EntityStore::new();
+        let id = store.mint_id();
+        store.insert(born(id));
+        // batch 0: Born layer
+        // deposit a second layer at batch 5
+        let snap2 = EntitySnapshot {
+            members: vec![LocusId(id.0), LocusId(99)],
+            member_relationships: vec![],
+            coherence: 0.5,
+        };
+        store.get_mut(id).unwrap().deposit(
+            BatchId(5),
+            snap2,
+            LayerTransition::MembershipDelta { added: vec![LocusId(99)], removed: vec![] },
+        );
+        // query before second layer
+        let layer = store.layer_at_batch(id, BatchId(3)).unwrap();
+        assert_eq!(layer.batch, BatchId(0));
+        // query at or after second layer
+        let layer = store.layer_at_batch(id, BatchId(5)).unwrap();
+        assert_eq!(layer.batch, BatchId(5));
+        // query before entity existed
+        assert!(store.layer_at_batch(id, BatchId(0)).is_some());
     }
 
     #[test]

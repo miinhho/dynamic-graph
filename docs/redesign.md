@@ -1,14 +1,12 @@
 # Substrate Redesign
 
-This document captures the new ontology we are committing to after a deep
+This document captures the new ontology committed to after a deep
 re-examination of what this engine is for. It supersedes the substrate
-implied by phase 1+2 of `architecture.md`, while preserving the *guard rail*
-framing established in `identity.md`.
+implied by phase 1+2 of `architecture.md`.
 
-When this document and `architecture.md` disagree, **this document wins**.
-When this document and `identity.md` disagree about anything outside of guard
-rail framing, **this document wins**. `identity.md` will be updated to fold
-this in once the substrate stabilizes.
+The decisions here have been **folded into `identity.md`**, which is now the
+single source of truth. Read this document for the original reasoning and
+design rationale; read `identity.md` for the settled resolution.
 
 ## 1. Why we are redoing the substrate
 
