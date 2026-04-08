@@ -81,6 +81,11 @@ impl World {
         &self.log
     }
 
+    /// Mutable access to the change log. Used by the trim pass.
+    pub fn log_mut(&mut self) -> &mut ChangeLog {
+        &mut self.log
+    }
+
     pub fn current_batch(&self) -> BatchId {
         self.current_batch
     }

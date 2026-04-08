@@ -285,6 +285,28 @@ impl Engine {
         apply_proposals(world, proposals, batch);
     }
 
+    /// Trim the change log, dropping all changes in batches strictly older
+    /// than `current_batch - retention_batches`.
+    ///
+    /// On-demand, like `weather_entities`. A typical cadence is to call
+    /// this immediately after `weather_entities` so that compressed layers
+    /// no longer hold live predecessor-id references into the trimmed range.
+    ///
+    /// ## Parameters
+    ///
+    /// - `retention_batches` — how many recent batches to keep. E.g. `50`
+    ///   keeps the last 50 batches of changes. If `retention_batches` is
+    ///   larger than `current_batch`, the call is a no-op (nothing to trim).
+    ///
+    /// ## Returns
+    ///
+    /// The number of change records removed.
+    pub fn trim_change_log(&self, world: &mut World, retention_batches: u64) -> usize {
+        let current = world.current_batch().0;
+        let retain_from = graph_core::BatchId(current.saturating_sub(retention_batches));
+        world.log_mut().trim_before_batch(retain_from)
+    }
+
     /// Apply a weathering policy to every entity's sediment layer stack.
     ///
     /// On-demand — the caller decides when to run weathering. A typical
@@ -1127,5 +1149,61 @@ mod tests {
                 "both layers should still be Full"
             );
         }
+    }
+
+    // ─── Change log trim tests ─────────────────────────────────────────────
+
+    #[test]
+    fn trim_change_log_removes_old_batches() {
+        // After a tick that produces 2 batches (batches 0 and 1), current_batch=2.
+        // Trimming with retention=1 should keep only batch 1.
+        let (mut world, loci, influences) = setup();
+        let engine = Engine::default();
+        let stimulus = ProposedChange::new(
+            ChangeSubject::Locus(LocusId(1)),
+            InfluenceKindId(1),
+            StateVector::from_slice(&[1.0, 1.0]),
+        );
+        engine.tick(&mut world, &loci, &influences, vec![stimulus]);
+        // log has 2 changes: batch 0 (stimulus) and batch 1 (damped response).
+        assert_eq!(world.log().len(), 2);
+
+        let removed = engine.trim_change_log(&mut world, 1);
+        assert_eq!(removed, 1, "batch 0 change removed");
+        assert_eq!(world.log().len(), 1);
+        // The remaining change must be in batch 1.
+        assert!(world.log().iter().all(|c| c.batch.0 >= 1));
+    }
+
+    #[test]
+    fn trim_change_log_zero_retention_removes_all() {
+        let (mut world, loci, influences) = setup();
+        let engine = Engine::default();
+        let stimulus = ProposedChange::new(
+            ChangeSubject::Locus(LocusId(1)),
+            InfluenceKindId(1),
+            StateVector::from_slice(&[1.0, 1.0]),
+        );
+        engine.tick(&mut world, &loci, &influences, vec![stimulus]);
+        // current_batch=2, retain_from=2. No change has batch >= 2 (they are 0 and 1).
+        let removed = engine.trim_change_log(&mut world, 0);
+        assert_eq!(removed, 2);
+        assert_eq!(world.log().len(), 0);
+    }
+
+    #[test]
+    fn trim_change_log_large_retention_is_noop() {
+        let (mut world, loci, influences) = setup();
+        let engine = Engine::default();
+        let stimulus = ProposedChange::new(
+            ChangeSubject::Locus(LocusId(1)),
+            InfluenceKindId(1),
+            StateVector::from_slice(&[1.0, 0.0]),
+        );
+        engine.tick(&mut world, &loci, &influences, vec![stimulus]);
+        let before = world.log().len();
+        let removed = engine.trim_change_log(&mut world, 9999);
+        assert_eq!(removed, 0);
+        assert_eq!(world.log().len(), before);
     }
 }

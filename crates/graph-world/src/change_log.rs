@@ -60,6 +60,22 @@ impl ChangeLog {
             ChangeSubject::Locus(id) => id == locus,
         })
     }
+
+    /// Remove all changes with a batch index strictly older than
+    /// `retain_from_batch`.
+    ///
+    /// Returns the number of changes removed. This is a destructive,
+    /// irreversible operation — callers should ensure that no live
+    /// predecessor references point into the trimmed range. The engine
+    /// enforces this by requiring callers to run `trim_change_log` only
+    /// after `weather_entities` (which strips predecessor id lists from
+    /// compressed layers) or in workloads where old predecessor ids are
+    /// never queried.
+    pub fn trim_before_batch(&mut self, retain_from_batch: BatchId) -> usize {
+        let before = self.changes.len();
+        self.changes.retain(|c| c.batch >= retain_from_batch);
+        before - self.changes.len()
+    }
 }
 
 #[cfg(test)]
@@ -97,5 +113,30 @@ mod tests {
         log.append(change(3, 10, 1));
         let to_10: Vec<_> = log.changes_to_locus(LocusId(10)).map(|c| c.id.0).collect();
         assert_eq!(to_10, vec![3, 1]);
+    }
+
+    #[test]
+    fn trim_before_batch_removes_older_entries() {
+        let mut log = ChangeLog::new();
+        log.append(change(1, 10, 0));
+        log.append(change(2, 11, 0));
+        log.append(change(3, 10, 1));
+        log.append(change(4, 11, 2));
+
+        let removed = log.trim_before_batch(BatchId(1));
+        assert_eq!(removed, 2, "two entries in batch 0 removed");
+        assert_eq!(log.len(), 2);
+        let remaining_batches: Vec<u64> = log.iter().map(|c| c.batch.0).collect();
+        assert!(remaining_batches.iter().all(|&b| b >= 1));
+    }
+
+    #[test]
+    fn trim_before_batch_keeps_all_when_retain_is_zero() {
+        let mut log = ChangeLog::new();
+        log.append(change(1, 10, 0));
+        log.append(change(2, 10, 5));
+        let removed = log.trim_before_batch(BatchId(0));
+        assert_eq!(removed, 0);
+        assert_eq!(log.len(), 2);
     }
 }

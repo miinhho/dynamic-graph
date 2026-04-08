@@ -136,3 +136,20 @@ pub fn assert_relationship_count(world: &World, expected: usize) {
         "expected {expected} relationships, found {actual}"
     );
 }
+
+/// Panics if the change log contains any change in a batch older than
+/// `retain_from_batch`.
+///
+/// Use after `Engine::trim_change_log` to verify that the trim ran
+/// correctly.
+pub fn assert_log_bounded(world: &World, retain_from_batch: u64) {
+    for change in world.log().iter() {
+        assert!(
+            change.batch.0 >= retain_from_batch,
+            "change {:?} is in batch {} which is older than retention boundary {}",
+            change.id,
+            change.batch.0,
+            retain_from_batch
+        );
+    }
+}
