@@ -1,12 +1,5 @@
-mod index;
-mod metrics;
-mod query;
-mod selector;
-mod snapshot;
-mod world;
-
-pub use metrics::{WorldMetrics, metrics};
-pub use query::{ChannelQuery, EntityProjection, EntityQuery, SnapshotQuery, explicit_channel_ids};
-pub use selector::{EntitySelector, ResolvedSelection, SelectorMode};
-pub use snapshot::WorldSnapshot;
-pub use world::{CommitConflict, World};
+//! graph-world: in-memory locus store and snapshot views.
+//!
+//! Cleared in preparation for the redesign described in `docs/redesign.md`.
+//! The new world holds Locus state plus the Change log that downstream
+//! emergent layers consume; types land in follow-up commits.

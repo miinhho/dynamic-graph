@@ -6,15 +6,9 @@ version.workspace = true
 
 [dependencies]
 graph-core.workspace = true
-rustc-hash.workspace = true
 
 [dev-dependencies]
-criterion.workspace = true
 graph-testkit.workspace = true
 
 [lib]
 path = "src/lib.rs"
-
-[[bench]]
-name = "query_bench"
-harness = false

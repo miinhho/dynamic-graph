@@ -19,7 +19,3 @@ graph-world = { path = "crates/graph-world" }
 graph-engine = { path = "crates/graph-engine" }
 graph-tx = { path = "crates/graph-tx" }
 graph-testkit = { path = "crates/graph-testkit" }
-criterion = "0.5.1"
-rustc-hash = "2.1.1"
-rayon = "1.10.0"
-smallvec = "1.13.2"
