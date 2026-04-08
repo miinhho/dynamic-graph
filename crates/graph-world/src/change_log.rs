@@ -58,6 +58,19 @@ impl ChangeLog {
     pub fn changes_to_locus(&self, locus: LocusId) -> impl Iterator<Item = &Change> {
         self.changes.iter().rev().filter(move |c| match c.subject {
             ChangeSubject::Locus(id) => id == locus,
+            ChangeSubject::Relationship(_) => false,
+        })
+    }
+
+    /// Iterate the changes whose subject is a given relationship, newest
+    /// first. Analogous to `changes_to_locus`.
+    pub fn changes_to_relationship(
+        &self,
+        rel: graph_core::RelationshipId,
+    ) -> impl Iterator<Item = &Change> {
+        self.changes.iter().rev().filter(move |c| match c.subject {
+            ChangeSubject::Relationship(id) => id == rel,
+            ChangeSubject::Locus(_) => false,
         })
     }
 

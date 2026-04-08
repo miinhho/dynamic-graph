@@ -118,73 +118,102 @@ impl Engine {
                     derived_predecessors,
                 } = pending_change;
 
-                let ChangeSubject::Locus(locus_id) = proposed.subject;
-
-                // The before-state is the locus's current state at the
-                // moment of commit; the after-state was supplied by the
-                // proposer (stimulus or program).
-                let before = world
-                    .locus(locus_id)
-                    .map(|l| l.state.clone())
-                    .unwrap_or_default();
-
                 let mut predecessors = derived_predecessors;
                 predecessors.extend(proposed.extra_predecessors.iter().copied());
 
                 let id = world.mint_change_id();
                 let kind = proposed.kind;
 
-                // Resolve cross-locus predecessors *before* moving the
-                // change into the log: we need to read the predecessor
-                // changes' subjects, and we'll mutate the relationship
-                // store next, so the borrows can't overlap.
-                let cross_locus_preds: Vec<LocusId> = predecessors
-                    .iter()
-                    .filter_map(|pid| world.log().get(*pid))
-                    .filter_map(|pred| {
-                        let ChangeSubject::Locus(pl) = pred.subject;
-                        (pl != locus_id).then_some(pl)
-                    })
-                    .collect();
+                match proposed.subject {
+                    ChangeSubject::Locus(locus_id) => {
+                        // The before-state is the locus's current state at the
+                        // moment of commit; the after-state was supplied by the
+                        // proposer (stimulus or program).
+                        let before = world
+                            .locus(locus_id)
+                            .map(|l| l.state.clone())
+                            .unwrap_or_default();
 
-                // Apply the kind's guard rail before committing. The
-                // stabilized value is what actually lands on the locus
-                // and in the change record's `after` field — both the
-                // state and the log must agree on what was committed.
-                let stabilized_after = match influence_registry.get(kind) {
-                    Some(cfg) => cfg.stabilization.stabilize(&before, proposed.after),
-                    None => proposed.after,
-                };
+                        // Resolve cross-locus predecessors *before* moving the
+                        // change into the log: we need to read the predecessor
+                        // changes' subjects, and we'll mutate the relationship
+                        // store next, so the borrows can't overlap.
+                        let cross_locus_preds: Vec<LocusId> = predecessors
+                            .iter()
+                            .filter_map(|pid| world.log().get(*pid))
+                            .filter_map(|pred| match pred.subject {
+                                ChangeSubject::Locus(pl) => (pl != locus_id).then_some(pl),
+                                ChangeSubject::Relationship(_) => None,
+                            })
+                            .collect();
 
-                let change = Change {
-                    id,
-                    subject: ChangeSubject::Locus(locus_id),
-                    kind,
-                    predecessors,
-                    before,
-                    after: stabilized_after.clone(),
-                    batch,
-                };
+                        // Apply the kind's guard rail before committing.
+                        let stabilized_after = match influence_registry.get(kind) {
+                            Some(cfg) => cfg.stabilization.stabilize(&before, proposed.after),
+                            None => proposed.after,
+                        };
 
-                // Apply the state change to the locus, then record the
-                // change in the log. Order matters: state must reflect
-                // the change before any program runs against it.
-                if let Some(locus) = world.locus_mut(locus_id) {
-                    locus.state = stabilized_after;
-                }
-                world.append_change(change);
+                        let change = Change {
+                            id,
+                            subject: ChangeSubject::Locus(locus_id),
+                            kind,
+                            predecessors,
+                            before,
+                            after: stabilized_after.clone(),
+                            batch,
+                        };
 
-                // Auto-emerge or update a directed relationship for
-                // each cross-locus predecessor. Per docs/redesign.md
-                // §3.3, observing "change at A precedes change at B of
-                // kind K" *is* a relationship of kind K from A to B.
-                for from_locus in cross_locus_preds {
-                    auto_emerge_relationship(world, from_locus, locus_id, kind, id);
-                }
+                        // Apply the state change to the locus, then record.
+                        if let Some(locus) = world.locus_mut(locus_id) {
+                            locus.state = stabilized_after;
+                        }
+                        world.append_change(change);
 
-                committed_ids_by_locus.entry(locus_id).or_default().push(id);
-                if !affected_loci.contains(&locus_id) {
-                    affected_loci.push(locus_id);
+                        // Auto-emerge or update a directed relationship for
+                        // each cross-locus predecessor.
+                        for from_locus in cross_locus_preds {
+                            auto_emerge_relationship(world, from_locus, locus_id, kind, id);
+                        }
+
+                        committed_ids_by_locus.entry(locus_id).or_default().push(id);
+                        if !affected_loci.contains(&locus_id) {
+                            affected_loci.push(locus_id);
+                        }
+                    }
+                    ChangeSubject::Relationship(rel_id) => {
+                        // Relationship-subject change: update the relationship's
+                        // state and record in the log. No program dispatch, no
+                        // auto-emerge (that path is locus→locus only).
+                        let before = world
+                            .relationships()
+                            .get(rel_id)
+                            .map(|r| r.state.clone())
+                            .unwrap_or_default();
+
+                        let stabilized_after = match influence_registry.get(kind) {
+                            Some(cfg) => cfg.stabilization.stabilize(&before, proposed.after),
+                            None => proposed.after,
+                        };
+
+                        let change = Change {
+                            id,
+                            subject: ChangeSubject::Relationship(rel_id),
+                            kind,
+                            predecessors,
+                            before,
+                            after: stabilized_after.clone(),
+                            batch,
+                        };
+
+                        if let Some(rel) = world.relationships_mut().get_mut(rel_id) {
+                            rel.state = stabilized_after;
+                            rel.lineage.last_touched_by = id;
+                            rel.lineage.change_count += 1;
+                        }
+                        world.append_change(change);
+                        // Relationship changes are not added to
+                        // committed_ids_by_locus — no program runs.
+                    }
                 }
                 result.changes_committed += 1;
             }
@@ -1149,6 +1178,224 @@ mod tests {
                 "both layers should still be Full"
             );
         }
+    }
+
+    // ─── ChangeSubject::Relationship tests ────────────────────────────────
+
+    /// A program that, after receiving a stimulus, looks for a relationship
+    /// between its locus (L1) and L2, and if found proposes a change
+    /// directly on that relationship to set its activity to a fixed value.
+    struct RelationshipWriterProgram {
+        downstream: LocusId,
+    }
+    impl LocusProgram for RelationshipWriterProgram {
+        fn process(&self, locus: &Locus, incoming: &[Change]) -> Vec<ProposedChange> {
+            // Only act on stimuli.
+            if !incoming.iter().all(|c| c.predecessors.is_empty()) {
+                return Vec::new();
+            }
+            // Forward the signal so a relationship auto-emerges.
+            vec![ProposedChange::new(
+                ChangeSubject::Locus(self.downstream),
+                InfluenceKindId(1),
+                StateVector::from_slice(&[1.0]),
+            )]
+        }
+    }
+
+    /// A program that, after receiving an internal change, proposes a
+    /// relationship-subject change to update the incoming relationship's
+    /// state. Finds the relationship by scanning the world — in real usage
+    /// callers would cache the id.
+    struct RelationshipBoosterProgram {
+        upstream: LocusId,
+        boost_value: f32,
+    }
+    impl LocusProgram for RelationshipBoosterProgram {
+        fn process(&self, _locus: &Locus, incoming: &[Change]) -> Vec<ProposedChange> {
+            // Propose a relationship-subject change for each incoming
+            // predecessor change that has a known predecessor. We use a
+            // fixed relationship id placeholder here; the test wires it up.
+            incoming
+                .iter()
+                .filter(|c| !c.predecessors.is_empty())
+                .filter_map(|c| {
+                    // Find the cross-locus predecessor to learn the rel id.
+                    // In the test we just use the relationship id that we
+                    // know was auto-emerged: RelationshipId(0).
+                    let _ = c; // suppress unused
+                    Some(ProposedChange::new(
+                        ChangeSubject::Relationship(graph_core::RelationshipId(0)),
+                        InfluenceKindId(1),
+                        StateVector::from_slice(&[self.boost_value]),
+                    ))
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn relationship_subject_change_lands_in_log_and_updates_state() {
+        // Topology: L1 (RelationshipWriterProgram -> L2) and L2 (SinkProgram).
+        // First tick: stimulus on L1 → L1 forwards to L2 → relationship L1→L2
+        //   auto-emerges with activity 1.0.
+        // Second tick: we inject a ProposedChange targeting RelationshipId(0)
+        //   directly and verify it updates the relationship state and appears
+        //   in the log.
+        let mut world = World::new();
+        world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+        world.insert_locus(Locus::new(LocusId(2), LocusKindId(2), StateVector::zeros(1)));
+        let mut loci = LocusKindRegistry::new();
+        loci.insert(LocusKindId(1), Box::new(RelationshipWriterProgram { downstream: LocusId(2) }));
+        loci.insert(LocusKindId(2), Box::new(SinkProgram));
+        let mut influences = InfluenceKindRegistry::new();
+        influences.insert(InfluenceKindId(1), crate::registry::InfluenceKindConfig::new("t"));
+
+        let engine = Engine::default();
+        // Tick 1: establish the relationship via cross-locus flow.
+        engine.tick(
+            &mut world,
+            &loci,
+            &influences,
+            vec![ProposedChange::new(
+                ChangeSubject::Locus(LocusId(1)),
+                InfluenceKindId(1),
+                StateVector::from_slice(&[1.0]),
+            )],
+        );
+        let rel_id = graph_core::RelationshipId(0);
+        assert!(world.relationships().get(rel_id).is_some(), "relationship must exist");
+
+        // Tick 2: propose a relationship-subject change directly.
+        let log_len_before = world.log().len();
+        engine.tick(
+            &mut world,
+            &loci,
+            &influences,
+            vec![ProposedChange::new(
+                ChangeSubject::Relationship(rel_id),
+                InfluenceKindId(1),
+                StateVector::from_slice(&[99.0]),
+            )],
+        );
+
+        // The log must have grown by exactly one change.
+        assert_eq!(world.log().len(), log_len_before + 1);
+
+        // That change must have the correct subject.
+        let rel_change = world.log().iter().last().unwrap();
+        assert_eq!(
+            rel_change.subject,
+            ChangeSubject::Relationship(rel_id)
+        );
+
+        // The relationship's state must reflect the new value.
+        let activity = world.relationships().get(rel_id).unwrap()
+            .state.as_slice().first().copied().unwrap_or(0.0);
+        assert!(
+            (activity - 99.0).abs() < 1e-4,
+            "relationship state should be 99.0, got {activity}"
+        );
+    }
+
+    #[test]
+    fn relationship_subject_change_does_not_trigger_program_dispatch() {
+        // After a relationship-subject change, no program should run
+        // (relationship changes contribute nothing to committed_ids_by_locus).
+        // We verify this by using a program that would produce an infinite
+        // loop if triggered — the system must not hit the batch cap.
+        struct BombProgram;
+        impl LocusProgram for BombProgram {
+            fn process(&self, locus: &Locus, _: &[Change]) -> Vec<ProposedChange> {
+                vec![ProposedChange::new(
+                    ChangeSubject::Locus(locus.id),
+                    InfluenceKindId(1),
+                    StateVector::from_slice(&[1.0]),
+                )]
+            }
+        }
+        let mut world = World::new();
+        world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+        world.insert_locus(Locus::new(LocusId(2), LocusKindId(2), StateVector::zeros(1)));
+        let mut loci = LocusKindRegistry::new();
+        loci.insert(LocusKindId(1), Box::new(RelationshipWriterProgram { downstream: LocusId(2) }));
+        loci.insert(LocusKindId(2), Box::new(BombProgram)); // would loop if triggered
+        let mut influences = InfluenceKindRegistry::new();
+        influences.insert(InfluenceKindId(1), crate::registry::InfluenceKindConfig::new("t"));
+        let engine = Engine::new(EngineConfig { max_batches_per_tick: 4 });
+
+        // First tick: establish relationship.
+        engine.tick(
+            &mut world,
+            &loci,
+            &influences,
+            vec![ProposedChange::new(
+                ChangeSubject::Locus(LocusId(1)),
+                InfluenceKindId(1),
+                StateVector::from_slice(&[1.0]),
+            )],
+        );
+
+        // Second tick: relationship-subject stimulus. BombProgram must NOT run.
+        let result = engine.tick(
+            &mut world,
+            &loci,
+            &influences,
+            vec![ProposedChange::new(
+                ChangeSubject::Relationship(graph_core::RelationshipId(0)),
+                InfluenceKindId(1),
+                StateVector::from_slice(&[5.0]),
+            )],
+        );
+        assert!(!result.hit_batch_cap, "relationship change must not trigger locus programs");
+        assert_eq!(result.batches_committed, 1);
+    }
+
+    #[test]
+    fn changes_to_relationship_query_returns_relationship_changes() {
+        let mut world = World::new();
+        world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+        world.insert_locus(Locus::new(LocusId(2), LocusKindId(2), StateVector::zeros(1)));
+        let mut loci = LocusKindRegistry::new();
+        loci.insert(LocusKindId(1), Box::new(RelationshipWriterProgram { downstream: LocusId(2) }));
+        loci.insert(LocusKindId(2), Box::new(SinkProgram));
+        let mut influences = InfluenceKindRegistry::new();
+        influences.insert(InfluenceKindId(1), crate::registry::InfluenceKindConfig::new("t"));
+        let engine = Engine::default();
+
+        // Establish relationship.
+        engine.tick(
+            &mut world,
+            &loci,
+            &influences,
+            vec![ProposedChange::new(
+                ChangeSubject::Locus(LocusId(1)),
+                InfluenceKindId(1),
+                StateVector::from_slice(&[1.0]),
+            )],
+        );
+        let rel_id = graph_core::RelationshipId(0);
+
+        // Two relationship-subject changes.
+        for v in [2.0_f32, 3.0] {
+            engine.tick(
+                &mut world,
+                &loci,
+                &influences,
+                vec![ProposedChange::new(
+                    ChangeSubject::Relationship(rel_id),
+                    InfluenceKindId(1),
+                    StateVector::from_slice(&[v]),
+                )],
+            );
+        }
+
+        let rel_changes: Vec<_> = world.log().changes_to_relationship(rel_id).collect();
+        assert_eq!(rel_changes.len(), 2, "two relationship-subject changes");
+        // Newest first: last value written (3.0) should appear first.
+        assert!(
+            (rel_changes[0].after.as_slice().first().copied().unwrap_or(0.0) - 3.0).abs() < 1e-5
+        );
     }
 
     // ─── Change log trim tests ─────────────────────────────────────────────

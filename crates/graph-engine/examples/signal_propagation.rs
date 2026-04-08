@@ -169,7 +169,10 @@ fn main() {
     // Change log.
     println!("--- Change log ---");
     for c in world.log().iter() {
-        let subj = match c.subject { ChangeSubject::Locus(id) => format!("L{}", id.0) };
+        let subj = match c.subject {
+            ChangeSubject::Locus(id) => format!("L{}", id.0),
+            ChangeSubject::Relationship(id) => format!("R{}", id.0),
+        };
         let after_val = c.after.as_slice().first().copied().unwrap_or(0.0);
         let preds: Vec<u64> = c.predecessors.iter().map(|p| p.0).collect();
         println!(

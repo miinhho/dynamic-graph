@@ -12,17 +12,25 @@
 //! - the before and after state of the subject
 //! - the batch in which it fired
 //!
-//! This commit only models locus-subject changes. Relationship-subject
-//! changes are added when Layer 2 lands.
+//! Both locus-subject and relationship-subject changes are supported.
+//! The engine's batch loop dispatches locus programs only on locus-subject
+//! changes; relationship-subject changes update the relationship's state
+//! and are recorded in the log but do not trigger program dispatch.
 
 use crate::ids::{BatchId, ChangeId, InfluenceKindId, LocusId};
+use crate::relationship::RelationshipId;
 use crate::state::StateVector;
 
-/// What a change is *about*. Currently always a locus; the
-/// `Relationship` variant lands with Layer 2.
+/// What a change is *about*.
+///
+/// - `Locus`: modifies a locus's state and may trigger its program.
+/// - `Relationship`: modifies a relationship's state directly. Does not
+///   trigger program dispatch. Enables locus programs to write feedback
+///   directly onto a relationship (e.g. Hebbian-style weight updates).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ChangeSubject {
     Locus(LocusId),
+    Relationship(RelationshipId),
 }
 
 #[derive(Debug, Clone, PartialEq)]
