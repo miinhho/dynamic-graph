@@ -111,6 +111,9 @@ impl Engine {
             let batch = world.current_batch();
             let mut committed_ids_by_locus: HashMap<LocusId, Vec<ChangeId>> = HashMap::new();
             let mut affected_loci: Vec<LocusId> = Vec::new();
+            // Plasticity: collect (rel_id, kind, pre_signal, post_signal) tuples
+            // during cross-locus detection; apply Hebbian updates at end-of-batch.
+            let mut plasticity_obs: Vec<(graph_core::RelationshipId, graph_core::InfluenceKindId, f32, f32)> = Vec::new();
 
             for pending_change in pending.drain(..) {
                 let PendingChange {
@@ -134,16 +137,17 @@ impl Engine {
                             .map(|l| l.state.clone())
                             .unwrap_or_default();
 
-                        // Resolve cross-locus predecessors *before* moving the
-                        // change into the log: we need to read the predecessor
-                        // changes' subjects, and we'll mutate the relationship
-                        // store next, so the borrows can't overlap.
-                        let cross_locus_preds: Vec<LocusId> = predecessors
+                        // Resolve cross-locus predecessors and capture pre-signals
+                        // *before* moving the change into the log: borrows can't overlap.
+                        let cross_locus_preds: Vec<(LocusId, f32)> = predecessors
                             .iter()
                             .filter_map(|pid| world.log().get(*pid))
                             .filter_map(|pred| match pred.subject {
-                                ChangeSubject::Locus(pl) => (pl != locus_id).then_some(pl),
-                                ChangeSubject::Relationship(_) => None,
+                                ChangeSubject::Locus(pl) if pl != locus_id => {
+                                    let pre = pred.after.as_slice().first().copied().unwrap_or(0.0);
+                                    Some((pl, pre))
+                                }
+                                _ => None,
                             })
                             .collect();
 
@@ -152,6 +156,9 @@ impl Engine {
                             Some(cfg) => cfg.stabilization.stabilize(&before, proposed.after),
                             None => proposed.after,
                         };
+
+                        // post-signal for Hebbian update = first slot of committed value.
+                        let post_signal = stabilized_after.as_slice().first().copied().unwrap_or(0.0);
 
                         let change = Change {
                             id,
@@ -170,9 +177,17 @@ impl Engine {
                         world.append_change(change);
 
                         // Auto-emerge or update a directed relationship for
-                        // each cross-locus predecessor.
-                        for from_locus in cross_locus_preds {
-                            auto_emerge_relationship(world, from_locus, locus_id, kind, id);
+                        // each cross-locus predecessor. Collect plasticity
+                        // observations if the kind has learning enabled.
+                        let plasticity_active = influence_registry
+                            .get(kind)
+                            .map(|cfg| cfg.plasticity.is_active())
+                            .unwrap_or(false);
+                        for (from_locus, pre_signal) in cross_locus_preds {
+                            let rel_id = auto_emerge_relationship(world, from_locus, locus_id, kind, id);
+                            if plasticity_active {
+                                plasticity_obs.push((rel_id, kind, pre_signal, post_signal));
+                            }
                         }
 
                         committed_ids_by_locus.entry(locus_id).or_default().push(id);
@@ -251,17 +266,33 @@ impl Engine {
                 }));
             }
 
-            // End-of-batch continuous decay on all relationship
-            // activity scores, per docs/redesign.md §3.5. Each kind
-            // carries its own per-batch decay factor in the influence
-            // registry.
+            // End-of-batch: apply Hebbian plasticity updates. Each
+            // observation (rel_id, kind, pre, post) contributes
+            // Δweight = η * pre * post, clamped to [0, max_weight].
+            for (rel_id, kind, pre, post) in plasticity_obs {
+                if let Some(cfg) = influence_registry.get(kind) {
+                    let p = &cfg.plasticity;
+                    if let Some(rel) = world.relationships_mut().get_mut(rel_id) {
+                        if let Some(w) = rel.state.as_mut_slice().get_mut(Relationship::WEIGHT_SLOT) {
+                            *w = (*w + p.learning_rate * pre * post).clamp(0.0, p.max_weight);
+                        }
+                    }
+                }
+            }
+
+            // End-of-batch continuous decay on all relationship activity
+            // (slot 0) and Hebbian weight (slot 1), per docs/redesign.md §3.5.
             for rel in world.relationships_mut().iter_mut() {
-                let decay = influence_registry
+                let (activity_decay, weight_decay) = influence_registry
                     .get(rel.kind)
-                    .map(|cfg| cfg.decay_per_batch)
-                    .unwrap_or(1.0);
-                if let Some(slot) = rel.state.as_mut_slice().get_mut(Relationship::ACTIVITY_SLOT) {
-                    *slot *= decay;
+                    .map(|cfg| (cfg.decay_per_batch, cfg.plasticity.weight_decay))
+                    .unwrap_or((1.0, 1.0));
+                let slots = rel.state.as_mut_slice();
+                if let Some(a) = slots.get_mut(Relationship::ACTIVITY_SLOT) {
+                    *a *= activity_decay;
+                }
+                if let Some(w) = slots.get_mut(Relationship::WEIGHT_SLOT) {
+                    *w *= weight_decay;
                 }
             }
 
@@ -481,16 +512,17 @@ fn apply_proposals(world: &mut World, proposals: Vec<EmergenceProposal>, batch: 
 
 /// Recognize or update a directed relationship of `kind` going from
 /// `from` to `to`, attributing the touch to `change_id`. Adds 1.0 to
-/// the relationship's activity slot per touch — the contribution per
-/// observation is constant for now; a kind-driven contribution lands
-/// when guard rails do.
+/// the relationship's activity slot per touch.
+///
+/// Returns the `RelationshipId` (new or existing) so the caller can
+/// record a plasticity observation.
 fn auto_emerge_relationship(
     world: &mut World,
     from: LocusId,
     to: LocusId,
     kind: graph_core::InfluenceKindId,
     change_id: ChangeId,
-) {
+) -> graph_core::RelationshipId {
     let endpoints = Endpoints::Directed { from, to };
     let key = endpoints.key();
     let store = world.relationships_mut();
@@ -504,13 +536,15 @@ fn auto_emerge_relationship(
         if !rel.lineage.kinds_observed.contains(&kind) {
             rel.lineage.kinds_observed.push(kind);
         }
+        rel_id
     } else {
         let new_id = store.mint_id();
+        // Two slots: [activity, weight]. Weight starts at 0.
         store.insert(Relationship {
             id: new_id,
             kind,
             endpoints,
-            state: StateVector::from_slice(&[1.0]),
+            state: StateVector::from_slice(&[1.0, 0.0]),
             lineage: RelationshipLineage {
                 created_by: change_id,
                 last_touched_by: change_id,
@@ -518,6 +552,7 @@ fn auto_emerge_relationship(
                 kinds_observed: vec![kind],
             },
         });
+        new_id
     }
 }
 
@@ -1178,6 +1213,190 @@ mod tests {
                 "both layers should still be Full"
             );
         }
+    }
+
+    // ─── Edge plasticity (Hebbian) tests ──────────────────────────────────
+
+    fn two_locus_world_with_plasticity(
+        learning_rate: f32,
+        weight_decay: f32,
+    ) -> (World, LocusKindRegistry, InfluenceKindRegistry) {
+        use crate::registry::PlasticityConfig;
+        let mut world = World::new();
+        world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+        world.insert_locus(Locus::new(LocusId(2), LocusKindId(2), StateVector::zeros(1)));
+        let mut loci = LocusKindRegistry::new();
+        loci.insert(LocusKindId(1), Box::new(ForwarderProgram { downstream: LocusId(2) }));
+        loci.insert(LocusKindId(2), Box::new(SinkProgram));
+        let mut inf = InfluenceKindRegistry::new();
+        inf.insert(
+            InfluenceKindId(1),
+            crate::registry::InfluenceKindConfig::new("hebb")
+                .with_plasticity(PlasticityConfig {
+                    learning_rate,
+                    weight_decay,
+                    max_weight: f32::MAX,
+                }),
+        );
+        (world, loci, inf)
+    }
+
+    #[test]
+    fn hebbian_weight_increases_on_correlated_flow() {
+        let (mut world, loci, inf) = two_locus_world_with_plasticity(0.1, 1.0);
+        let engine = Engine::default();
+        engine.tick(
+            &mut world,
+            &loci,
+            &inf,
+            vec![ProposedChange::new(
+                ChangeSubject::Locus(LocusId(1)),
+                InfluenceKindId(1),
+                StateVector::from_slice(&[2.0]),
+            )],
+        );
+        // Relationship L1→L2 should have been created.
+        let rel = world.relationships().iter().next().expect("relationship must exist");
+        // Hebbian update: Δweight = 0.1 * pre(2.0) * post(2.0) = 0.4
+        // (ForwarderProgram forwards the incoming value unchanged)
+        let weight = rel.weight();
+        assert!(
+            (weight - 0.4).abs() < 1e-5,
+            "expected weight ≈ 0.4, got {weight}"
+        );
+    }
+
+    #[test]
+    fn hebbian_weight_is_zero_when_plasticity_disabled() {
+        // PlasticityConfig::default() has learning_rate = 0.
+        let (mut world, loci, inf) = two_locus_world_with_plasticity(0.0, 1.0);
+        let engine = Engine::default();
+        engine.tick(
+            &mut world,
+            &loci,
+            &inf,
+            vec![ProposedChange::new(
+                ChangeSubject::Locus(LocusId(1)),
+                InfluenceKindId(1),
+                StateVector::from_slice(&[3.0]),
+            )],
+        );
+        let rel = world.relationships().iter().next().expect("relationship must exist");
+        assert!(
+            rel.weight().abs() < 1e-6,
+            "weight must be 0 when learning_rate=0, got {}",
+            rel.weight()
+        );
+    }
+
+    #[test]
+    fn hebbian_weight_accumulates_over_multiple_ticks() {
+        let (mut world, loci, inf) = two_locus_world_with_plasticity(0.1, 1.0);
+        let engine = Engine::default();
+        // Each tick: pre=1.0, post=1.0 → Δweight = 0.1 per tick.
+        for _ in 0..3 {
+            engine.tick(
+                &mut world,
+                &loci,
+                &inf,
+                vec![ProposedChange::new(
+                    ChangeSubject::Locus(LocusId(1)),
+                    InfluenceKindId(1),
+                    StateVector::from_slice(&[1.0]),
+                )],
+            );
+        }
+        let weight = world.relationships().iter().next().unwrap().weight();
+        // 3 × 0.1 = 0.3
+        assert!(
+            (weight - 0.3).abs() < 1e-5,
+            "expected weight ≈ 0.3 after 3 ticks, got {weight}"
+        );
+    }
+
+    #[test]
+    fn hebbian_weight_decays_each_batch() {
+        // weight_decay = 0.5, learning_rate = 0 (no new learning), initial weight set
+        // by one learning tick, then subsequent ticks only decay.
+        use crate::registry::PlasticityConfig;
+        let mut world = World::new();
+        world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+        world.insert_locus(Locus::new(LocusId(2), LocusKindId(2), StateVector::zeros(1)));
+        let mut loci = LocusKindRegistry::new();
+        loci.insert(LocusKindId(1), Box::new(ForwarderProgram { downstream: LocusId(2) }));
+        loci.insert(LocusKindId(2), Box::new(SinkProgram));
+        let mut inf = InfluenceKindRegistry::new();
+        inf.insert(
+            InfluenceKindId(1),
+            crate::registry::InfluenceKindConfig::new("hebb").with_plasticity(PlasticityConfig {
+                learning_rate: 1.0, // Δweight = pre * post = 1.0 on first tick
+                weight_decay: 0.5,
+                max_weight: f32::MAX,
+            }),
+        );
+        let engine = Engine::default();
+
+        // Tick 1: pre=1.0, post=1.0 → weight += 1.0 → then *0.5 → weight = 0.5
+        engine.tick(
+            &mut world,
+            &loci,
+            &inf,
+            vec![ProposedChange::new(
+                ChangeSubject::Locus(LocusId(1)),
+                InfluenceKindId(1),
+                StateVector::from_slice(&[1.0]),
+            )],
+        );
+
+        // Disable learning for subsequent ticks (update the config in place
+        // by replacing and re-inserting is not possible; use a second registry).
+        // Instead verify weight after tick 1.
+        let w1 = world.relationships().iter().next().unwrap().weight();
+        // Hebbian: +1.0 → then decay *0.5 = 0.5
+        assert!(
+            (w1 - 0.5).abs() < 1e-5,
+            "after tick 1: expected weight ≈ 0.5, got {w1}"
+        );
+    }
+
+    #[test]
+    fn hebbian_weight_clamped_by_max_weight() {
+        use crate::registry::PlasticityConfig;
+        let mut world = World::new();
+        world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+        world.insert_locus(Locus::new(LocusId(2), LocusKindId(2), StateVector::zeros(1)));
+        let mut loci = LocusKindRegistry::new();
+        loci.insert(LocusKindId(1), Box::new(ForwarderProgram { downstream: LocusId(2) }));
+        loci.insert(LocusKindId(2), Box::new(SinkProgram));
+        let mut inf = InfluenceKindRegistry::new();
+        inf.insert(
+            InfluenceKindId(1),
+            crate::registry::InfluenceKindConfig::new("hebb").with_plasticity(PlasticityConfig {
+                learning_rate: 100.0, // aggressive learning
+                weight_decay: 1.0,
+                max_weight: 2.0, // hard ceiling
+            }),
+        );
+        let engine = Engine::default();
+        engine.tick(
+            &mut world,
+            &loci,
+            &inf,
+            vec![ProposedChange::new(
+                ChangeSubject::Locus(LocusId(1)),
+                InfluenceKindId(1),
+                StateVector::from_slice(&[1.0]),
+            )],
+        );
+        let w = world.relationships().iter().next().unwrap().weight();
+        assert!(
+            w <= 2.0 + 1e-6,
+            "weight {w} must not exceed max_weight 2.0"
+        );
+        assert!(
+            (w - 2.0).abs() < 1e-5,
+            "weight {w} should be clamped to 2.0"
+        );
     }
 
     // ─── ChangeSubject::Relationship tests ────────────────────────────────

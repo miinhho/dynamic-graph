@@ -19,6 +19,47 @@ use std::collections::HashMap;
 
 use graph_core::{InfluenceKindId, LocusKindId, LocusProgram, StabilizationConfig};
 
+/// Hebbian plasticity parameters for one influence kind.
+///
+/// When `learning_rate > 0`, the engine applies the Hebbian rule at the
+/// end of each batch for every relationship of this kind that was
+/// touched during the batch:
+///
+/// ```text
+/// Δweight = learning_rate * pre_signal * post_signal
+/// weight  = clamp(weight + Δweight, 0, max_weight)
+/// weight *= weight_decay   (end-of-batch)
+/// ```
+///
+/// Default is fully disabled (`learning_rate = 0`) — plasticity is
+/// opt-in.
+#[derive(Debug, Clone, Copy)]
+pub struct PlasticityConfig {
+    /// Hebbian learning rate η. Must be >= 0. Set to 0 to disable.
+    pub learning_rate: f32,
+    /// Per-batch multiplicative decay on the weight. `1.0` = no decay.
+    pub weight_decay: f32,
+    /// Maximum weight value. Weights are clamped to `[0, max_weight]`.
+    pub max_weight: f32,
+}
+
+impl Default for PlasticityConfig {
+    fn default() -> Self {
+        Self {
+            learning_rate: 0.0,
+            weight_decay: 1.0,
+            max_weight: f32::MAX,
+        }
+    }
+}
+
+impl PlasticityConfig {
+    /// True when plasticity is effectively enabled for this config.
+    pub fn is_active(&self) -> bool {
+        self.learning_rate > 0.0
+    }
+}
+
 /// Per-influence-kind configuration held by `InfluenceKindRegistry`.
 ///
 /// Two classes of tunable live here:
@@ -33,13 +74,16 @@ use graph_core::{InfluenceKindId, LocusKindId, LocusProgram, StabilizationConfig
 pub struct InfluenceKindConfig {
     /// Human-readable label for diagnostics.
     pub name: String,
-    /// Per-batch multiplicative decay on relationship activity. `1.0`
-    /// = no decay; smaller = fades faster.
+    /// Per-batch multiplicative decay on relationship activity (slot 0).
+    /// `1.0` = no decay; smaller = fades faster.
     pub decay_per_batch: f32,
     /// Guard-rail parameters for state updates of this kind. Default:
     /// `StabilizationConfig::default()` (alpha=1.0, no saturation, no
     /// trust region — effectively transparent).
     pub stabilization: StabilizationConfig,
+    /// Hebbian plasticity parameters. Disabled by default
+    /// (`learning_rate = 0`).
+    pub plasticity: PlasticityConfig,
 }
 
 impl InfluenceKindConfig {
@@ -48,6 +92,7 @@ impl InfluenceKindConfig {
             name: name.into(),
             decay_per_batch: 1.0,
             stabilization: StabilizationConfig::default(),
+            plasticity: PlasticityConfig::default(),
         }
     }
 
@@ -58,6 +103,11 @@ impl InfluenceKindConfig {
 
     pub fn with_stabilization(mut self, config: StabilizationConfig) -> Self {
         self.stabilization = config;
+        self
+    }
+
+    pub fn with_plasticity(mut self, config: PlasticityConfig) -> Self {
+        self.plasticity = config;
         self
     }
 }

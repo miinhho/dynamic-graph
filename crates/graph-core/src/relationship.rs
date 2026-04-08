@@ -106,13 +106,22 @@ pub struct Relationship {
 }
 
 impl Relationship {
-    /// Index of the activity slot inside `state`. Hard-coded for now —
-    /// the substrate keeps the slot layout opinionated until a real use
-    /// case asks for flexibility.
+    /// Index of the activity slot inside `state`. Incremented on each
+    /// new change observed, decayed once per batch.
     pub const ACTIVITY_SLOT: usize = 0;
 
-    /// Read the activity score.
+    /// Index of the Hebbian weight slot inside `state`. Updated by the
+    /// plasticity rule: `Δweight = η * pre_signal * post_signal`.
+    /// Zero initially; grows with correlated pre/post activity.
+    pub const WEIGHT_SLOT: usize = 1;
+
+    /// Read the activity score (slot 0).
     pub fn activity(&self) -> f32 {
         self.state.as_slice().get(Self::ACTIVITY_SLOT).copied().unwrap_or(0.0)
+    }
+
+    /// Read the learned Hebbian weight (slot 1).
+    pub fn weight(&self) -> f32 {
+        self.state.as_slice().get(Self::WEIGHT_SLOT).copied().unwrap_or(0.0)
     }
 }

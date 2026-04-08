@@ -19,4 +19,4 @@ pub use graph_core::{DefaultEntityWeathering, EntityWeatheringPolicy, Weathering
 pub use regime::{
     BatchHistory, BatchMetrics, DefaultRegimeClassifier, DynamicsRegime, RegimeClassifier,
 };
-pub use registry::{InfluenceKindConfig, InfluenceKindRegistry, LocusKindRegistry};
+pub use registry::{InfluenceKindConfig, InfluenceKindRegistry, LocusKindRegistry, PlasticityConfig};
