@@ -50,6 +50,11 @@ impl EntityStore {
         self.by_id.values()
     }
 
+    /// Mutable iterator over all entities. Used by the weathering pass.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Entity> {
+        self.by_id.values_mut()
+    }
+
     /// Iterate only active entities.
     pub fn active(&self) -> impl Iterator<Item = &Entity> {
         self.by_id.values().filter(|e| e.status == EntityStatus::Active)

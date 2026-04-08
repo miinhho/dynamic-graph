@@ -25,9 +25,9 @@
 use std::collections::HashMap;
 
 use graph_core::{
-    Change, ChangeId, ChangeSubject, EmergenceProposal, Endpoints, Entity, EntityLayer,
-    EntityLineage, EntityStatus, LayerTransition, LocusId, ProposedChange, Relationship,
-    RelationshipLineage, StateVector,
+    apply_skeleton, Change, ChangeId, ChangeSubject, EmergenceProposal, Endpoints, Entity,
+    EntityLayer, EntityLineage, EntityStatus, EntityWeatheringPolicy, LayerTransition, LocusId,
+    ProposedChange, Relationship, RelationshipLineage, StateVector, WeatheringEffect,
 };
 use graph_world::World;
 
@@ -283,6 +283,65 @@ impl Engine {
         let proposals =
             perspective.recognize(world.relationships(), world.entities(), batch);
         apply_proposals(world, proposals, batch);
+    }
+
+    /// Apply a weathering policy to every entity's sediment layer stack.
+    ///
+    /// On-demand — the caller decides when to run weathering. A typical
+    /// cadence is every N ticks (e.g. every 50 or 100 ticks) rather than
+    /// after every tick.
+    ///
+    /// ## What this does
+    ///
+    /// For each entity, for each layer (oldest first), it asks the policy
+    /// for a `WeatheringEffect`. The effects are applied in-place:
+    ///
+    /// - `Preserved` — layer untouched.
+    /// - `Compress`  — snapshot stripped; stats kept in `Compressed`.
+    /// - `Skeleton`  — further reduced to `Skeleton`.
+    /// - `Remove`    — layer deleted. **Exception**: layers whose
+    ///   transition `is_significant()` (Born, Split, Merged) are
+    ///   downgraded to `Skeleton` instead of removed, so lineage
+    ///   pivots can never vanish.
+    ///
+    /// The entity's `current` snapshot and `status` are not touched —
+    /// only the historical layer stack is weathered.
+    pub fn weather_entities(
+        &self,
+        world: &mut World,
+        policy: &dyn EntityWeatheringPolicy,
+    ) {
+        let current_batch = world.current_batch().0;
+        for entity in world.entities_mut().iter_mut() {
+            let mut i = 0;
+            while i < entity.layers.len() {
+                let age = current_batch.saturating_sub(entity.layers[i].batch.0);
+                let effect = policy.effect(&entity.layers[i], age);
+                match effect {
+                    WeatheringEffect::Preserved => {
+                        i += 1;
+                    }
+                    WeatheringEffect::Compress => {
+                        graph_core::apply_compress(&mut entity.layers[i]);
+                        i += 1;
+                    }
+                    WeatheringEffect::Skeleton => {
+                        apply_skeleton(&mut entity.layers[i]);
+                        i += 1;
+                    }
+                    WeatheringEffect::Remove => {
+                        if entity.layers[i].transition.is_significant() {
+                            // Never delete Born/Split/Merged — skeleton instead.
+                            apply_skeleton(&mut entity.layers[i]);
+                            i += 1;
+                        } else {
+                            entity.layers.remove(i);
+                            // i stays the same — now points to the next layer.
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -955,5 +1014,118 @@ mod tests {
             )],
         );
         assert_eq!(world.relationships().len(), 0);
+    }
+
+    // ─── Weathering tests ──────────────────────────────────────────────────
+
+    /// Build a world with one entity that has a Born layer (batch 0) plus
+    /// one MembershipDelta layer (batch 1). Leaves `current_batch` at 2.
+    fn entity_world_two_layers() -> World {
+        use graph_core::{EntitySnapshot, LocusId};
+        let mut world = World::new();
+        let store = world.entities_mut();
+        let id = store.mint_id();
+        let snap = EntitySnapshot {
+            members: vec![LocusId(1)],
+            member_relationships: Vec::new(),
+            coherence: 1.0,
+        };
+        let mut entity = Entity::born(id, BatchId(0), snap.clone());
+        entity.deposit(
+            BatchId(1),
+            snap,
+            LayerTransition::MembershipDelta {
+                added: vec![LocusId(2)],
+                removed: Vec::new(),
+            },
+        );
+        store.insert(entity);
+        world.advance_batch(); // batch 1
+        world.advance_batch(); // batch 2
+        world
+    }
+
+    #[test]
+    fn weather_entities_compresses_old_non_significant_layers() {
+        use graph_core::{CompressionLevel, DefaultEntityWeathering, WeatheringEffect};
+
+        // Policy: age >= 1 → Compress, age >= 2 → Skeleton, age >= 3 → Remove
+        struct AggressiveWeathering;
+        impl graph_core::EntityWeatheringPolicy for AggressiveWeathering {
+            fn effect(
+                &self,
+                _layer: &graph_core::EntityLayer,
+                age: u64,
+            ) -> WeatheringEffect {
+                if age >= 3 {
+                    WeatheringEffect::Remove
+                } else if age >= 2 {
+                    WeatheringEffect::Skeleton
+                } else if age >= 1 {
+                    WeatheringEffect::Compress
+                } else {
+                    WeatheringEffect::Preserved
+                }
+            }
+        }
+
+        let mut world = entity_world_two_layers();
+        // current_batch = 2; Born layer age = 2 → Skeleton; MembershipDelta age = 1 → Compress
+        let engine = Engine::default();
+        engine.weather_entities(&mut world, &AggressiveWeathering);
+
+        let entity = world.entities().iter().next().unwrap();
+        assert_eq!(entity.layers.len(), 2);
+        assert!(
+            matches!(entity.layers[0].compression, CompressionLevel::Skeleton { .. }),
+            "Born layer (age=2) should be Skeleton"
+        );
+        assert!(
+            matches!(entity.layers[1].compression, CompressionLevel::Compressed { .. }),
+            "MembershipDelta layer (age=1) should be Compressed"
+        );
+    }
+
+    #[test]
+    fn weather_entities_never_removes_significant_layer() {
+        use graph_core::{CompressionLevel, WeatheringEffect};
+
+        // Policy: always Remove — but Born layer must survive as Skeleton.
+        struct AlwaysRemove;
+        impl graph_core::EntityWeatheringPolicy for AlwaysRemove {
+            fn effect(&self, _: &graph_core::EntityLayer, _: u64) -> WeatheringEffect {
+                WeatheringEffect::Remove
+            }
+        }
+
+        let mut world = entity_world_two_layers();
+        let engine = Engine::default();
+        engine.weather_entities(&mut world, &AlwaysRemove);
+
+        let entity = world.entities().iter().next().unwrap();
+        // MembershipDelta (non-significant) removed; Born (significant) kept as Skeleton.
+        assert_eq!(entity.layers.len(), 1, "non-significant layer removed");
+        assert!(
+            matches!(entity.layers[0].compression, CompressionLevel::Skeleton { .. }),
+            "Born layer kept as Skeleton, not deleted"
+        );
+    }
+
+    #[test]
+    fn default_entity_weathering_preserves_recent_layers() {
+        use graph_core::DefaultEntityWeathering;
+        let mut world = entity_world_two_layers();
+        // current_batch = 2; both layers are age 1-2, well inside recent_window=50.
+        let engine = Engine::default();
+        engine.weather_entities(&mut world, &DefaultEntityWeathering::default());
+
+        let entity = world.entities().iter().next().unwrap();
+        assert_eq!(entity.layers.len(), 2);
+        for layer in &entity.layers {
+            assert!(
+                matches!(layer.compression, graph_core::CompressionLevel::Full),
+                "both layers should still be Full"
+            );
+        }
     }
 }

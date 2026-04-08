@@ -15,6 +15,7 @@ pub mod program;
 pub mod relationship;
 pub mod stabilization;
 pub mod state;
+pub mod weathering;
 
 pub use change::{Change, ChangeSubject};
 pub use ids::{BatchId, ChangeId, InfluenceKindId, LocusId, LocusKindId};
@@ -31,3 +32,7 @@ pub use relationship::{
     EndpointKey, Endpoints, Relationship, RelationshipId, RelationshipKindId, RelationshipLineage,
 };
 pub use state::StateVector;
+pub use weathering::{
+    apply_compress, apply_skeleton, DefaultEntityWeathering, EntityWeatheringPolicy,
+    WeatheringEffect,
+};
