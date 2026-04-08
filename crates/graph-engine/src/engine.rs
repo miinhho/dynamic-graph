@@ -362,4 +362,139 @@ mod tests {
         assert!(result.hit_batch_cap);
         assert_eq!(result.batches_committed, 5);
     }
+
+    /// A program that, on stimulus, fires a single change at a fixed
+    /// "downstream" locus and then stays inert. Used to drive cross-locus
+    /// flow without infinite cascade.
+    struct ForwarderProgram {
+        downstream: LocusId,
+    }
+    impl LocusProgram for ForwarderProgram {
+        fn process(&self, _locus: &Locus, incoming: &[Change]) -> Vec<ProposedChange> {
+            // Only react to stimuli; ignore anything internal so the
+            // loop quiesces after one hand-off.
+            if !incoming.iter().all(|c| c.predecessors.is_empty()) {
+                return Vec::new();
+            }
+            // Forward the magnitude of the first incoming change to the
+            // downstream locus.
+            let after = incoming[0].after.clone();
+            vec![ProposedChange::new(
+                ChangeSubject::Locus(self.downstream),
+                InfluenceKindId(1),
+                after,
+            )]
+        }
+    }
+
+    /// Sink program — accepts incoming, never proposes anything.
+    struct SinkProgram;
+    impl LocusProgram for SinkProgram {
+        fn process(&self, _: &Locus, _: &[Change]) -> Vec<ProposedChange> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn cross_locus_change_lands_on_downstream_with_correct_predecessor() {
+        // Two loci of two different kinds: a forwarder and a sink. A
+        // stimulus hits the forwarder; the forwarder's program proposes
+        // a change at the sink. After the loop quiesces, the sink's
+        // state must equal the stimulus payload, and the cross-locus
+        // change must list the stimulus as its causal predecessor.
+        let mut world = World::new();
+        world.insert_locus(Locus::new(
+            LocusId(1),
+            LocusKindId(1),
+            StateVector::zeros(2),
+        ));
+        world.insert_locus(Locus::new(
+            LocusId(2),
+            LocusKindId(2),
+            StateVector::zeros(2),
+        ));
+
+        let mut loci = LocusKindRegistry::new();
+        loci.insert(
+            LocusKindId(1),
+            Box::new(ForwarderProgram {
+                downstream: LocusId(2),
+            }),
+        );
+        loci.insert(LocusKindId(2), Box::new(SinkProgram));
+        let mut influences = InfluenceKindRegistry::new();
+        influences.insert(
+            InfluenceKindId(1),
+            crate::registry::InfluenceKindConfig::new("excite"),
+        );
+
+        let engine = Engine::default();
+        let stimulus = ProposedChange::new(
+            ChangeSubject::Locus(LocusId(1)),
+            InfluenceKindId(1),
+            StateVector::from_slice(&[0.7, 0.0]),
+        );
+        let result = engine.tick(&mut world, &loci, &influences, vec![stimulus]);
+
+        // Two batches: stimulus, then forwarded.
+        assert_eq!(result.batches_committed, 2);
+        assert_eq!(result.changes_committed, 2);
+
+        // Sink received the payload.
+        assert_eq!(
+            world.locus(LocusId(2)).unwrap().state.as_slice(),
+            &[0.7, 0.0]
+        );
+        // Forwarder still holds the stimulus payload (the program does
+        // not modify itself).
+        assert_eq!(
+            world.locus(LocusId(1)).unwrap().state.as_slice(),
+            &[0.7, 0.0]
+        );
+
+        // Causal chain: stimulus on L1 (batch 0, no preds) -> forwarded
+        // change on L2 (batch 1, predecessor = stimulus id).
+        let log: Vec<&Change> = world.log().iter().collect();
+        assert_eq!(log.len(), 2);
+        assert_eq!(log[0].subject, ChangeSubject::Locus(LocusId(1)));
+        assert_eq!(log[0].batch, BatchId(0));
+        assert!(log[0].is_stimulus());
+
+        assert_eq!(log[1].subject, ChangeSubject::Locus(LocusId(2)));
+        assert_eq!(log[1].batch, BatchId(1));
+        assert_eq!(log[1].predecessors, vec![log[0].id]);
+    }
+
+    #[test]
+    fn changes_to_locus_returns_full_history() {
+        // Drive two stimuli through the same locus across separate ticks
+        // and confirm the change log preserves both, ordered newest first
+        // when queried via the world's per-locus accessor.
+        let mut world = World::new();
+        world.insert_locus(Locus::new(
+            LocusId(1),
+            LocusKindId(1),
+            StateVector::zeros(1),
+        ));
+        let mut loci = LocusKindRegistry::new();
+        loci.insert(LocusKindId(1), Box::new(SinkProgram));
+        let influences = InfluenceKindRegistry::new();
+
+        let engine = Engine::default();
+        for value in [0.1_f32, 0.2, 0.3] {
+            let stimulus = ProposedChange::new(
+                ChangeSubject::Locus(LocusId(1)),
+                InfluenceKindId(1),
+                StateVector::from_slice(&[value]),
+            );
+            engine.tick(&mut world, &loci, &influences, vec![stimulus]);
+        }
+
+        let to_locus: Vec<f32> = world
+            .log()
+            .changes_to_locus(LocusId(1))
+            .map(|c| c.after.as_slice()[0])
+            .collect();
+        assert_eq!(to_locus, vec![0.3, 0.2, 0.1]);
+    }
 }
