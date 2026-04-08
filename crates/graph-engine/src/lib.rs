@@ -4,6 +4,7 @@
 //! follow-up commits; this commit only exposes the kind registries the
 //! batch loop will consume.
 
+mod adaptive;
 mod cohere;
 mod emergence;
 mod engine;
@@ -12,6 +13,7 @@ mod registry;
 
 pub use cohere::{CoherePerspective, DefaultCoherePerspective};
 pub use emergence::{DefaultEmergencePerspective, EmergencePerspective};
+pub use adaptive::{AdaptiveConfig, AdaptiveGuardRail};
 pub use engine::{Engine, EngineConfig, TickResult};
 pub use regime::{
     BatchHistory, BatchMetrics, DefaultRegimeClassifier, DynamicsRegime, RegimeClassifier,
