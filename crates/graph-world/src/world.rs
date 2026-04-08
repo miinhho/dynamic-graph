@@ -14,6 +14,7 @@
 use graph_core::{BatchId, Change, ChangeId, Locus, LocusId};
 
 use crate::change_log::ChangeLog;
+use crate::entity_store::EntityStore;
 use crate::locus_store::LocusStore;
 use crate::relationship_store::RelationshipStore;
 
@@ -21,6 +22,7 @@ use crate::relationship_store::RelationshipStore;
 pub struct World {
     loci: LocusStore,
     relationships: RelationshipStore,
+    entities: EntityStore,
     log: ChangeLog,
     current_batch: BatchId,
     next_change_id: u64,
@@ -55,6 +57,14 @@ impl World {
     /// the auto-emergence path on commit.
     pub fn relationships_mut(&mut self) -> &mut RelationshipStore {
         &mut self.relationships
+    }
+
+    pub fn entities(&self) -> &EntityStore {
+        &self.entities
+    }
+
+    pub fn entities_mut(&mut self) -> &mut EntityStore {
+        &mut self.entities
     }
 
     pub fn log(&self) -> &ChangeLog {
