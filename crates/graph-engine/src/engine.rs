@@ -31,6 +31,7 @@ use graph_core::{
 };
 use graph_world::World;
 
+use crate::cohere::CoherePerspective;
 use crate::emergence::EmergencePerspective;
 
 use crate::registry::{InfluenceKindRegistry, LocusKindRegistry};
@@ -231,6 +232,30 @@ impl Engine {
         }
 
         result
+    }
+
+    /// Run a `CoherePerspective` and store the resulting clusters.
+    ///
+    /// On-demand, like `recognize_entities`. Replaces the previous
+    /// cohere set for this perspective's name in the `CohereStore`.
+    /// Per `docs/redesign.md` §6 step 8: "Optional, on-demand."
+    pub fn extract_cohere(
+        &self,
+        world: &mut World,
+        perspective: &dyn CoherePerspective,
+    ) {
+        let store = world.coheres_mut();
+        let mut counter = store.mint_id().0;
+        let coheres = perspective.cluster(
+            world.entities(),
+            world.relationships(),
+            &mut || {
+                let id = graph_core::CohereId(counter);
+                counter += 1;
+                id
+            },
+        );
+        world.coheres_mut().update(perspective.name(), coheres);
     }
 
     /// Apply an `EmergencePerspective` to the current world state and
@@ -847,6 +872,48 @@ mod tests {
         engine.recognize_entities(&mut world, &perspective_high);
         assert_eq!(world.entities().active_count(), 0);
         assert_eq!(world.entities().len(), 1); // still in store, just dormant
+    }
+
+    #[test]
+    fn extract_cohere_after_entity_recognition_groups_connected_entities() {
+        // Full stack: tick -> recognize_entities -> extract_cohere.
+        // Two disconnected forwarder-sink pairs (L1->L2 and L3->L4) should
+        // each form a separate entity. No cross-pair bridge → no cohere.
+        let mut world = World::new();
+        // Pair A: L1 (kind 1) -> L2 (kind 2)
+        world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+        world.insert_locus(Locus::new(LocusId(2), LocusKindId(2), StateVector::zeros(1)));
+        // Pair B: L3 (kind 3) -> L4 (kind 2)  — kind 3 so the registry
+        // can map it to a different ForwarderProgram instance (downstream=L4).
+        world.insert_locus(Locus::new(LocusId(3), LocusKindId(3), StateVector::zeros(1)));
+        world.insert_locus(Locus::new(LocusId(4), LocusKindId(2), StateVector::zeros(1)));
+
+        let mut loci = LocusKindRegistry::new();
+        loci.insert(LocusKindId(1), Box::new(ForwarderProgram { downstream: LocusId(2) }));
+        loci.insert(LocusKindId(2), Box::new(SinkProgram));
+        loci.insert(LocusKindId(3), Box::new(ForwarderProgram { downstream: LocusId(4) }));
+
+        let mut influences = InfluenceKindRegistry::new();
+        influences.insert(InfluenceKindId(1), crate::registry::InfluenceKindConfig::new("e"));
+
+        let engine = Engine::default();
+        engine.tick(&mut world, &loci, &influences, vec![
+            ProposedChange::new(ChangeSubject::Locus(LocusId(1)), InfluenceKindId(1), StateVector::from_slice(&[1.0])),
+        ]);
+        engine.tick(&mut world, &loci, &influences, vec![
+            ProposedChange::new(ChangeSubject::Locus(LocusId(3)), InfluenceKindId(1), StateVector::from_slice(&[1.0])),
+        ]);
+
+        let ep = crate::emergence::DefaultEmergencePerspective::default();
+        engine.recognize_entities(&mut world, &ep);
+        // Two disconnected pairs -> two active entities.
+        assert_eq!(world.entities().active_count(), 2, "expected 2 entities");
+
+        let cp = crate::cohere::DefaultCoherePerspective::default();
+        engine.extract_cohere(&mut world, &cp);
+        // No cross-pair relationships -> no coheres.
+        let coheres = world.coheres().get("default").unwrap_or(&[]);
+        assert_eq!(coheres.len(), 0, "no bridge -> no cohere");
     }
 
     #[test]
