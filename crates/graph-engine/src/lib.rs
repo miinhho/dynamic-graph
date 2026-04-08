@@ -4,6 +4,8 @@
 //! follow-up commits; this commit only exposes the kind registries the
 //! batch loop will consume.
 
+mod engine;
 mod registry;
 
+pub use engine::{Engine, EngineConfig, TickResult};
 pub use registry::{InfluenceKindConfig, InfluenceKindRegistry, LocusKindRegistry};
