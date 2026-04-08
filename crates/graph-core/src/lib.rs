@@ -8,9 +8,11 @@
 pub mod change;
 pub mod ids;
 pub mod locus;
+pub mod program;
 pub mod state;
 
 pub use change::{Change, ChangeSubject};
 pub use ids::{BatchId, ChangeId, InfluenceKindId, LocusId, LocusKindId};
 pub use locus::Locus;
+pub use program::{LocusProgram, ProposedChange};
 pub use state::StateVector;
