@@ -11,8 +11,9 @@
 //! proposals. The engine applies them — maintaining atomicity,
 //! minting ids, committing to the entity store.
 
-use crate::entity::{EntityId, EntityLayer, EntitySnapshot};
+use crate::entity::{EntityId, EntityLayer, EntitySnapshot, LifecycleCause};
 use crate::ids::LocusId;
+use crate::relationship::RelationshipId;
 
 /// What an `EmergencePerspective` wants the engine to do with one
 /// coherent bundle it recognized.
@@ -21,8 +22,10 @@ pub enum EmergenceProposal {
     /// No matching existing entity — mint a new one.
     Born {
         members: Vec<LocusId>,
+        member_relationships: Vec<RelationshipId>,
         coherence: f32,
         parents: Vec<EntityId>,
+        cause: LifecycleCause,
     },
     /// Overlap with existing entity high enough to treat as continuation.
     DepositLayer {
@@ -32,20 +35,27 @@ pub enum EmergenceProposal {
     /// One entity split into multiple offspring.
     Split {
         source: EntityId,
-        offspring: Vec<(Vec<LocusId>, f32)>,
+        offspring: Vec<(Vec<LocusId>, Vec<RelationshipId>, f32)>,
+        cause: LifecycleCause,
     },
     /// Multiple entities merged.
     Merge {
         absorbed: Vec<EntityId>,
         into: EntityId,
         new_members: Vec<LocusId>,
+        member_relationships: Vec<RelationshipId>,
         coherence: f32,
+        cause: LifecycleCause,
     },
     /// Entity no longer coherent above threshold.
-    Dormant { entity: EntityId },
+    Dormant {
+        entity: EntityId,
+        cause: LifecycleCause,
+    },
     /// Dormant entity coherent again.
     Revive {
         entity: EntityId,
         snapshot: EntitySnapshot,
+        cause: LifecycleCause,
     },
 }

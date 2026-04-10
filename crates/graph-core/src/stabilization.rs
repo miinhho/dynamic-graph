@@ -8,10 +8,11 @@
 ///
 /// Applied per-slot independently so different dimensions can saturate
 /// differently if the user sets up kind-specific configs for each.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum SaturationMode {
     /// No saturation. Values can grow unboundedly — only the trust
     /// region (if set) limits magnitude.
+    #[default]
     None,
     /// Soft saturation via `tanh`. Slots are mapped through
     /// `tanh(v / scale) * scale` where `scale` is the trust region
@@ -22,12 +23,6 @@ pub enum SaturationMode {
     /// gives a strict bound. Requires `trust_region` to be set; if not,
     /// falls back to `None`.
     Clip,
-}
-
-impl Default for SaturationMode {
-    fn default() -> Self {
-        SaturationMode::None
-    }
 }
 
 /// Per-kind guard-rail parameters. Stored inside `InfluenceKindConfig`

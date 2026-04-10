@@ -5,15 +5,18 @@ license.workspace = true
 version.workspace = true
 
 [features]
-serde = ["graph-core/serde", "dep:serde"]
+serde = ["graph-core/serde", "dep:serde", "dep:postcard", "dep:crc32fast"]
 
 [dependencies]
 graph-core.workspace = true
 rustc-hash.workspace = true
 serde = { workspace = true, optional = true }
+postcard = { workspace = true, optional = true }
+crc32fast = { workspace = true, optional = true }
 
 [dev-dependencies]
 graph-testkit.workspace = true
+tempfile.workspace = true
 
 [lib]
 path = "src/lib.rs"

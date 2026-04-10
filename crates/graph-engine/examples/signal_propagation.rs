@@ -6,6 +6,10 @@
 //!   Stimulus → batch loop → Change log → Relationship auto-emergence
 //!            → Entity recognition → Cohere extraction
 //!
+//! Also showcases the query surface added in recent redesign iterations:
+//! `WorldDiff`, `WorldMetrics`, `path_between`, `reachable_from`, and
+//! `connected_components`.
+//!
 //! ## Domain
 //!
 //! A small network arranged as a tree:
@@ -32,6 +36,7 @@ use graph_engine::{
     DefaultCoherePerspective, DefaultEmergencePerspective, Engine, EngineConfig, InfluenceKindConfig,
     InfluenceKindRegistry, LocusKindRegistry,
 };
+use graph_query::{connected_components, path_between, reachable_from};
 use graph_world::World;
 
 // ── Kind constants ────────────────────────────────────────────────────────────
@@ -54,7 +59,7 @@ struct EmitterProgram {
     gain: f32,
 }
 impl LocusProgram for EmitterProgram {
-    fn process(&self, _: &Locus, incoming: &[&Change]) -> Vec<ProposedChange> {
+    fn process(&self, _: &Locus, incoming: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
         let stimuli_total: f32 = incoming
             .iter()
             .filter(|c| c.is_stimulus())
@@ -81,7 +86,7 @@ struct RelayProgram {
     gain: f32,
 }
 impl LocusProgram for RelayProgram {
-    fn process(&self, _: &Locus, incoming: &[&Change]) -> Vec<ProposedChange> {
+    fn process(&self, _: &Locus, incoming: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
         let total: f32 = incoming.iter().flat_map(|c| c.after.as_slice()).sum();
         if total < 0.01 {
             return Vec::new();
@@ -103,7 +108,7 @@ impl LocusProgram for RelayProgram {
 /// Accepts incoming, never emits.
 struct SinkProgram;
 impl LocusProgram for SinkProgram {
-    fn process(&self, _: &Locus, _: &[&Change]) -> Vec<ProposedChange> {
+    fn process(&self, _: &Locus, _: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
         Vec::new()
     }
 }
@@ -153,6 +158,8 @@ fn main() {
     println!("  L1 (emitter)  → L2 (relay) → L3 (sink)");
     println!("               ↘ L4 (sink)\n");
 
+    let before_tick = world.current_batch();
+
     let stimulus = ProposedChange::new(
         ChangeSubject::Locus(L1),
         SIGNAL,
@@ -167,7 +174,54 @@ fn main() {
     );
     println!();
 
-    // Change log.
+    // ── WorldDiff ────────────────────────────────────────────────────────────
+
+    let diff = world.diff_since(before_tick);
+    println!("--- WorldDiff (batch {} → {}) ---",
+        before_tick.0, world.current_batch().0);
+    println!("  changes:               {}", diff.change_ids.len());
+    println!("  relationships created: {}", diff.relationships_created.len());
+    println!("  relationships updated: {}", diff.relationships_updated.len());
+    println!();
+
+    // ── WorldMetrics ─────────────────────────────────────────────────────────
+
+    let m = world.metrics();
+    println!("--- WorldMetrics ---");
+    println!("  loci:              {}", m.locus_count);
+    println!("  relationships:     {} ({} active)", m.relationship_count, m.active_relationship_count);
+    println!("  mean activity:     {:.4}", m.mean_activity);
+    println!("  max activity:      {:.4}", m.max_activity);
+    println!("  components:        {} (largest: {} loci)", m.component_count, m.largest_component_size);
+    println!("  max degree:        {}", m.max_degree);
+    if let Some((lid, deg)) = m.top_loci_by_degree.first() {
+        println!("  top locus by deg:  L{} ({} edges)", lid.0, deg);
+    }
+    println!();
+
+    // ── Graph traversal ───────────────────────────────────────────────────────
+
+    let path = path_between(&world, L1, L3);
+    if let Some(p) = path {
+        let hops: Vec<String> = p.iter().map(|l| format!("L{}", l.0)).collect();
+        println!("Shortest path L1 → L3: {}", hops.join(" → "));
+    } else {
+        println!("No path L1 → L3 (relationships not yet emerged)");
+    }
+
+    let reachable = reachable_from(&world, L1, 2);
+    println!(
+        "Reachable from L1 within 2 hops: {:?}",
+        reachable.iter().map(|l| l.0).collect::<Vec<_>>()
+    );
+
+    let components = connected_components(&world);
+    println!("Connected components: {} (largest: {} loci)", components.len(),
+        components.iter().map(Vec::len).max().unwrap_or(0));
+    println!();
+
+    // ── Change log ────────────────────────────────────────────────────────────
+
     println!("--- Change log ---");
     for c in world.log().iter() {
         let subj = match c.subject {
@@ -183,7 +237,8 @@ fn main() {
     }
     println!();
 
-    // Relationships.
+    // ── Relationships ─────────────────────────────────────────────────────────
+
     println!("--- Relationships (auto-emerged) ---");
     for r in world.relationships().iter() {
         let (f, t) = match &r.endpoints {
@@ -197,8 +252,9 @@ fn main() {
     }
     println!();
 
-    // Entity recognition with a lower threshold so freshly-decayed
-    // activities are still visible.
+    // ── Entity recognition ────────────────────────────────────────────────────
+
+    // Lower threshold so freshly-decayed activities are still visible.
     let ep = DefaultEmergencePerspective {
         min_activity_threshold: 0.01,
         ..Default::default()
@@ -218,7 +274,8 @@ fn main() {
     }
     println!();
 
-    // Cohere extraction.
+    // ── Cohere extraction ─────────────────────────────────────────────────────
+
     let cp = DefaultCoherePerspective {
         min_bridge_activity: 0.01,
         ..Default::default()

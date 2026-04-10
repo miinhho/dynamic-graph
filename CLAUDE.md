@@ -54,7 +54,8 @@ Entities and relationships are **emergent, not declared**. The user registers lo
 
 - **`StateVector`** — heap `Vec<f32>` representing a locus or relationship's state. Relationships use a 2-slot vector: `[activity, weight]`.
 - **`Change`** — committed event: `{ id, subject: ChangeSubject, kind: InfluenceKindId, predecessors, before, after, batch }`. `ChangeSubject` is `Locus(LocusId)` or `Relationship(RelationshipId)`.
-- **`LocusProgram`** — user-supplied trait: `process()` returns `Vec<ProposedChange>`; `structural_proposals()` returns `Vec<StructuralProposal>` (default: empty).
+- **`LocusProgram`** — user-supplied trait: `process(locus, incoming, ctx)` returns `Vec<ProposedChange>`; `structural_proposals(locus, incoming, ctx)` returns `Vec<StructuralProposal>` (default: empty). Both receive a `&dyn LocusContext` for querying neighbor states and relationships.
+- **`LocusContext`** — read-only world view: `locus(id)`, `relationships_for(id)`, `relationship_between(a, b)`. Concrete impl: `BatchContext` in graph-world.
 - **`InfluenceKindConfig`** — per-kind config: `decay_per_batch`, `StabilizationConfig`, `PlasticityConfig` (Hebbian opt-in, `learning_rate = 0` by default).
 - **`Engine::tick()`** — the main entry point. Drains pending changes in batches until quiescent or `max_batches_per_tick` fires.
 
@@ -62,8 +63,8 @@ Entities and relationships are **emergent, not declared**. The user registers lo
 
 1. Commit all pending `ProposedChange`s as the current `BatchId`.
 2. For each `ChangeSubject::Locus`: apply stabilization, update locus state, auto-emerge relationships for cross-locus predecessors, collect Hebbian observations.
-3. Dispatch `LocusProgram::process()` for each affected locus; queue follow-up changes.
-4. Collect `structural_proposals`; apply `CreateRelationship` / `DeleteRelationship`.
+3. Dispatch `LocusProgram::process(locus, inbox, ctx)` for each affected locus; queue follow-up changes.
+4. Collect `structural_proposals(locus, inbox, ctx)`; apply `CreateRelationship` / `DeleteRelationship`.
 5. Apply Hebbian weight updates (`Δweight = η × pre × post`).
 6. Apply per-kind activity decay and weight decay to all relationships.
 7. Advance `BatchId`; repeat until `pending` is empty.

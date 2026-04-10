@@ -95,8 +95,6 @@ impl CoherePerspective for DefaultCoherePerspective {
                         let (from, to) = match &r.endpoints {
                             Endpoints::Directed { from, to } => (*from, *to),
                             Endpoints::Symmetric { a, b } => (*a, *b),
-                            Endpoints::NAry(ids) if ids.len() >= 2 => (ids[0], ids[ids.len()-1]),
-                            _ => return false,
                         };
                         (members_a.contains(&from) && members_b.contains(&to))
                             || (members_a.contains(&to) && members_b.contains(&from))

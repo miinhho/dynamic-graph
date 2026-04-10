@@ -277,6 +277,7 @@ dependencies = [
 name = "graph-core"
 version = "0.1.0"
 dependencies = [
+ "rustc-hash",
  "serde",
 ]
 
@@ -286,10 +287,34 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "graph-core",
+ "graph-query",
+ "graph-storage",
  "graph-testkit",
  "graph-world",
- "rayon",
  "rustc-hash",
+ "tempfile",
+]
+
+[[package]]
+name = "graph-query"
+version = "0.1.0"
+dependencies = [
+ "graph-core",
+ "graph-testkit",
+ "graph-world",
+ "rustc-hash",
+]
+
+[[package]]
+name = "graph-storage"
+version = "0.1.0"
+dependencies = [
+ "graph-core",
+ "graph-testkit",
+ "graph-world",
+ "postcard",
+ "redb",
+ "tempfile",
 ]
 
 [[package]]
@@ -302,27 +327,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "graph-wal"
+name = "graph-world"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
  "graph-core",
- "graph-engine",
  "graph-testkit",
- "graph-world",
  "postcard",
- "serde",
- "tempfile",
-]
-
-[[package]]
-name = "graph-world"
-version = "0.1.0"
-dependencies = [
- "graph-core",
- "graph-testkit",
  "rustc-hash",
  "serde",
+ "tempfile",
 ]
 
 [[package]]
@@ -585,6 +599,15 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
+]
+
+[[package]]
+name = "redb"
+version = "2.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8eca1e9d98d5a7e9002d0013e18d5a9b000aee942eb134883a82f06ebffb6c01"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

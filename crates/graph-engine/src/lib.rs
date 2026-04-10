@@ -5,7 +5,6 @@
 //! registries, regime classification, adaptive guard rail, and the
 //! emergence / cohere perspectives.
 
-mod adaptive;
 mod cohere;
 mod emergence;
 mod engine;
@@ -15,11 +14,12 @@ mod simulation;
 
 pub use cohere::{CoherePerspective, DefaultCoherePerspective};
 pub use emergence::{DefaultEmergencePerspective, EmergencePerspective};
-pub use adaptive::{AdaptiveConfig, AdaptiveGuardRail};
-pub use engine::{Engine, EngineConfig, TickResult};
-pub use graph_core::{DefaultEntityWeathering, EntityWeatheringPolicy, StructuralProposal, WeatheringEffect};
 pub use regime::{
+    AdaptiveConfig, AdaptiveGuardRail,
     BatchHistory, BatchMetrics, DefaultRegimeClassifier, DynamicsRegime, RegimeClassifier,
 };
-pub use registry::{InfluenceKindConfig, InfluenceKindRegistry, LocusKindRegistry, PlasticityConfig};
-pub use simulation::{Simulation, SimulationConfig, StepObservation};
+pub use engine::{Engine, EngineConfig, TickResult};
+pub use graph_core::{DefaultEntityWeathering, Encoder, EntityWeatheringPolicy, LifecycleCause, PassthroughEncoder, Properties, PropertyValue, RegimeTag, StructuralProposal, WeatheringEffect, WorldEvent};
+pub use registry::{InfluenceKindConfig, InfluenceKindRegistry, LocusKindConfig, LocusKindRegistry, PlasticityConfig};
+pub use simulation::{Simulation, SimulationBuilder, SimulationConfig, StepObservation};
+pub use graph_world::{WorldDiff, WorldMetrics};

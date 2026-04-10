@@ -2,9 +2,10 @@
 members = [
     "crates/graph-core",
     "crates/graph-world",
+    "crates/graph-query",
     "crates/graph-engine",
     "crates/graph-testkit",
-    "crates/graph-wal",
+    "crates/graph-storage",
 ]
 resolver = "2"
 
@@ -17,11 +18,13 @@ version = "0.1.0"
 graph-core = { path = "crates/graph-core" }
 graph-world = { path = "crates/graph-world" }
 graph-engine = { path = "crates/graph-engine" }
+graph-query = { path = "crates/graph-query" }
 graph-testkit = { path = "crates/graph-testkit" }
-graph-wal = { path = "crates/graph-wal" }
+graph-storage = { path = "crates/graph-storage" }
+redb = "2"
 rustc-hash = "2.1.1"
 criterion = { version = "0.6", features = ["html_reports"] }
-rayon = "1.10"
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
+crc32fast = "1"
 tempfile = "3"

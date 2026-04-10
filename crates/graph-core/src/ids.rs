@@ -24,9 +24,19 @@ id_newtype!(
 id_newtype!(
     InfluenceKindId,
     "User-defined influence kind. Per-kind stabilization, decay, and \
-     regime classification keys off this. Per O8 in redesign.md, this is \
-     the same identifier as `RelationshipKindId`."
+     regime classification keys off this."
 );
+
+/// Relationship kind identifier.
+///
+/// Per O8 in `docs/redesign.md` §8, a relationship's kind is the same
+/// dimension as the influence kind that created it — there is no separate
+/// kind space. This is a type alias, not a distinct newtype, so
+/// `RelationshipKindId` and `InfluenceKindId` are interchangeable at
+/// every call site. If a future use case needs sub-kinds, promote this
+/// to a full newtype.
+pub type RelationshipKindId = InfluenceKindId;
+
 id_newtype!(ChangeId, "Identity of a single change (Layer 1).");
 id_newtype!(
     BatchId,

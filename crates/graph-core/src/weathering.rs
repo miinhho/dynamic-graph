@@ -11,12 +11,12 @@
 //!
 //! - `Preserved` — layer is untouched.
 //! - `Compress`  — layer snapshot is stripped; coherence + member count
-//!                  kept in a `CompressionLevel::Compressed` record.
+//!   kept in a `CompressionLevel::Compressed` record.
 //! - `Skeleton`  — further reduction; only transition kind + minimal
-//!                  stats remain (`CompressionLevel::Skeleton`).
+//!   stats remain (`CompressionLevel::Skeleton`).
 //! - `Remove`    — layer is deleted. **The engine never removes a layer
-//!                  whose transition `is_significant()` (Born/Split/Merged)
-//!                  — it falls back to `Skeleton` for those.**
+//!   whose transition `is_significant()` (Born/Split/Merged)
+//!   — it falls back to `Skeleton` for those.**
 //!
 //! Callers that need different semantics can implement the trait directly.
 

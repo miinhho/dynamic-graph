@@ -4,16 +4,20 @@
 //! and the `World` type that ties them together for the engine. See
 //! `docs/identity.md` for the ontology.
 
-pub mod change_log;
-pub mod cohere_store;
-pub mod entity_store;
-pub mod locus_store;
-pub mod relationship_store;
+pub mod store;
+pub mod context;
+pub mod diff;
+pub mod metrics;
 pub mod world;
 
-pub use change_log::ChangeLog;
-pub use cohere_store::CohereStore;
-pub use entity_store::EntityStore;
-pub use locus_store::LocusStore;
-pub use relationship_store::RelationshipStore;
+pub use store::change_log::ChangeLog;
+pub use store::cohere_store::{CohereSnapshot, CohereStore};
+pub use store::entity_store::EntityStore;
+pub use store::locus_store::LocusStore;
+pub use store::name_index::NameIndex;
+pub use store::property_store::PropertyStore;
+pub use store::relationship_store::RelationshipStore;
+pub use context::BatchContext;
+pub use diff::WorldDiff;
+pub use metrics::{ACTIVITY_THRESHOLD, TOP_N, WorldMetrics};
 pub use world::{World, WorldMeta, WorldSnapshot};

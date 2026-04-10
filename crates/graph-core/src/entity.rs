@@ -14,6 +14,41 @@
 use crate::ids::{BatchId, LocusId};
 use crate::relationship::RelationshipId;
 
+/// Why a lifecycle transition happened. Provides a causal link from
+/// entity-layer events back to the lower-layer evidence that triggered them.
+#[derive(Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum LifecycleCause {
+    /// No specific cause recorded (e.g. external stimulus, or cause
+    /// tracking was not enabled).
+    #[default]
+    Unspecified,
+    /// Entity formed from these relationships being above threshold.
+    RelationshipCluster {
+        /// The key relationships that formed the cluster.
+        key_relationships: Vec<RelationshipId>,
+    },
+    /// Entity went dormant because these relationships decayed.
+    RelationshipDecay {
+        /// Relationships whose activity fell below threshold.
+        decayed_relationships: Vec<RelationshipId>,
+    },
+    /// Entity split because the component graph separated.
+    ComponentSplit {
+        /// Bridge relationships that were too weak to hold the entity
+        /// together.
+        weak_bridges: Vec<RelationshipId>,
+    },
+    /// Entity absorbed others via merge (survivor's perspective).
+    MergedFrom {
+        absorbed: Vec<EntityId>,
+    },
+    /// Entity was absorbed into another (absorbed entity's perspective).
+    MergedInto {
+        survivor: EntityId,
+    },
+}
+
 /// Stable identity of an entity. Immutable across its entire sediment
 /// stack from birth to dormancy.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -164,6 +199,9 @@ pub struct EntityLayer {
     pub snapshot: Option<EntitySnapshot>,
     pub transition: LayerTransition,
     pub compression: CompressionLevel,
+    /// Why this transition happened — links back to the lower-layer
+    /// evidence. Default: `Unspecified`.
+    pub cause: LifecycleCause,
 }
 
 impl EntityLayer {
@@ -173,7 +211,13 @@ impl EntityLayer {
             snapshot: Some(snapshot),
             transition,
             compression: CompressionLevel::Full,
+            cause: LifecycleCause::Unspecified,
         }
+    }
+
+    pub fn with_cause(mut self, cause: LifecycleCause) -> Self {
+        self.cause = cause;
+        self
     }
 }
 

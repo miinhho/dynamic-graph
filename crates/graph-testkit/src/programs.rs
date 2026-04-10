@@ -4,7 +4,7 @@
 //! simple behavioural archetype useful for testing the engine's batch
 //! loop, relationship auto-emergence, and entity recognition.
 
-use graph_core::{Change, ChangeSubject, InfluenceKindId, Locus, LocusId, LocusProgram, ProposedChange, StateVector};
+use graph_core::{Change, ChangeSubject, InfluenceKindId, Locus, LocusContext, LocusId, LocusProgram, ProposedChange, StateVector};
 
 /// Influence kind used by all testkit fixtures. Callers must register
 /// this id in their `InfluenceKindRegistry`.
@@ -13,7 +13,7 @@ pub const TEST_KIND: InfluenceKindId = InfluenceKindId(1);
 /// Never emits. Used as a terminal sink in chain/star topologies.
 pub struct InertProgram;
 impl LocusProgram for InertProgram {
-    fn process(&self, _: &Locus, _: &[&Change]) -> Vec<ProposedChange> {
+    fn process(&self, _: &Locus, _: &[&Change], _: &dyn LocusContext) -> Vec<ProposedChange> {
         Vec::new()
     }
 }
@@ -26,7 +26,7 @@ pub struct ForwardProgram {
     pub gain: f32,
 }
 impl LocusProgram for ForwardProgram {
-    fn process(&self, _: &Locus, incoming: &[&Change]) -> Vec<ProposedChange> {
+    fn process(&self, _: &Locus, incoming: &[&Change], _: &dyn LocusContext) -> Vec<ProposedChange> {
         let total: f32 = incoming.iter().flat_map(|c| c.after.as_slice()).sum();
         if total.abs() < 0.001 {
             return Vec::new();
@@ -53,7 +53,7 @@ pub struct BroadcastProgram {
     pub gain: f32,
 }
 impl LocusProgram for BroadcastProgram {
-    fn process(&self, _: &Locus, incoming: &[&Change]) -> Vec<ProposedChange> {
+    fn process(&self, _: &Locus, incoming: &[&Change], _: &dyn LocusContext) -> Vec<ProposedChange> {
         let total: f32 = incoming.iter().flat_map(|c| c.after.as_slice()).sum();
         if total.abs() < 0.001 {
             return Vec::new();
@@ -72,7 +72,7 @@ impl LocusProgram for BroadcastProgram {
 }
 
 impl LocusProgram for AccumulatorProgram {
-    fn process(&self, locus: &Locus, incoming: &[&Change]) -> Vec<ProposedChange> {
+    fn process(&self, locus: &Locus, incoming: &[&Change], _: &dyn LocusContext) -> Vec<ProposedChange> {
         let total: f32 = incoming.iter().flat_map(|c| c.after.as_slice()).sum();
         if total.abs() < 0.001 {
             return Vec::new();
@@ -100,7 +100,7 @@ pub struct MultiDimAggregatorProgram {
 }
 
 impl LocusProgram for MultiDimAggregatorProgram {
-    fn process(&self, _: &Locus, incoming: &[&Change]) -> Vec<ProposedChange> {
+    fn process(&self, _: &Locus, incoming: &[&Change], _: &dyn LocusContext) -> Vec<ProposedChange> {
         if incoming.is_empty() {
             return Vec::new();
         }

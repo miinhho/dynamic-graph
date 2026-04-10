@@ -198,6 +198,69 @@ Relationship, Entity, Cohere) are implemented across four crates
   `by_batch`) make subject/batch queries O(k); `get()` is O(1) via ChangeId
   density invariant.
 
+- **WAL persistence** ✓ — `graph-wal` crate: append-only segment files,
+  periodic checkpoints, two-phase recovery, CRC-32 torn-record detection,
+  atomic checkpoint writes, WAL compaction after `trim_before_batch`.
+- **WAL–Simulation integration** ✓ — `SimulationConfig::wal: Option<WalConfig>`
+  (requires `graph-engine`'s `wal` feature). Auto-writes every committed batch
+  after each `step()`; exposes `flush_wal()`, `compact_wal()`,
+  `last_wal_error()`, and `Simulation::from_recovery()`.
+
+- **Induced subgraph + activity filter** ✓ —
+  `World::induced_subgraph(loci)` (relationships fully contained within a
+  locus set; O(Σk_i)); `World::relationships_active_above(threshold)` (live
+  relationship filter); `Endpoints::all_endpoints_in`; `WorldMetrics::
+  active_relationship_count` (relationships above `ACTIVITY_THRESHOLD = 0.1`).
+
+- **`WorldDiff`** ✓ — batch-range diff: `World::diff_since(from)` and
+  `diff_between(from, to)` return `WorldDiff` with `change_ids`,
+  `relationships_created`, `relationships_updated`, `entities_changed`.
+  O(k + R + E×L_avg) where k = changes in range.
+
+- **Connected components + kind-filtered traversal** ✓ —
+  `World::connected_components()` / `connected_components_of_kind()` (BFS,
+  O(V+E)); `path_between_of_kind`, `reachable_from_of_kind`; `WorldMetrics`
+  extended with `component_count` and `largest_component_size`.
+
+- **`WorldMetrics` + degree centrality** ✓ — `World::metrics()` snapshot
+  (counts, activity stats, top-N by degree/activity); O(1) `degree()`,
+  `in_degree()`, `out_degree()` via `by_locus` index; `Simulation::step_n(n, stimuli)`
+  and `step_until(pred, max, stimuli)` multi-step convenience methods.
+
+- **Graph traversal** ✓ — `World::path_between(a, b)` (BFS shortest path through
+  relationship graph), `World::reachable_from(start, depth)` (all loci within N hops);
+  `World::entity_members`, `World::entity_member_relationships` (current snapshot
+  lookups from `EntitySnapshot`).
+
+- **Relationship query surface** ✓ — `by_locus` reverse index on `RelationshipStore`;
+  four indexed queries: `relationships_for_locus`, `relationships_from`,
+  `relationships_to`, `relationships_between`; all exposed on `World`.
+  `relationships_for_locus_of_kind` for kind-filtered traversal.
+
+- **Criterion benchmarks** ✓ — `benches/engine.rs`: single-tick topology
+  benchmarks, steady-state `Simulation::step` cost, causal-ancestor DAG depth
+  scaling, changelog query comparison. `benches/wal.rs` (requires `wal` feature):
+  per-step WAL overhead (no-WAL / sync / async), checkpoint write+load roundtrip,
+  full recovery cost, compaction cost.
+
+- **Cross-crate integration tests** ✓ — `crates/graph-engine/tests/integration.rs`:
+  16 tests covering the full simulation stack: relationship emergence (chain,
+  star, ring), `WorldDiff` change capture / created-vs-updated classification /
+  quiescent empty diff, graph traversal post-emergence (`path_between`,
+  `reachable_from`, `connected_components`), `step_until` convergence / stimuli
+  applied once / max-steps exhaustion, invariant assertions (bounded activity,
+  DAG structure, no batch-cap hits), and WAL recovery (relationship count and
+  `BatchId` round-trip via `#[cfg(feature = "wal")]`).
+
+- **`WorldDiff` semantics documented** ✓ — module-level doc and
+  `relationships_updated` field doc now explicitly state: Hebbian weight
+  updates are captured (always co-occur with auto-emerge); lazy activity decay
+  is not (correct by design — decay is background, not an event).
+
+- **`step_until` clone eliminated** ✓ — replaced `bool first` guard +
+  `stimuli.clone()` with `Option<Vec<ProposedChange>>` + `take()`, so
+  the stimulus vector is moved on the first iteration and no copy is made.
+
 ### Open
 
 No open roadmap items at this time. The substrate is feature-complete across

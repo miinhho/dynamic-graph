@@ -4,15 +4,20 @@ edition.workspace = true
 license.workspace = true
 version.workspace = true
 
+[features]
+storage = ["dep:graph-storage"]
+
 [dependencies]
 graph-core.workspace = true
 graph-world.workspace = true
 rustc-hash.workspace = true
-rayon.workspace = true
+graph-storage = { workspace = true, optional = true }
 
 [dev-dependencies]
+graph-query.workspace = true
 graph-testkit.workspace = true
 criterion.workspace = true
+tempfile = "3"
 
 [lib]
 path = "src/lib.rs"
@@ -22,6 +27,12 @@ name = "signal_propagation"
 
 [[example]]
 name = "ring_dynamics"
+
+[[example]]
+name = "sensor_fusion"
+
+[[example]]
+name = "neural_population"
 
 [[bench]]
 name = "engine"

@@ -1,0 +1,326 @@
+//! Indexed store of emergent relationships.
+//!
+//! Two indices coexist:
+//! - `by_id`: `RelationshipId -> Relationship` (the canonical record).
+//! - `by_key`: `(EndpointKey, RelationshipKindId) -> RelationshipId` so
+//!   the auto-emergence path can dedupe a hit in `O(1)` instead of
+//!   walking the whole store.
+//!
+//! Relationships are minted lazily by the engine when cross-locus
+//! causal flow is observed for the first time. The store does not
+//! enforce who is allowed to insert; that policy lives in the engine.
+
+use graph_core::{EndpointKey, Endpoints, LocusId, Relationship, RelationshipId, RelationshipKindId};
+use rustc_hash::FxHashMap;
+
+#[derive(Debug, Default, Clone)]
+pub struct RelationshipStore {
+    by_id: FxHashMap<RelationshipId, Relationship>,
+    by_key: FxHashMap<(EndpointKey, RelationshipKindId), RelationshipId>,
+    /// All relationship ids that involve a given locus (any endpoint position).
+    by_locus: FxHashMap<LocusId, Vec<RelationshipId>>,
+    next_id: u64,
+}
+
+impl RelationshipStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.by_id.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_id.is_empty()
+    }
+
+    /// Mint a fresh `RelationshipId`. The engine assigns id and stores
+    /// the relationship via `insert`; the two-step shape lets the
+    /// caller fill in lineage data that depends on the new id.
+    pub fn mint_id(&mut self) -> RelationshipId {
+        let id = RelationshipId(self.next_id);
+        self.next_id += 1;
+        id
+    }
+
+    pub fn next_id(&self) -> u64 {
+        self.next_id
+    }
+
+    /// Restore the counter after recovery. Must be called before any
+    /// `mint_id()` calls to prevent ID collisions with persisted records.
+    pub fn set_next_id(&mut self, next: u64) {
+        self.next_id = next;
+    }
+
+    /// Insert a freshly minted relationship. Panics on duplicate id —
+    /// duplicate insertion is a programming error, not a runtime case.
+    pub fn insert(&mut self, relationship: Relationship) {
+        let id = relationship.id;
+        let key = (relationship.endpoints.key(), relationship.kind);
+        locus_ids_of(&relationship.endpoints, |locus| {
+            self.by_locus.entry(locus).or_default().push(id);
+        });
+        if self.by_id.insert(id, relationship).is_some() {
+            panic!("RelationshipStore: duplicate id {id:?}");
+        }
+        self.by_key.insert(key, id);
+    }
+
+    pub fn get(&self, id: RelationshipId) -> Option<&Relationship> {
+        self.by_id.get(&id)
+    }
+
+    pub fn get_mut(&mut self, id: RelationshipId) -> Option<&mut Relationship> {
+        self.by_id.get_mut(&id)
+    }
+
+    pub fn lookup(
+        &self,
+        key: &EndpointKey,
+        kind: RelationshipKindId,
+    ) -> Option<RelationshipId> {
+        self.by_key.get(&(key.clone(), kind)).copied()
+    }
+
+    /// Remove a relationship by id. Returns the removed record, or `None`
+    /// if the id was not found.
+    ///
+    /// All three indices (`by_id`, `by_key`, `by_locus`) are updated.
+    /// After removal the id is dangling — do not re-insert with the same id.
+    pub fn remove(&mut self, id: RelationshipId) -> Option<Relationship> {
+        let rel = self.by_id.remove(&id)?;
+        let key = (rel.endpoints.key(), rel.kind);
+        self.by_key.remove(&key);
+        locus_ids_of(&rel.endpoints, |locus| {
+            if let Some(v) = self.by_locus.get_mut(&locus) {
+                v.retain(|&rid| rid != id);
+            }
+        });
+        Some(rel)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Relationship> {
+        self.by_id.values()
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Relationship> {
+        self.by_id.values_mut()
+    }
+
+    // ── degree queries ────────────────────────────────────────────────────
+
+    /// Number of relationships that involve `locus` (any endpoint position).
+    /// O(1) via the `by_locus` index.
+    pub fn degree(&self, locus: LocusId) -> usize {
+        self.by_locus.get(&locus).map(Vec::len).unwrap_or(0)
+    }
+
+    /// Directed in-degree: number of directed relationships where `to == locus`.
+    /// O(k).
+    pub fn in_degree(&self, locus: LocusId) -> usize {
+        self.relationships_to(locus).count()
+    }
+
+    /// Directed out-degree: number of directed relationships where `from == locus`.
+    /// O(k).
+    pub fn out_degree(&self, locus: LocusId) -> usize {
+        self.relationships_from(locus).count()
+    }
+
+    /// Iterate all `(LocusId, degree)` pairs for loci that have at least one
+    /// relationship. O(n_loci_with_edges).
+    pub fn degree_iter(&self) -> impl Iterator<Item = (LocusId, usize)> + '_ {
+        self.by_locus.iter().map(|(&locus, ids)| (locus, ids.len()))
+    }
+
+    // ── locus-based queries ───────────────────────────────────────────────
+
+    /// All relationships that involve `locus` in any endpoint position.
+    /// O(k) where k is the number of relationships at that locus.
+    pub fn relationships_for_locus(&self, locus: LocusId) -> impl Iterator<Item = &Relationship> {
+        self.by_locus
+            .get(&locus)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|id| self.by_id.get(id))
+    }
+
+    /// Directed relationships where `from == locus`.
+    /// O(k) on the locus's relationship set.
+    pub fn relationships_from(&self, locus: LocusId) -> impl Iterator<Item = &Relationship> {
+        self.relationships_for_locus(locus)
+            .filter(move |r| matches!(&r.endpoints, Endpoints::Directed { from, .. } if *from == locus))
+    }
+
+    /// Directed relationships where `to == locus`.
+    /// O(k) on the locus's relationship set.
+    pub fn relationships_to(&self, locus: LocusId) -> impl Iterator<Item = &Relationship> {
+        self.relationships_for_locus(locus)
+            .filter(move |r| matches!(&r.endpoints, Endpoints::Directed { to, .. } if *to == locus))
+    }
+
+    /// Relationships whose endpoints include both `a` and `b`
+    /// (regardless of direction or kind).
+    /// O(k_a) where k_a is the number of relationships at locus `a`.
+    pub fn relationships_between(
+        &self,
+        a: LocusId,
+        b: LocusId,
+    ) -> impl Iterator<Item = &Relationship> {
+        self.relationships_for_locus(a)
+            .filter(move |r| r.endpoints.involves(b))
+    }
+}
+
+/// Invoke `f` once for every distinct `LocusId` that appears in `endpoints`.
+fn locus_ids_of(endpoints: &Endpoints, mut f: impl FnMut(LocusId)) {
+    match endpoints {
+        Endpoints::Directed { from, to } => {
+            f(*from);
+            if from != to {
+                f(*to);
+            }
+        }
+        Endpoints::Symmetric { a, b } => {
+            f(*a);
+            if a != b {
+                f(*b);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use graph_core::{
+        Endpoints, InfluenceKindId, LocusId, RelationshipLineage, StateVector,
+    };
+
+    fn rel(id: RelationshipId, from: u64, to: u64, kind: u64) -> Relationship {
+        Relationship {
+            id,
+            kind: InfluenceKindId(kind),
+            endpoints: Endpoints::Directed {
+                from: LocusId(from),
+                to: LocusId(to),
+            },
+            state: StateVector::from_slice(&[0.0]),
+            lineage: RelationshipLineage {
+                created_by: None,
+                last_touched_by: None,
+                change_count: 0,
+                kinds_observed: vec![InfluenceKindId(kind)],
+            },
+            last_decayed_batch: 0,
+        }
+    }
+
+    #[test]
+    fn insert_and_lookup_by_endpoint_kind() {
+        let mut store = RelationshipStore::new();
+        let id = store.mint_id();
+        store.insert(rel(id, 1, 2, 7));
+        let key = Endpoints::Directed {
+            from: LocusId(1),
+            to: LocusId(2),
+        }
+        .key();
+        assert_eq!(store.lookup(&key, InfluenceKindId(7)), Some(id));
+        assert_eq!(store.lookup(&key, InfluenceKindId(8)), None);
+    }
+
+    #[test]
+    fn directed_endpoints_distinguish_direction() {
+        // (1->2) and (2->1) of the same kind are *different* relationships.
+        let mut store = RelationshipStore::new();
+        let id_a = store.mint_id();
+        store.insert(rel(id_a, 1, 2, 1));
+        let id_b = store.mint_id();
+        store.insert(rel(id_b, 2, 1, 1));
+        assert_eq!(store.len(), 2);
+    }
+
+    #[test]
+    fn symmetric_endpoints_dedupe_by_unordered_pair() {
+        // The store *itself* doesn't dedupe — that's the engine's job.
+        // But the EndpointKey for Symmetric{a,b} must equal the key for
+        // Symmetric{b,a}, so two lookups land on the same record.
+        let key_ab = Endpoints::Symmetric {
+            a: LocusId(1),
+            b: LocusId(2),
+        }
+        .key();
+        let key_ba = Endpoints::Symmetric {
+            a: LocusId(2),
+            b: LocusId(1),
+        }
+        .key();
+        assert_eq!(key_ab, key_ba);
+    }
+
+    #[test]
+    fn relationships_for_locus_finds_both_directions() {
+        let mut store = RelationshipStore::new();
+        let id_ab = store.mint_id();
+        store.insert(rel(id_ab, 1, 2, 1)); // 1→2
+        let id_bc = store.mint_id();
+        store.insert(rel(id_bc, 2, 3, 1)); // 2→3
+        let id_cd = store.mint_id();
+        store.insert(rel(id_cd, 3, 4, 1)); // 3→4
+
+        let at_2: Vec<_> = store.relationships_for_locus(LocusId(2)).map(|r| r.id).collect();
+        assert_eq!(at_2.len(), 2);
+        assert!(at_2.contains(&id_ab));
+        assert!(at_2.contains(&id_bc));
+    }
+
+    #[test]
+    fn relationships_from_and_to_are_directional() {
+        let mut store = RelationshipStore::new();
+        let id_ab = store.mint_id();
+        store.insert(rel(id_ab, 1, 2, 1)); // 1→2
+        let id_ba = store.mint_id();
+        store.insert(rel(id_ba, 2, 1, 1)); // 2→1
+
+        let from_1: Vec<_> = store.relationships_from(LocusId(1)).map(|r| r.id).collect();
+        assert_eq!(from_1, vec![id_ab]);
+
+        let to_1: Vec<_> = store.relationships_to(LocusId(1)).map(|r| r.id).collect();
+        assert_eq!(to_1, vec![id_ba]);
+    }
+
+    #[test]
+    fn relationships_between_matches_both_endpoint_orders() {
+        let mut store = RelationshipStore::new();
+        let id_ab = store.mint_id();
+        store.insert(rel(id_ab, 1, 2, 1)); // 1→2
+        let id_ba = store.mint_id();
+        store.insert(rel(id_ba, 2, 1, 2)); // 2→1 (different kind)
+        let id_ac = store.mint_id();
+        store.insert(rel(id_ac, 1, 3, 1)); // 1→3 (unrelated)
+
+        let between: Vec<_> = store
+            .relationships_between(LocusId(1), LocusId(2))
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(between.len(), 2);
+        assert!(between.contains(&id_ab));
+        assert!(between.contains(&id_ba));
+        assert!(!between.contains(&id_ac));
+    }
+
+    #[test]
+    fn remove_cleans_locus_index() {
+        let mut store = RelationshipStore::new();
+        let id = store.mint_id();
+        store.insert(rel(id, 1, 2, 1));
+        store.remove(id);
+
+        assert_eq!(store.relationships_for_locus(LocusId(1)).count(), 0);
+        assert_eq!(store.relationships_for_locus(LocusId(2)).count(), 0);
+    }
+}

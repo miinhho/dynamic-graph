@@ -11,11 +11,11 @@
 //!   is the resolved direction in §7.
 //!
 //! Both registries are populated at world-construction time and treated
-//! as immutable for the duration of a run. Lookup panics in debug builds
-//! and returns `None` in release builds — debug-only panics are how O6
-//! mitigates the loss of compile-time type safety.
+//! as immutable for the duration of a run. `require()` always panics on
+//! an unregistered kind — use `get()` for lenient lookups that tolerate
+//! missing registrations.
 
-use graph_core::{InfluenceKindId, LocusKindId, LocusProgram, StabilizationConfig};
+use graph_core::{Encoder, InfluenceKindId, LocusKindId, LocusProgram, StabilizationConfig};
 use rustc_hash::FxHashMap;
 
 /// Hebbian plasticity parameters for one influence kind.
@@ -83,6 +83,10 @@ pub struct InfluenceKindConfig {
     /// Hebbian plasticity parameters. Disabled by default
     /// (`learning_rate = 0`).
     pub plasticity: PlasticityConfig,
+    /// Relationships whose activity falls below this threshold after
+    /// decay are automatically removed during `flush_relationship_decay`.
+    /// `0.0` disables auto-pruning (default).
+    pub prune_activity_threshold: f32,
 }
 
 impl InfluenceKindConfig {
@@ -92,6 +96,7 @@ impl InfluenceKindConfig {
             decay_per_batch: 1.0,
             stabilization: StabilizationConfig::default(),
             plasticity: PlasticityConfig::default(),
+            prune_activity_threshold: 0.0,
         }
     }
 
@@ -109,12 +114,32 @@ impl InfluenceKindConfig {
         self.plasticity = config;
         self
     }
+
+    pub fn with_prune_threshold(mut self, threshold: f32) -> Self {
+        self.prune_activity_threshold = threshold;
+        self
+    }
+}
+
+/// Per-locus-kind configuration: program + optional refractory period + optional encoder.
+pub struct LocusKindConfig {
+    pub program: Box<dyn LocusProgram>,
+    /// Minimum number of batches a locus must wait after firing before
+    /// its program is dispatched again. `0` = no refractory period.
+    /// This prevents cascade amplification in highly connected networks
+    /// by ensuring each locus fires at most once per `refractory_batches`
+    /// batches within a single tick.
+    pub refractory_batches: u32,
+    /// Optional encoder that converts domain `Properties` into the
+    /// `StateVector` the engine consumes. Used by the ingest API.
+    /// When `None`, the ingest API falls back to `PassthroughEncoder`.
+    pub encoder: Option<Box<dyn Encoder>>,
 }
 
 /// Owns the per-locus-kind program implementations.
 #[derive(Default)]
 pub struct LocusKindRegistry {
-    programs: FxHashMap<LocusKindId, Box<dyn LocusProgram>>,
+    configs: FxHashMap<LocusKindId, LocusKindConfig>,
 }
 
 impl LocusKindRegistry {
@@ -122,35 +147,49 @@ impl LocusKindRegistry {
         Self::default()
     }
 
-    /// Register a program for a locus kind. Panics if the kind is
-    /// already registered — duplicate registration is a programming
-    /// error, not a runtime situation we want to silently overwrite.
+    /// Register a program for a locus kind with no refractory period.
     pub fn insert(&mut self, kind: LocusKindId, program: Box<dyn LocusProgram>) {
-        if self.programs.insert(kind, program).is_some() {
+        self.insert_with_config(kind, LocusKindConfig { program, refractory_batches: 0, encoder: None });
+    }
+
+    /// Register a program with a full config (refractory period, etc.).
+    pub fn insert_with_config(&mut self, kind: LocusKindId, config: LocusKindConfig) {
+        if self.configs.insert(kind, config).is_some() {
             panic!("LocusKindRegistry: duplicate registration for {kind:?}");
         }
     }
 
     pub fn get(&self, kind: LocusKindId) -> Option<&dyn LocusProgram> {
-        self.programs.get(&kind).map(|boxed| boxed.as_ref())
+        self.configs.get(&kind).map(|cfg| cfg.program.as_ref())
     }
 
-    /// Same as `get` but panics in debug builds when the kind is missing.
-    /// This is the lookup path the batch loop uses — see O6 in
-    /// `docs/redesign.md` §8 for why debug-only panics are the chosen
-    /// safety net.
+    /// Return the encoder for a kind, or `None` if no encoder is registered.
+    pub fn encoder(&self, kind: LocusKindId) -> Option<&dyn Encoder> {
+        self.configs
+            .get(&kind)
+            .and_then(|cfg| cfg.encoder.as_deref())
+    }
+
+    /// Return the full config for a kind (program + refractory period).
+    pub fn get_config(&self, kind: LocusKindId) -> Option<&LocusKindConfig> {
+        self.configs.get(&kind)
+    }
+
+    /// Same as `get` but panics (in both debug and release) when the kind
+    /// is missing. Use this in the batch loop where an unregistered kind
+    /// is always a programming error.
     pub fn require(&self, kind: LocusKindId) -> Option<&dyn LocusProgram> {
         let found = self.get(kind);
-        debug_assert!(found.is_some(), "unregistered LocusKindId: {kind:?}");
+        assert!(found.is_some(), "unregistered LocusKindId: {kind:?}");
         found
     }
 
     pub fn len(&self) -> usize {
-        self.programs.len()
+        self.configs.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.programs.is_empty()
+        self.configs.is_empty()
     }
 }
 
@@ -178,7 +217,7 @@ impl InfluenceKindRegistry {
 
     pub fn require(&self, kind: InfluenceKindId) -> Option<&InfluenceKindConfig> {
         let found = self.get(kind);
-        debug_assert!(found.is_some(), "unregistered InfluenceKindId: {kind:?}");
+        assert!(found.is_some(), "unregistered InfluenceKindId: {kind:?}");
         found
     }
 
@@ -206,7 +245,7 @@ mod tests {
 
     struct NoopProgram;
     impl LocusProgram for NoopProgram {
-        fn process(&self, _: &Locus, _: &[&Change]) -> Vec<ProposedChange> {
+        fn process(&self, _: &Locus, _: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
             Vec::new()
         }
     }

@@ -17,7 +17,7 @@
 //! they are valid `ChangeSubject`s — relationship-subject changes update
 //! their state and feed higher emergent layers.
 
-use crate::ids::{ChangeId, InfluenceKindId, LocusId};
+use crate::ids::{ChangeId, InfluenceKindId, LocusId, RelationshipKindId};
 use crate::state::StateVector;
 
 /// Identity of a relationship in the relationship store.
@@ -25,28 +25,51 @@ use crate::state::StateVector;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RelationshipId(pub u64);
 
-/// Per O8: same identifier as `InfluenceKindId`. Aliased rather than a
-/// distinct newtype so `From`/`Into` plumbing stays trivial. If the
-/// future needs sub-kinds, we promote this to a full newtype.
-pub type RelationshipKindId = InfluenceKindId;
-
 /// Which loci a relationship connects, and how.
 ///
 /// `Directed` is the common case (A influences B). `Symmetric` exists
 /// for kinds that are inherently undirected (e.g., shared resonance).
-/// `NAry` is reserved for the rare case where a single change has more
-/// than two cross-locus predecessors and the user's emergence policy
-/// wants to merge them into one hyperedge instead of multiple pairwise
-/// edges. The default emergence path uses `Directed`.
+/// Both variants are binary — a relationship connects exactly two loci.
+/// N-ary hyperedges are not modelled; multi-party interactions are
+/// expressed as multiple pairwise relationships.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Endpoints {
     Directed { from: LocusId, to: LocusId },
     Symmetric { a: LocusId, b: LocusId },
-    NAry(Vec<LocusId>),
 }
 
 impl Endpoints {
+    /// Returns `true` if every endpoint in this relationship is contained
+    /// in `set`. Used by `World::induced_subgraph`.
+    pub fn all_endpoints_in(&self, set: &rustc_hash::FxHashSet<LocusId>) -> bool {
+        match self {
+            Endpoints::Directed { from, to } => set.contains(from) && set.contains(to),
+            Endpoints::Symmetric { a, b } => set.contains(a) && set.contains(b),
+        }
+    }
+
+    /// Returns `true` if `locus` appears in any endpoint position.
+    pub fn involves(&self, locus: LocusId) -> bool {
+        match self {
+            Endpoints::Directed { from, to } => *from == locus || *to == locus,
+            Endpoints::Symmetric { a, b } => *a == locus || *b == locus,
+        }
+    }
+
+    /// The endpoint that is not `locus`, treating the relationship as
+    /// undirected. For a self-loop (`from == to == locus`), returns `locus`.
+    pub fn other_than(&self, locus: LocusId) -> LocusId {
+        match self {
+            Endpoints::Directed { from, to } => {
+                if *from == locus { *to } else { *from }
+            }
+            Endpoints::Symmetric { a, b } => {
+                if *a == locus { *b } else { *a }
+            }
+        }
+    }
+
     /// Canonical lookup key — endpoints flattened into a stable shape so
     /// the relationship store can dedupe hits regardless of insertion
     /// order. For `Symmetric`, the two ids are sorted; for `Directed`,
@@ -58,11 +81,6 @@ impl Endpoints {
                 let (lo, hi) = if a.0 <= b.0 { (*a, *b) } else { (*b, *a) };
                 EndpointKey::Symmetric(lo, hi)
             }
-            Endpoints::NAry(ids) => {
-                let mut sorted: Vec<LocusId> = ids.clone();
-                sorted.sort();
-                EndpointKey::NAry(sorted)
-            }
         }
     }
 }
@@ -73,7 +91,6 @@ impl Endpoints {
 pub enum EndpointKey {
     Directed(LocusId, LocusId),
     Symmetric(LocusId, LocusId),
-    NAry(Vec<LocusId>),
 }
 
 /// Lineage metadata for a relationship — which changes brought it into
