@@ -19,3 +19,4 @@ graph-engine = { path = "crates/graph-engine" }
 graph-testkit = { path = "crates/graph-testkit" }
 rustc-hash = "2.1.1"
 criterion = { version = "0.6", features = ["html_reports"] }
+rayon = "1.10"

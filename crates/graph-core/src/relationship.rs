@@ -110,6 +110,11 @@ pub struct Relationship {
     /// add their own slots.
     pub state: StateVector,
     pub lineage: RelationshipLineage,
+    /// Batch number at which `state` slots were last explicitly decayed.
+    /// The engine uses lazy decay: accumulated decay is applied when a
+    /// relationship is touched (auto-emerge) or flushed before entity
+    /// recognition. Use `decay^(current_batch - last_decayed_batch)`.
+    pub last_decayed_batch: u64,
 }
 
 impl Relationship {

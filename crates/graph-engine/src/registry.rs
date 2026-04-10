@@ -206,7 +206,7 @@ mod tests {
 
     struct NoopProgram;
     impl LocusProgram for NoopProgram {
-        fn process(&self, _: &Locus, _: &[Change]) -> Vec<ProposedChange> {
+        fn process(&self, _: &Locus, _: &[&Change]) -> Vec<ProposedChange> {
             Vec::new()
         }
     }

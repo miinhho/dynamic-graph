@@ -177,13 +177,15 @@ impl Simulation {
 
     /// Recognize entities using `perspective`. Convenience wrapper so
     /// the caller avoids split-borrow issues with `engine()` + `world`.
+    /// Also flushes pending relationship decay before recognition.
     pub fn recognize_entities(&mut self, perspective: &dyn EmergencePerspective) {
-        self.engine.recognize_entities(&mut self.world, perspective);
+        self.engine.recognize_entities(&mut self.world, &self.base_influences, perspective);
     }
 
     /// Extract cohere clusters using `perspective`.
+    /// Also flushes pending relationship decay before clustering.
     pub fn extract_cohere(&mut self, perspective: &dyn CoherePerspective) {
-        self.engine.extract_cohere(&mut self.world, perspective);
+        self.engine.extract_cohere(&mut self.world, &self.base_influences, perspective);
     }
 
     pub fn engine(&self) -> &Engine {
@@ -215,7 +217,7 @@ mod tests {
         downstream: LocusId,
     }
     impl LocusProgram for ForwardProgram {
-        fn process(&self, _: &Locus, incoming: &[Change]) -> Vec<ProposedChange> {
+        fn process(&self, _: &Locus, incoming: &[&Change]) -> Vec<ProposedChange> {
             let total: f32 = incoming.iter().flat_map(|c| c.after.as_slice()).sum();
             if total < 0.001 {
                 return Vec::new();
@@ -230,7 +232,7 @@ mod tests {
 
     struct InertProgram;
     impl LocusProgram for InertProgram {
-        fn process(&self, _: &Locus, _: &[Change]) -> Vec<ProposedChange> {
+        fn process(&self, _: &Locus, _: &[&Change]) -> Vec<ProposedChange> {
             Vec::new()
         }
     }

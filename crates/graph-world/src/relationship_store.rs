@@ -112,6 +112,7 @@ mod tests {
                 change_count: 0,
                 kinds_observed: vec![InfluenceKindId(kind)],
             },
+            last_decayed_batch: 0,
         }
     }
 

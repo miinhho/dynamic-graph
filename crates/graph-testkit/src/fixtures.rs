@@ -18,7 +18,7 @@ use graph_core::{Locus, LocusId, LocusKindId, StateVector};
 use graph_engine::{InfluenceKindConfig, InfluenceKindRegistry, LocusKindRegistry};
 use graph_world::World;
 
-use crate::programs::{BroadcastProgram, ForwardProgram, InertProgram, TEST_KIND};
+use crate::programs::{BroadcastProgram, ForwardProgram, InertProgram, MultiDimAggregatorProgram, TEST_KIND};
 
 /// Per-batch decay factor used in all testkit influence configs.
 /// 0.9 lets signal attenuate naturally over multiple batches.
@@ -180,6 +180,68 @@ pub fn ring_world(n: u64, gain: f32) -> (World, LocusKindRegistry, InfluenceKind
             }),
         );
     }
+
+    (world, loci_reg, inf_reg)
+}
+
+/// A fan-in world: `n_sources` source loci each broadcast a `dims`-dimensional
+/// signal to all `n_sinks` sink loci. Each sink runs `MultiDimAggregatorProgram`,
+/// which aggregates all incoming `dims`-dim vectors — representative of real
+/// multi-dimensional causal propagation workloads.
+///
+/// One tick produces two batches:
+/// 1. All sources broadcast (one batch of `n_sources` changes per sink).
+/// 2. All sinks aggregate — `n_sinks` programs each doing O(`n_sources` × `dims`)
+///    float ops.
+///
+/// Use this to benchmark parallel dispatch with non-trivial per-locus work.
+pub fn fan_in_world(
+    n_sources: u64,
+    n_sinks: u64,
+    dims: usize,
+    gain: f32,
+) -> (World, LocusKindRegistry, InfluenceKindRegistry) {
+    assert!(n_sources >= 1 && n_sinks >= 1);
+    let source_kind = LocusKindId(5000);
+    let sink_kind = LocusKindId(6000);
+
+    let mut world = World::new();
+    let mut loci_reg = LocusKindRegistry::new();
+    let inf_reg = base_influence_registry();
+
+    let sink_ids: Vec<LocusId> = (n_sources..n_sources + n_sinks).map(LocusId).collect();
+    let zeros = StateVector::zeros(dims);
+
+    // Sources: each broadcasts to all sinks (one unique LocusKindId per source
+    // so every source can have a distinct BroadcastProgram).
+    for i in 0..n_sources {
+        let kind_id = LocusKindId(5000 + i);
+        world.insert_locus(Locus::new(LocusId(i), kind_id, zeros.clone()));
+        loci_reg.insert(
+            kind_id,
+            Box::new(BroadcastProgram { downstreams: sink_ids.clone(), gain }),
+        );
+    }
+
+    // Sinks: each aggregates all incoming dims-dimensional vectors.
+    // Downstream points past all real loci — the engine drops the change;
+    // we only care about the computation cost of process().
+    let null_sink = LocusId(n_sources + n_sinks);
+    for j in 0..n_sinks {
+        world.insert_locus(Locus::new(LocusId(n_sources + j), sink_kind, zeros.clone()));
+    }
+    loci_reg.insert(
+        sink_kind,
+        Box::new(MultiDimAggregatorProgram {
+            downstream: null_sink,
+            dims,
+            gain,
+        }),
+    );
+
+    // Override source kind 5000 — already inserted above per-source; drop
+    // the unused `source_kind` constant.
+    let _ = source_kind;
 
     (world, loci_reg, inf_reg)
 }

@@ -54,7 +54,7 @@ struct EmitterProgram {
     gain: f32,
 }
 impl LocusProgram for EmitterProgram {
-    fn process(&self, _: &Locus, incoming: &[Change]) -> Vec<ProposedChange> {
+    fn process(&self, _: &Locus, incoming: &[&Change]) -> Vec<ProposedChange> {
         let stimuli_total: f32 = incoming
             .iter()
             .filter(|c| c.is_stimulus())
@@ -81,7 +81,7 @@ struct RelayProgram {
     gain: f32,
 }
 impl LocusProgram for RelayProgram {
-    fn process(&self, _: &Locus, incoming: &[Change]) -> Vec<ProposedChange> {
+    fn process(&self, _: &Locus, incoming: &[&Change]) -> Vec<ProposedChange> {
         let total: f32 = incoming.iter().flat_map(|c| c.after.as_slice()).sum();
         if total < 0.01 {
             return Vec::new();
@@ -103,7 +103,7 @@ impl LocusProgram for RelayProgram {
 /// Accepts incoming, never emits.
 struct SinkProgram;
 impl LocusProgram for SinkProgram {
-    fn process(&self, _: &Locus, _: &[Change]) -> Vec<ProposedChange> {
+    fn process(&self, _: &Locus, _: &[&Change]) -> Vec<ProposedChange> {
         Vec::new()
     }
 }
@@ -146,6 +146,7 @@ fn main() {
     let (mut world, loci, influences) = build_world();
     let engine = Engine::new(EngineConfig {
         max_batches_per_tick: 16,
+        ..Default::default()
     });
 
     println!("=== Signal Propagation Example ===\n");
@@ -202,7 +203,7 @@ fn main() {
         min_activity_threshold: 0.01,
         ..Default::default()
     };
-    engine.recognize_entities(&mut world, &ep);
+    engine.recognize_entities(&mut world, &influences, &ep);
 
     println!(
         "--- Entities ({} active) ---",
@@ -222,7 +223,7 @@ fn main() {
         min_bridge_activity: 0.01,
         ..Default::default()
     };
-    engine.extract_cohere(&mut world, &cp);
+    engine.extract_cohere(&mut world, &influences, &cp);
 
     let coheres = world.coheres().get("default").unwrap_or(&[]);
     println!("--- Coheres ({}) ---", coheres.len());

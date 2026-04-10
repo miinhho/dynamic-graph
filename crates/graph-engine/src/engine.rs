@@ -12,6 +12,7 @@
 //! - **Single-subject changes only** (O7).
 //! - **Locus state = `change.after`** on commit.
 
+use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use graph_core::{
@@ -33,12 +34,19 @@ pub struct EngineConfig {
     /// process before bailing out. Prevents an infinite cascade if a
     /// program is non-quiescent. Default: 64.
     pub max_batches_per_tick: u32,
+    /// Minimum number of affected loci in a batch before rayon parallel
+    /// dispatch is used. Below this threshold the sequential path is
+    /// taken to avoid thread-pool overhead on small workloads.
+    /// Default: 64. Set to 0 to always parallelise; `usize::MAX` to
+    /// always use the sequential path.
+    pub parallel_dispatch_min_loci: usize,
 }
 
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             max_batches_per_tick: 64,
+            parallel_dispatch_min_loci: usize::MAX,
         }
     }
 }
@@ -95,42 +103,29 @@ impl Engine {
                 break;
             }
 
-            // Commit every pending change as part of the current batch.
-            // Build a per-locus index of which change ids fired into
-            // each locus, so the next batch's auto-predecessor logic
-            // has somewhere to look.
             let batch = world.current_batch();
             let mut committed_ids_by_locus: FxHashMap<LocusId, Vec<ChangeId>> = FxHashMap::default();
             let mut affected_loci: Vec<LocusId> = Vec::new();
             let mut affected_loci_set: FxHashSet<LocusId> = FxHashSet::default();
-            // Plasticity: collect (rel_id, kind, pre_signal, post_signal) tuples
-            // during cross-locus detection; apply Hebbian updates at end-of-batch.
             let mut plasticity_obs: Vec<(graph_core::RelationshipId, graph_core::InfluenceKindId, f32, f32)> = Vec::new();
 
             for pending_change in pending.drain(..) {
-                let PendingChange {
-                    proposed,
-                    derived_predecessors,
-                } = pending_change;
-
+                let PendingChange { proposed, derived_predecessors } = pending_change;
                 let mut predecessors = derived_predecessors;
                 predecessors.extend(proposed.extra_predecessors.iter().copied());
-
                 let id = world.mint_change_id();
                 let kind = proposed.kind;
 
                 match proposed.subject {
                     ChangeSubject::Locus(locus_id) => {
-                        // The before-state is the locus's current state at the
-                        // moment of commit; the after-state was supplied by the
-                        // proposer (stimulus or program).
+                        // Drop changes targeting non-existent loci.
+                        if world.locus(locus_id).is_none() {
+                            continue;
+                        }
                         let before = world
                             .locus(locus_id)
                             .map(|l| l.state.clone())
                             .unwrap_or_default();
-
-                        // Resolve cross-locus predecessors and capture pre-signals
-                        // *before* moving the change into the log: borrows can't overlap.
                         let cross_locus_preds: Vec<(LocusId, f32)> = predecessors
                             .iter()
                             .filter_map(|pid| world.log().get(*pid))
@@ -142,19 +137,12 @@ impl Engine {
                                 _ => None,
                             })
                             .collect();
-
-                        // Cache per-kind config once; used for stabilization and plasticity.
                         let kind_cfg = influence_registry.get(kind);
-
-                        // Apply the kind's guard rail before committing.
                         let stabilized_after = match kind_cfg {
                             Some(cfg) => cfg.stabilization.stabilize(&before, proposed.after),
                             None => proposed.after,
                         };
-
-                        // post-signal for Hebbian update = first slot of committed value.
                         let post_signal = stabilized_after.as_slice().first().copied().unwrap_or(0.0);
-
                         let change = Change {
                             id,
                             subject: ChangeSubject::Locus(locus_id),
@@ -164,46 +152,40 @@ impl Engine {
                             after: stabilized_after.clone(),
                             batch,
                         };
-
-                        // Apply the state change to the locus, then record.
                         if let Some(locus) = world.locus_mut(locus_id) {
                             locus.state = stabilized_after;
                         }
                         world.append_change(change);
-
-                        // Auto-emerge or update a directed relationship for
-                        // each cross-locus predecessor. Collect plasticity
-                        // observations if the kind has learning enabled.
                         let plasticity_active = kind_cfg
                             .map(|cfg| cfg.plasticity.is_active())
                             .unwrap_or(false);
+                        let (activity_decay, weight_decay) = kind_cfg
+                            .map(|cfg| (cfg.decay_per_batch, cfg.plasticity.weight_decay))
+                            .unwrap_or((1.0, 1.0));
                         for (from_locus, pre_signal) in cross_locus_preds {
-                            let rel_id = auto_emerge_relationship(world, from_locus, locus_id, kind, id);
+                            let rel_id = auto_emerge_relationship(
+                                world, from_locus, locus_id, kind, id,
+                                batch.0, activity_decay, weight_decay,
+                            );
                             if plasticity_active {
                                 plasticity_obs.push((rel_id, kind, pre_signal, post_signal));
                             }
                         }
-
                         committed_ids_by_locus.entry(locus_id).or_default().push(id);
                         if affected_loci_set.insert(locus_id) {
                             affected_loci.push(locus_id);
                         }
                     }
                     ChangeSubject::Relationship(rel_id) => {
-                        // Relationship-subject change: update the relationship's
-                        // state and record in the log. No program dispatch, no
-                        // auto-emerge (that path is locus→locus only).
                         let before = world
                             .relationships()
                             .get(rel_id)
                             .map(|r| r.state.clone())
                             .unwrap_or_default();
-
                         let stabilized_after = match influence_registry.get(kind) {
                             Some(cfg) => cfg.stabilization.stabilize(&before, proposed.after),
                             None => proposed.after,
                         };
-
                         let change = Change {
                             id,
                             subject: ChangeSubject::Relationship(rel_id),
@@ -213,50 +195,71 @@ impl Engine {
                             after: stabilized_after.clone(),
                             batch,
                         };
-
                         if let Some(rel) = world.relationships_mut().get_mut(rel_id) {
                             rel.state = stabilized_after;
                             rel.lineage.last_touched_by = Some(id);
                             rel.lineage.change_count += 1;
                         }
                         world.append_change(change);
-                        // Relationship changes are not added to
-                        // committed_ids_by_locus — no program runs.
                     }
                 }
                 result.changes_committed += 1;
             }
 
             // Dispatch programs for every locus that just received at
-            // least one change. Each program returns its proposed
-            // follow-up state changes (queued for next batch) and any
-            // structural proposals (applied at end of this batch).
+            // least one change. Below the parallel threshold, dispatch
+            // sequentially to avoid rayon overhead on small batches.
+            // Above the threshold, collect inputs, run process() in
+            // parallel (pure fn, no world mutation), then merge results.
+            struct DispatchInput<'a> {
+                locus: &'a graph_core::Locus,
+                program: &'a dyn graph_core::LocusProgram,
+                inbox: Vec<&'a Change>,
+                derived: Vec<ChangeId>,
+            }
+
+            let dispatch_inputs: Vec<DispatchInput> = affected_loci
+                .iter()
+                .filter_map(|locus_id| {
+                    let locus = world.locus(*locus_id)?;
+                    let program = loci_registry.require(locus.kind)?;
+                    let inbox: Vec<&Change> = committed_ids_by_locus
+                        .get(locus_id)
+                        .map(|ids| {
+                            ids.iter()
+                                .filter_map(|id| world.log().get(*id))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let derived: Vec<ChangeId> = inbox.iter().map(|c| c.id).collect();
+                    Some(DispatchInput { locus, program, inbox, derived })
+                })
+                .collect();
+
+            type DispatchResult = (Vec<ProposedChange>, Vec<StructuralProposal>, Vec<ChangeId>);
+            let dispatch_results: Vec<DispatchResult> =
+                if dispatch_inputs.len() >= self.config.parallel_dispatch_min_loci {
+                    dispatch_inputs
+                        .par_iter()
+                        .map(|inp| {
+                            let state = inp.program.process(inp.locus, &inp.inbox);
+                            let structural = inp.program.structural_proposals(inp.locus, &inp.inbox);
+                            (state, structural, inp.derived.clone())
+                        })
+                        .collect()
+                } else {
+                    dispatch_inputs
+                        .iter()
+                        .map(|inp| {
+                            let state = inp.program.process(inp.locus, &inp.inbox);
+                            let structural = inp.program.structural_proposals(inp.locus, &inp.inbox);
+                            (state, structural, inp.derived.clone())
+                        })
+                        .collect()
+                };
+
             let mut structural_proposals: Vec<StructuralProposal> = Vec::new();
-            for locus_id in &affected_loci {
-                let Some(locus) = world.locus(*locus_id) else {
-                    continue;
-                };
-                let program = match loci_registry.require(locus.kind) {
-                    Some(p) => p,
-                    None => continue,
-                };
-
-                // Build the inbox for this locus: every change committed
-                // to this locus during the batch we just sealed.
-                let inbox: Vec<Change> = committed_ids_by_locus
-                    .get(locus_id)
-                    .map(|ids| {
-                        ids.iter()
-                            .filter_map(|id| world.log().get(*id).cloned())
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-                let state_proposals = program.process(locus, &inbox);
-                let structural = program.structural_proposals(locus, &inbox);
-                let derived: Vec<ChangeId> =
-                    inbox.iter().map(|c| c.id).collect();
-
+            for (state_proposals, structural, derived) in dispatch_results {
                 pending.extend(state_proposals.into_iter().map(|p| PendingChange {
                     proposed: p,
                     derived_predecessors: derived.clone(),
@@ -281,21 +284,10 @@ impl Engine {
                 }
             }
 
-            // End-of-batch continuous decay on all relationship activity
-            // (slot 0) and Hebbian weight (slot 1), per docs/redesign.md §3.5.
-            for rel in world.relationships_mut().iter_mut() {
-                let (activity_decay, weight_decay) = influence_registry
-                    .get(rel.kind)
-                    .map(|cfg| (cfg.decay_per_batch, cfg.plasticity.weight_decay))
-                    .unwrap_or((1.0, 1.0));
-                let slots = rel.state.as_mut_slice();
-                if let Some(a) = slots.get_mut(Relationship::ACTIVITY_SLOT) {
-                    *a *= activity_decay;
-                }
-                if let Some(w) = slots.get_mut(Relationship::WEIGHT_SLOT) {
-                    *w *= weight_decay;
-                }
-            }
+            // Decay is now lazy: accumulated decay is applied in
+            // auto_emerge_relationship (on touch) and flushed before entity
+            // recognition via Engine::flush_relationship_decay. No per-batch
+            // O(all_relationships) scan needed.
 
             world.advance_batch();
             result.batches_committed += 1;
@@ -304,7 +296,51 @@ impl Engine {
         result
     }
 
+    /// Flush all pending lazy decay for every relationship.
+    ///
+    /// The engine uses lazy decay: relationship activity/weight slots are
+    /// only updated when the relationship is touched (auto-emerge) or when
+    /// this method is called. Call this before reading relationship activity
+    /// values (e.g. before `recognize_entities` or `extract_cohere`).
+    ///
+    /// Uses rayon parallel iteration — pure arithmetic, no allocation.
+    pub fn flush_relationship_decay(
+        &self,
+        world: &mut World,
+        influence_registry: &InfluenceKindRegistry,
+    ) {
+        let current_batch = world.current_batch().0;
+        use rayon::prelude::*;
+        world
+            .relationships_mut()
+            .iter_mut()
+            .par_bridge()
+            .for_each(|rel| {
+                let delta = current_batch.saturating_sub(rel.last_decayed_batch);
+                if delta == 0 {
+                    return;
+                }
+                let (act_decay, wt_decay) = influence_registry
+                    .get(rel.kind)
+                    .map(|cfg| (cfg.decay_per_batch, cfg.plasticity.weight_decay))
+                    .unwrap_or((1.0, 1.0));
+                let act_factor = act_decay.powi(delta as i32);
+                let wt_factor = wt_decay.powi(delta as i32);
+                let slots = rel.state.as_mut_slice();
+                if let Some(a) = slots.get_mut(Relationship::ACTIVITY_SLOT) {
+                    *a *= act_factor;
+                }
+                if let Some(w) = slots.get_mut(Relationship::WEIGHT_SLOT) {
+                    *w *= wt_factor;
+                }
+                rel.last_decayed_batch = current_batch;
+            });
+    }
+
     /// Run a `CoherePerspective` and store the resulting clusters.
+    ///
+    /// Flushes pending relationship decay before clustering so that
+    /// activity values reflect the true current state.
     ///
     /// On-demand, like `recognize_entities`. Replaces the previous
     /// cohere set for this perspective's name in the `CohereStore`.
@@ -312,8 +348,10 @@ impl Engine {
     pub fn extract_cohere(
         &self,
         world: &mut World,
+        influence_registry: &InfluenceKindRegistry,
         perspective: &dyn CoherePerspective,
     ) {
+        self.flush_relationship_decay(world, influence_registry);
         let store = world.coheres_mut();
         let mut counter = store.mint_id().0;
         let coheres = perspective.cluster(
@@ -331,6 +369,9 @@ impl Engine {
     /// Apply an `EmergencePerspective` to the current world state and
     /// commit its proposals to the entity store.
     ///
+    /// Flushes pending relationship decay before recognition so that
+    /// activity values reflect the true current state.
+    ///
     /// This is *on-demand*, not called automatically by `tick`. The
     /// caller decides when entity recognition should happen — once per
     /// tick, once per N ticks, or on explicit request. Per
@@ -338,8 +379,10 @@ impl Engine {
     pub fn recognize_entities(
         &self,
         world: &mut World,
+        influence_registry: &InfluenceKindRegistry,
         perspective: &dyn EmergencePerspective,
     ) {
+        self.flush_relationship_decay(world, influence_registry);
         let batch = world.current_batch();
         let proposals =
             perspective.recognize(world.relationships(), world.entities(), batch);
@@ -523,12 +566,28 @@ fn auto_emerge_relationship(
     to: LocusId,
     kind: graph_core::InfluenceKindId,
     change_id: ChangeId,
+    current_batch: u64,
+    activity_decay: f32,
+    weight_decay: f32,
 ) -> graph_core::RelationshipId {
     let endpoints = Endpoints::Directed { from, to };
     let key = endpoints.key();
     let store = world.relationships_mut();
     if let Some(rel_id) = store.lookup(&key, kind) {
         let rel = store.get_mut(rel_id).expect("indexed id must exist");
+        // Apply accumulated lazy decay before bumping activity so that the
+        // increment lands on the correct decayed baseline.
+        let delta = current_batch.saturating_sub(rel.last_decayed_batch);
+        if delta > 0 {
+            let slots = rel.state.as_mut_slice();
+            if let Some(a) = slots.get_mut(Relationship::ACTIVITY_SLOT) {
+                *a *= activity_decay.powi(delta as i32);
+            }
+            if let Some(w) = slots.get_mut(Relationship::WEIGHT_SLOT) {
+                *w *= weight_decay.powi(delta as i32);
+            }
+        }
+        rel.last_decayed_batch = current_batch;
         if let Some(slot) = rel.state.as_mut_slice().get_mut(Relationship::ACTIVITY_SLOT) {
             *slot += 1.0;
         }
@@ -552,6 +611,7 @@ fn auto_emerge_relationship(
                 change_count: 1,
                 kinds_observed: vec![kind],
             },
+            last_decayed_batch: current_batch,
         });
         new_id
     }
@@ -566,6 +626,7 @@ fn auto_emerge_relationship(
 /// `DeleteRelationship`: remove from the store. The relationship's past
 /// changes in the log remain intact.
 fn apply_structural_proposals(world: &mut World, proposals: Vec<StructuralProposal>) {
+    let current_batch = world.current_batch().0;
     for proposal in proposals {
         match proposal {
             StructuralProposal::CreateRelationship { endpoints, kind } => {
@@ -590,6 +651,7 @@ fn apply_structural_proposals(world: &mut World, proposals: Vec<StructuralPropos
                             change_count: 1,
                             kinds_observed: vec![kind],
                         },
+                        last_decayed_batch: current_batch,
                     });
                 }
             }
@@ -621,7 +683,7 @@ mod tests {
     struct DampOnceProgram;
 
     impl LocusProgram for DampOnceProgram {
-        fn process(&self, locus: &Locus, incoming: &[Change]) -> Vec<ProposedChange> {
+        fn process(&self, locus: &Locus, incoming: &[&Change]) -> Vec<ProposedChange> {
             // Only react to a stimulus (predecessors empty); ignore the
             // damped follow-up so the loop quiesces.
             if incoming.iter().all(|c| c.predecessors.is_empty()) {
@@ -661,7 +723,7 @@ mod tests {
     fn stimulus_only_commits_one_batch_when_program_is_passive() {
         struct InertProgram;
         impl LocusProgram for InertProgram {
-            fn process(&self, _: &Locus, _: &[Change]) -> Vec<ProposedChange> {
+            fn process(&self, _: &Locus, _: &[&Change]) -> Vec<ProposedChange> {
                 Vec::new()
             }
         }
@@ -741,7 +803,7 @@ mod tests {
         // A pathological program that always produces another change.
         struct InfiniteProgram;
         impl LocusProgram for InfiniteProgram {
-            fn process(&self, locus: &Locus, _: &[Change]) -> Vec<ProposedChange> {
+            fn process(&self, locus: &Locus, _: &[&Change]) -> Vec<ProposedChange> {
                 vec![ProposedChange::new(
                     ChangeSubject::Locus(locus.id),
                     InfluenceKindId(1),
@@ -761,6 +823,7 @@ mod tests {
 
         let engine = Engine::new(EngineConfig {
             max_batches_per_tick: 5,
+            ..Default::default()
         });
         let stimulus = ProposedChange::new(
             ChangeSubject::Locus(LocusId(1)),
@@ -779,7 +842,7 @@ mod tests {
         downstream: LocusId,
     }
     impl LocusProgram for ForwarderProgram {
-        fn process(&self, _locus: &Locus, incoming: &[Change]) -> Vec<ProposedChange> {
+        fn process(&self, _locus: &Locus, incoming: &[&Change]) -> Vec<ProposedChange> {
             // Only react to stimuli; ignore anything internal so the
             // loop quiesces after one hand-off.
             if !incoming.iter().all(|c| c.predecessors.is_empty()) {
@@ -799,7 +862,7 @@ mod tests {
     /// Sink program — accepts incoming, never proposes anything.
     struct SinkProgram;
     impl LocusProgram for SinkProgram {
-        fn process(&self, _: &Locus, _: &[Change]) -> Vec<ProposedChange> {
+        fn process(&self, _: &Locus, _: &[&Change]) -> Vec<ProposedChange> {
             Vec::new()
         }
     }
@@ -987,10 +1050,14 @@ mod tests {
         // With decay = 0.5 and a single forwarding stimulus, the loop
         // commits two batches. After batch 0 the relationship doesn't
         // exist yet (the cross-locus change happens in batch 1). After
-        // batch 1, activity = 1.0 then decay -> 0.5.
+        // batch 1, activity = 1.0; after flush (1 batch elapsed) → 0.5.
+        //
+        // Lazy decay: stored activity = 1.0 until flush_relationship_decay
+        // is called, which applies the accumulated decay in one pass.
         let (mut world, loci, influences) = forwarder_world(0.5);
         let engine = Engine::default();
         engine.tick(&mut world, &loci, &influences, vec![fire_stimulus(0.5)]);
+        engine.flush_relationship_decay(&mut world, &influences);
 
         let rel = world.relationships().iter().next().unwrap();
         assert!(
@@ -999,13 +1066,18 @@ mod tests {
             rel.activity()
         );
 
-        // Second tick: another forwarding event. Trace:
-        //   batch start: 0.5
-        //   batch 2 commits stimulus at L1 (no relationship touch),
-        //     end-of-batch decay: 0.25
-        //   batch 3 commits forwarded change at L2 (+1.0): 1.25
-        //     end-of-batch decay: 0.625
+        // Second tick: another forwarding event. Trace with lazy decay:
+        //   batch 2 commits stimulus at L1 (no relationship touch)
+        //   batch 3 commits forwarded change at L2:
+        //     auto_emerge applies 2 batches of accumulated decay:
+        //     0.5 * 0.5^2 = 0.125 (debt from batch 1 creation to batch 3)
+        //     Wait — flush after tick 1 set last_decayed_batch=2.
+        //     So delta in tick 2 auto_emerge (batch 3) = 3-2 = 1:
+        //       0.5 * 0.5^1 = 0.25, then +1.0 → 1.25
+        //   After tick 2 flush (batch 4 - last_decayed 3 = delta 1):
+        //     1.25 * 0.5 = 0.625
         engine.tick(&mut world, &loci, &influences, vec![fire_stimulus(0.5)]);
+        engine.flush_relationship_decay(&mut world, &influences);
         let rel = world.relationships().iter().next().unwrap();
         assert!(
             (rel.activity() - 0.625).abs() < 1e-6,
@@ -1016,7 +1088,7 @@ mod tests {
 
     // --- entity recognition integration tests ----------------------------
 
-    fn two_locus_world_after_forwarding_tick() -> World {
+    fn two_locus_world_after_forwarding_tick() -> (World, InfluenceKindRegistry) {
         let mut world = World::new();
         world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
         world.insert_locus(Locus::new(LocusId(2), LocusKindId(2), StateVector::zeros(1)));
@@ -1032,15 +1104,15 @@ mod tests {
             StateVector::from_slice(&[0.5]),
         );
         engine.tick(&mut world, &loci, &influences, vec![stimulus]);
-        world
+        (world, influences)
     }
 
     #[test]
     fn recognize_entities_after_forwarding_tick_produces_one_entity() {
-        let mut world = two_locus_world_after_forwarding_tick();
+        let (mut world, influences) = two_locus_world_after_forwarding_tick();
         let engine = Engine::default();
         let perspective = crate::emergence::DefaultEmergencePerspective::default();
-        engine.recognize_entities(&mut world, &perspective);
+        engine.recognize_entities(&mut world, &influences, &perspective);
 
         assert_eq!(world.entities().active_count(), 1);
         let entity = world.entities().active().next().unwrap();
@@ -1052,7 +1124,7 @@ mod tests {
 
     #[test]
     fn entity_becomes_dormant_when_relationship_decays_below_threshold() {
-        let mut world = two_locus_world_after_forwarding_tick();
+        let (mut world, influences) = two_locus_world_after_forwarding_tick();
         let engine = Engine::default();
         let perspective = crate::emergence::DefaultEmergencePerspective {
             min_activity_threshold: 0.8,
@@ -1065,9 +1137,9 @@ mod tests {
             min_activity_threshold: 2.0, // impossible to meet
             ..Default::default()
         };
-        engine.recognize_entities(&mut world, &perspective);
+        engine.recognize_entities(&mut world, &influences, &perspective);
         assert_eq!(world.entities().active_count(), 1);
-        engine.recognize_entities(&mut world, &perspective_high);
+        engine.recognize_entities(&mut world, &influences, &perspective_high);
         assert_eq!(world.entities().active_count(), 0);
         assert_eq!(world.entities().len(), 1); // still in store, just dormant
     }
@@ -1103,12 +1175,12 @@ mod tests {
         ]);
 
         let ep = crate::emergence::DefaultEmergencePerspective::default();
-        engine.recognize_entities(&mut world, &ep);
+        engine.recognize_entities(&mut world, &influences, &ep);
         // Two disconnected pairs -> two active entities.
         assert_eq!(world.entities().active_count(), 2, "expected 2 entities");
 
         let cp = crate::cohere::DefaultCoherePerspective::default();
-        engine.extract_cohere(&mut world, &cp);
+        engine.extract_cohere(&mut world, &influences, &cp);
         // No cross-pair relationships -> no coheres.
         let coheres = world.coheres().get("default").unwrap_or(&[]);
         assert_eq!(coheres.len(), 0, "no bridge -> no cohere");
@@ -1269,10 +1341,10 @@ mod tests {
         delete_rel: Option<graph_core::RelationshipId>,
     }
     impl LocusProgram for WiringProgram {
-        fn process(&self, _: &Locus, _: &[Change]) -> Vec<ProposedChange> {
+        fn process(&self, _: &Locus, _: &[&Change]) -> Vec<ProposedChange> {
             Vec::new()
         }
-        fn structural_proposals(&self, _: &Locus, incoming: &[Change]) -> Vec<StructuralProposal> {
+        fn structural_proposals(&self, _: &Locus, incoming: &[&Change]) -> Vec<StructuralProposal> {
             // Only act on stimuli.
             if incoming.iter().all(|c| c.predecessors.is_empty()) {
                 let mut out = vec![StructuralProposal::CreateRelationship {
@@ -1572,11 +1644,11 @@ mod tests {
             )],
         );
 
-        // Disable learning for subsequent ticks (update the config in place
-        // by replacing and re-inserting is not possible; use a second registry).
-        // Instead verify weight after tick 1.
+        // Lazy decay: Hebbian update (+1.0) happens at end-of-batch, but
+        // weight decay is deferred until flush_relationship_decay is called.
+        engine.flush_relationship_decay(&mut world, &inf);
         let w1 = world.relationships().iter().next().unwrap().weight();
-        // Hebbian: +1.0 → then decay *0.5 = 0.5
+        // Hebbian: +1.0 → flush decay *0.5 = 0.5
         assert!(
             (w1 - 0.5).abs() < 1e-5,
             "after tick 1: expected weight ≈ 0.5, got {w1}"
@@ -1632,7 +1704,7 @@ mod tests {
         downstream: LocusId,
     }
     impl LocusProgram for RelationshipWriterProgram {
-        fn process(&self, _locus: &Locus, incoming: &[Change]) -> Vec<ProposedChange> {
+        fn process(&self, _locus: &Locus, incoming: &[&Change]) -> Vec<ProposedChange> {
             // Only act on stimuli.
             if !incoming.iter().all(|c| c.predecessors.is_empty()) {
                 return Vec::new();
@@ -1718,7 +1790,7 @@ mod tests {
         // loop if triggered — the system must not hit the batch cap.
         struct BombProgram;
         impl LocusProgram for BombProgram {
-            fn process(&self, locus: &Locus, _: &[Change]) -> Vec<ProposedChange> {
+            fn process(&self, locus: &Locus, _: &[&Change]) -> Vec<ProposedChange> {
                 vec![ProposedChange::new(
                     ChangeSubject::Locus(locus.id),
                     InfluenceKindId(1),
@@ -1734,7 +1806,7 @@ mod tests {
         loci.insert(LocusKindId(2), Box::new(BombProgram)); // would loop if triggered
         let mut influences = InfluenceKindRegistry::new();
         influences.insert(InfluenceKindId(1), crate::registry::InfluenceKindConfig::new("t"));
-        let engine = Engine::new(EngineConfig { max_batches_per_tick: 4 });
+        let engine = Engine::new(EngineConfig { max_batches_per_tick: 4, ..Default::default() });
 
         // First tick: establish relationship.
         engine.tick(

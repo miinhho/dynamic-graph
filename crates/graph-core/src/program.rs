@@ -91,7 +91,7 @@ pub trait LocusProgram: Send + Sync {
     /// Run the program for one locus. `incoming` is the slice of
     /// committed changes that fired *into* this locus during the batch
     /// being processed.
-    fn process(&self, locus: &Locus, incoming: &[Change]) -> Vec<ProposedChange>;
+    fn process(&self, locus: &Locus, incoming: &[&Change]) -> Vec<ProposedChange>;
 
     /// Propose structural changes to the relationship topology.
     ///
@@ -99,7 +99,7 @@ pub trait LocusProgram: Send + Sync {
     /// same point in the batch loop. The default implementation returns
     /// an empty vec — programs only override this when they need topology
     /// mutation. Backwards compatible: existing programs need not change.
-    fn structural_proposals(&self, _locus: &Locus, _incoming: &[Change]) -> Vec<StructuralProposal> {
+    fn structural_proposals(&self, _locus: &Locus, _incoming: &[&Change]) -> Vec<StructuralProposal> {
         Vec::new()
     }
 }

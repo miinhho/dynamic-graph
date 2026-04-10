@@ -181,6 +181,7 @@ dependencies = [
  "graph-core",
  "graph-testkit",
  "graph-world",
+ "rayon",
  "rustc-hash",
 ]
 
