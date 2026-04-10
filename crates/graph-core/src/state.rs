@@ -10,6 +10,7 @@
 //! and clarity are. A SmallVec/aligned-buffer variant can land later.
 
 #[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StateVector {
     slots: Vec<f32>,
 }

@@ -4,6 +4,7 @@ members = [
     "crates/graph-world",
     "crates/graph-engine",
     "crates/graph-testkit",
+    "crates/graph-wal",
 ]
 resolver = "2"
 
@@ -17,6 +18,10 @@ graph-core = { path = "crates/graph-core" }
 graph-world = { path = "crates/graph-world" }
 graph-engine = { path = "crates/graph-engine" }
 graph-testkit = { path = "crates/graph-testkit" }
+graph-wal = { path = "crates/graph-wal" }
 rustc-hash = "2.1.1"
 criterion = { version = "0.6", features = ["html_reports"] }
 rayon = "1.10"
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["alloc"] }
+tempfile = "3"

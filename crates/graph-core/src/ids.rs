@@ -11,6 +11,7 @@ macro_rules! id_newtype {
     ($name:ident, $doc:expr) => {
         #[doc = $doc]
         #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
         pub struct $name(pub u64);
     };
 }

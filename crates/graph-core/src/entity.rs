@@ -17,11 +17,13 @@ use crate::relationship::RelationshipId;
 /// Stable identity of an entity. Immutable across its entire sediment
 /// stack from birth to dormancy.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EntityId(pub u64);
 
 /// Whether the entity is currently coherent enough to accumulate new
 /// layers. Dormant entities remain in the store forever.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum EntityStatus {
     /// Currently recognized by the perspective; layers are being
     /// deposited.
@@ -35,6 +37,7 @@ pub enum EntityStatus {
 /// a given layer. The "current" entity is the snapshot at the top of
 /// its sediment stack.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EntitySnapshot {
     pub members: Vec<LocusId>,
     pub member_relationships: Vec<RelationshipId>,
@@ -63,6 +66,7 @@ impl EntitySnapshot {
 /// What caused a new layer to be deposited. The engine uses this to
 /// resist weathering on significant transitions (Born, Split, Merged).
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LayerTransition {
     /// First layer — entity was just born.
     Born,
@@ -98,6 +102,7 @@ impl LayerTransition {
 
 /// Detail level of an entity layer after weathering.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CompressionLevel {
     /// Recent layer — full detail preserved.
     Full,
@@ -122,6 +127,7 @@ pub enum CompressionLevel {
 /// compressed and skeleton layers where the full `LayerTransition`
 /// variants are too large to keep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CompressedTransition {
     Born,
     MembershipDelta,
@@ -148,6 +154,7 @@ impl From<&LayerTransition> for CompressedTransition {
 
 /// A single sediment layer on an entity's stack.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EntityLayer {
     /// The batch during which this layer was deposited.
     pub batch: BatchId,
@@ -174,6 +181,7 @@ impl EntityLayer {
 /// preserved by the lineage-tree memory layer per `docs/redesign.md`
 /// §3.5.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EntityLineage {
     pub parents: Vec<EntityId>,
     pub children: Vec<EntityId>,
@@ -181,6 +189,7 @@ pub struct EntityLineage {
 
 /// The entity record in the store.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Entity {
     /// Stable id — never changes.
     pub id: EntityId,

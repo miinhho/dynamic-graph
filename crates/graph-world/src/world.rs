@@ -11,7 +11,7 @@
 //! threaded into ticks. Keeping the world free of program references
 //! makes snapshots cheap and replay clean.
 
-use graph_core::{BatchId, Change, ChangeId, EntityId, EntityLayer, Locus, LocusId, RelationshipId};
+use graph_core::{BatchId, Change, ChangeId, Entity, EntityId, EntityLayer, Locus, LocusId, Relationship, RelationshipId};
 
 use crate::change_log::ChangeLog;
 use crate::cohere_store::CohereStore;
@@ -149,6 +149,51 @@ impl World {
     pub fn is_ancestor_of(&self, ancestor: ChangeId, descendant: ChangeId) -> bool {
         self.log.is_ancestor_of(ancestor, descendant)
     }
+
+    // ── Snapshot / recovery ───────────────────────────────────────────────
+
+    /// Metadata snapshot of the world's ID counters and batch clock.
+    /// Used by `graph-wal` for checkpoint and recovery.
+    pub fn world_meta(&self) -> WorldMeta {
+        WorldMeta {
+            current_batch: self.current_batch,
+            next_change_id: self.next_change_id,
+            next_relationship_id: self.relationships.next_id(),
+            next_entity_id: self.entities.next_id(),
+        }
+    }
+
+    /// Restore ID counters from a recovered `WorldMeta`. Called once
+    /// after loading a checkpoint, before any engine activity.
+    pub fn restore_meta(&mut self, meta: &WorldMeta) {
+        self.current_batch = meta.current_batch;
+        self.next_change_id = meta.next_change_id;
+        self.relationships_mut().set_next_id(meta.next_relationship_id);
+        self.entities_mut().set_next_id(meta.next_entity_id);
+    }
+}
+
+/// Opaque counter snapshot used by `graph-wal` for checkpoint and
+/// recovery. Does not include program registries (those are re-supplied
+/// by the caller at startup).
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct WorldMeta {
+    pub current_batch: BatchId,
+    pub next_change_id: u64,
+    pub next_relationship_id: u64,
+    pub next_entity_id: u64,
+}
+
+/// Full in-memory snapshot of the world — used for checkpoint write and
+/// recovery load. `CohereStore` is intentionally excluded (ephemeral).
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct WorldSnapshot {
+    pub loci: Vec<Locus>,
+    pub relationships: Vec<Relationship>,
+    pub entities: Vec<Entity>,
+    pub meta: WorldMeta,
 }
 
 #[cfg(test)]

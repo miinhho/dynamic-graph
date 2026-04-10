@@ -28,12 +28,14 @@ use crate::state::StateVector;
 ///   trigger program dispatch. Enables locus programs to write feedback
 ///   directly onto a relationship (e.g. Hebbian-style weight updates).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ChangeSubject {
     Locus(LocusId),
     Relationship(RelationshipId),
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Change {
     pub id: ChangeId,
     pub subject: ChangeSubject,

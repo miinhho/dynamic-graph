@@ -42,6 +42,16 @@ impl RelationshipStore {
         id
     }
 
+    pub fn next_id(&self) -> u64 {
+        self.next_id
+    }
+
+    /// Restore the counter after recovery. Must be called before any
+    /// `mint_id()` calls to prevent ID collisions with persisted records.
+    pub fn set_next_id(&mut self, next: u64) {
+        self.next_id = next;
+    }
+
     /// Insert a freshly minted relationship. Panics on duplicate id —
     /// duplicate insertion is a programming error, not a runtime case.
     pub fn insert(&mut self, relationship: Relationship) {

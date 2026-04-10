@@ -16,4 +16,4 @@ pub use cohere_store::CohereStore;
 pub use entity_store::EntityStore;
 pub use locus_store::LocusStore;
 pub use relationship_store::RelationshipStore;
-pub use world::World;
+pub use world::{World, WorldMeta, WorldSnapshot};

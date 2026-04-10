@@ -22,6 +22,7 @@ use crate::state::StateVector;
 
 /// Identity of a relationship in the relationship store.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RelationshipId(pub u64);
 
 /// Per O8: same identifier as `InfluenceKindId`. Aliased rather than a
@@ -38,6 +39,7 @@ pub type RelationshipKindId = InfluenceKindId;
 /// wants to merge them into one hyperedge instead of multiple pairwise
 /// edges. The default emergence path uses `Directed`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Endpoints {
     Directed { from: LocusId, to: LocusId },
     Symmetric { a: LocusId, b: LocusId },
@@ -67,6 +69,7 @@ impl Endpoints {
 
 /// Hashable canonical form of `Endpoints`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum EndpointKey {
     Directed(LocusId, LocusId),
     Symmetric(LocusId, LocusId),
@@ -84,6 +87,7 @@ pub enum EndpointKey {
 /// is filled in by the first engine change that touches the relationship
 /// after its creation.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RelationshipLineage {
     /// The change that first auto-emerged this relationship; `None` if
     /// created structurally (no single originating change).
@@ -99,6 +103,7 @@ pub struct RelationshipLineage {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Relationship {
     pub id: RelationshipId,
     pub kind: RelationshipKindId,
