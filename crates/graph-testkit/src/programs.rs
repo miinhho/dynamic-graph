@@ -232,11 +232,7 @@ impl LocusProgram for EventLocusProgram {
         }
 
         // When the activation threshold is crossed, create participant edges.
-        let incoming_activation: f32 = incoming
-            .iter()
-            .filter(|c| matches!(c.subject, ChangeSubject::Locus(_)))
-            .flat_map(|c| c.after.as_slice().first().copied())
-            .sum();
+        let incoming_activation: f32 = graph_core::inbox::locus_signals(incoming.iter().copied());
 
         let current_activation = locus.state.as_slice().first().copied().unwrap_or(0.0);
 

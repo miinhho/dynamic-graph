@@ -46,6 +46,23 @@ impl StateVector {
         &mut self.slots
     }
 
+    /// Returns a copy of this vector with `slots[idx]` incremented by `delta`.
+    ///
+    /// Like `with_slot`, the vector is extended with zeros if `idx` is beyond
+    /// the current length.
+    ///
+    /// ```rust,ignore
+    /// // bump reliability by 0.1 without touching other slots
+    /// let updated = rel.state.clone().with_slot_delta(RELIABILITY_SLOT, 0.1);
+    /// ```
+    pub fn with_slot_delta(mut self, idx: usize, delta: f32) -> Self {
+        if idx >= self.slots.len() {
+            self.slots.resize(idx + 1, 0.0);
+        }
+        self.slots[idx] += delta;
+        self
+    }
+
     /// Returns a copy of this vector with `slots[idx]` set to `val`.
     ///
     /// If `idx` is beyond the current length, the vector is extended
@@ -98,5 +115,26 @@ mod tests {
     fn l2_norm_of_unit_axis_is_one() {
         let v = StateVector::from_slice(&[1.0, 0.0, 0.0]);
         assert!((v.l2_norm() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn with_slot_delta_increments_existing_slot() {
+        let v = StateVector::from_slice(&[1.0, 2.0, 3.0]);
+        let v2 = v.with_slot_delta(1, 0.5);
+        assert_eq!(v2.as_slice(), &[1.0, 2.5, 3.0]);
+    }
+
+    #[test]
+    fn with_slot_delta_extends_when_out_of_bounds() {
+        let v = StateVector::from_slice(&[1.0]);
+        let v2 = v.with_slot_delta(2, 0.7);
+        assert_eq!(v2.as_slice(), &[1.0, 0.0, 0.7]);
+    }
+
+    #[test]
+    fn with_slot_delta_negative_decrements() {
+        let v = StateVector::from_slice(&[5.0, 3.0]);
+        let v2 = v.with_slot_delta(0, -2.0);
+        assert_eq!(v2.as_slice(), &[3.0, 3.0]);
     }
 }

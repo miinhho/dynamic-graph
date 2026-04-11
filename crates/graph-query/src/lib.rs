@@ -43,14 +43,24 @@ mod traversal;
 
 pub use causality::{
     causal_ancestors, changes_to_locus_in_range, changes_to_relationship_in_range,
-    is_ancestor_of, root_stimuli,
+    is_ancestor_of, relationship_volatility, root_stimuli, root_stimuli_for_relationship,
 };
 pub use filter::{
+    active_entities, entities_matching, entities_with_coherence, entities_with_member,
     loci_matching, loci_of_kind, loci_with_f64_property, loci_with_state,
-    loci_with_str_property, relationships_matching, relationships_of_kind,
+    loci_with_str_property,
+    relationships_between, relationships_between_of_kind,
+    relationships_from, relationships_from_of_kind,
+    relationships_to, relationships_to_of_kind,
+    relationships_matching, relationships_of_kind,
     relationships_with_activity, relationships_with_slot, relationships_with_weight,
 };
 pub use traversal::{
-    connected_components, connected_components_of_kind, path_between, path_between_of_kind,
-    reachable_from, reachable_from_of_kind,
+    connected_components, connected_components_of_kind,
+    directed_path, directed_path_of_kind,
+    downstream_of, downstream_of_kind,
+    path_between, path_between_of_kind,
+    reachable_from, reachable_from_of_kind, reachable_matching,
+    strongest_path,
+    upstream_of, upstream_of_kind,
 };

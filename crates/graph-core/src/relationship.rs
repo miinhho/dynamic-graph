@@ -116,6 +116,36 @@ impl Endpoints {
         }
     }
 
+    /// Returns `true` when this is a `Directed` edge (`from → to`).
+    #[inline]
+    pub fn is_directed(&self) -> bool {
+        matches!(self, Endpoints::Directed { .. })
+    }
+
+    /// Returns `true` when this is a `Symmetric` edge (`a ↔ b`).
+    #[inline]
+    pub fn is_symmetric(&self) -> bool {
+        matches!(self, Endpoints::Symmetric { .. })
+    }
+
+    /// For a `Directed` edge, return the source endpoint (`from`).
+    /// Returns `None` for `Symmetric` edges.
+    pub fn source(&self) -> Option<LocusId> {
+        match self {
+            Endpoints::Directed { from, .. } => Some(*from),
+            Endpoints::Symmetric { .. } => None,
+        }
+    }
+
+    /// For a `Directed` edge, return the target endpoint (`to`).
+    /// Returns `None` for `Symmetric` edges.
+    pub fn target(&self) -> Option<LocusId> {
+        match self {
+            Endpoints::Directed { to, .. } => Some(*to),
+            Endpoints::Symmetric { .. } => None,
+        }
+    }
+
     /// Canonical lookup key — endpoints flattened into a stable shape so
     /// the relationship store can dedupe hits regardless of insertion
     /// order. For `Symmetric`, the two ids are sorted; for `Directed`,
@@ -203,5 +233,96 @@ impl Relationship {
     /// Read the learned Hebbian weight (slot 1).
     pub fn weight(&self) -> f32 {
         self.state.as_slice().get(Self::WEIGHT_SLOT).copied().unwrap_or(0.0)
+    }
+
+    /// Returns `true` if `locus` appears in any endpoint position.
+    #[inline]
+    pub fn involves(&self, locus: LocusId) -> bool {
+        self.endpoints.involves(locus)
+    }
+
+    /// The endpoint that is not `locus`, treating the edge as undirected.
+    /// For a self-loop, returns `locus`.
+    #[inline]
+    pub fn other_endpoint(&self, locus: LocusId) -> LocusId {
+        self.endpoints.other_than(locus)
+    }
+
+    /// For a `Directed` edge, return the source endpoint (`from`).
+    /// Returns `None` for `Symmetric` edges.
+    pub fn from(&self) -> Option<LocusId> {
+        self.endpoints.source()
+    }
+
+    /// For a `Directed` edge, return the target endpoint (`to`).
+    /// Returns `None` for `Symmetric` edges.
+    pub fn to(&self) -> Option<LocusId> {
+        self.endpoints.target()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn directed(from: u64, to: u64) -> Endpoints {
+        Endpoints::directed(LocusId(from), LocusId(to))
+    }
+
+    fn symmetric(a: u64, b: u64) -> Endpoints {
+        Endpoints::symmetric(LocusId(a), LocusId(b))
+    }
+
+    fn make_rel(endpoints: Endpoints) -> Relationship {
+        Relationship {
+            id: RelationshipId(0),
+            kind: crate::ids::InfluenceKindId(1),
+            endpoints,
+            state: StateVector::from_slice(&[1.0, 0.0]),
+            lineage: RelationshipLineage {
+                created_by: None,
+                last_touched_by: None,
+                change_count: 0,
+                kinds_observed: vec![],
+            },
+            last_decayed_batch: 0,
+        }
+    }
+
+    #[test]
+    fn endpoints_is_directed_and_is_symmetric() {
+        assert!(directed(1, 2).is_directed());
+        assert!(!directed(1, 2).is_symmetric());
+        assert!(symmetric(1, 2).is_symmetric());
+        assert!(!symmetric(1, 2).is_directed());
+    }
+
+    #[test]
+    fn relationship_involves_delegates_to_endpoints() {
+        let rel = make_rel(directed(1, 2));
+        assert!(rel.involves(LocusId(1)));
+        assert!(rel.involves(LocusId(2)));
+        assert!(!rel.involves(LocusId(3)));
+    }
+
+    #[test]
+    fn relationship_other_endpoint_directed() {
+        let rel = make_rel(directed(1, 2));
+        assert_eq!(rel.other_endpoint(LocusId(1)), LocusId(2));
+        assert_eq!(rel.other_endpoint(LocusId(2)), LocusId(1));
+    }
+
+    #[test]
+    fn relationship_from_to_directed() {
+        let rel = make_rel(directed(3, 7));
+        assert_eq!(rel.from(), Some(LocusId(3)));
+        assert_eq!(rel.to(), Some(LocusId(7)));
+    }
+
+    #[test]
+    fn relationship_from_to_symmetric_is_none() {
+        let rel = make_rel(symmetric(3, 7));
+        assert_eq!(rel.from(), None);
+        assert_eq!(rel.to(), None);
     }
 }

@@ -48,6 +48,11 @@ impl LocusStore {
         self.loci.get_mut(&id)
     }
 
+    /// Remove a locus by id. Returns the removed `Locus`, or `None` if not found.
+    pub fn remove(&mut self, id: LocusId) -> Option<Locus> {
+        self.loci.remove(&id)
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &Locus> {
         self.loci.values()
     }

@@ -40,6 +40,13 @@ pub(crate) fn flush_relationship_decay(
         .filter_map(|rel| {
             let delta = current_batch.saturating_sub(rel.last_decayed_batch);
             let cfg = influence_registry.get(rel.kind);
+            debug_assert!(
+                cfg.is_some(),
+                "flush_relationship_decay: InfluenceKindId {:?} is not registered — \
+                 relationship {:?} will not be decayed or pruned. \
+                 Register it with InfluenceKindRegistry::insert().",
+                rel.kind, rel.id
+            );
             if delta > 0 {
                 let (act_decay, wt_decay) = cfg
                     .map(|c| (c.decay_per_batch, c.plasticity.weight_decay))
@@ -87,6 +94,7 @@ pub(crate) fn flush_relationship_decay(
     for rel_id in to_prune {
         world.subscriptions_mut().remove_relationship(rel_id);
         world.relationships_mut().remove(rel_id);
+        world.record_pruned(rel_id);
     }
     (pruned, events)
 }

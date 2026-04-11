@@ -58,9 +58,10 @@ impl Simulation {
 
     /// Ingest a batch of co-occurring entities (e.g. from one document).
     ///
-    /// All entities are ingested and stimuli are queued. Additionally,
-    /// co-occurrence predecessors are set up so the engine auto-emerges
-    /// relationships between them.
+    /// All entities are ingested and their stimuli are queued. When the next
+    /// `step()` / `tick()` fires, the engine auto-emerges relationships between
+    /// loci that share cross-locus causal predecessors in the same batch — this
+    /// happens inside the batch loop, not here.
     ///
     /// Returns the `LocusId`s in the same order as `entries`.
     pub fn ingest_batch(

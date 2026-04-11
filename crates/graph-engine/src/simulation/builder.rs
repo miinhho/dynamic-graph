@@ -17,7 +17,7 @@
 //! sim.ingest_named("Apple", "ORG", props! { "confidence" => 0.92 });
 //! ```
 
-use graph_core::{Encoder, LocusKindId, InfluenceKindId, LocusProgram};
+use graph_core::{DefaultEntityWeathering, Encoder, EntityWeatheringPolicy, LocusKindId, InfluenceKindId, LocusProgram};
 use graph_world::World;
 use rustc_hash::FxHashMap;
 
@@ -40,6 +40,7 @@ pub struct SimulationBuilder {
     next_influence_kind: u64,
     default_influence: Option<String>,
     config: SimulationConfig,
+    auto_weather_policy: Option<Box<dyn EntityWeatheringPolicy>>,
 }
 
 impl SimulationBuilder {
@@ -54,6 +55,7 @@ impl SimulationBuilder {
             next_influence_kind: 1,
             default_influence: None,
             config: SimulationConfig::default(),
+            auto_weather_policy: None,
         }
     }
 
@@ -96,6 +98,7 @@ impl SimulationBuilder {
             program: Box::new(program),
             refractory_batches: built.refractory_batches,
             encoder: built.encoder,
+            max_proposals_per_dispatch: built.max_proposals_per_dispatch,
         });
         self.locus_kind_names.insert(name, id);
         self
@@ -150,6 +153,28 @@ impl SimulationBuilder {
         self
     }
 
+    /// Enable automatic entity weathering every `every_ticks` steps,
+    /// using `DefaultEntityWeathering`.
+    pub fn auto_weather(mut self, every_ticks: u32) -> Self {
+        assert!(every_ticks > 0, "auto_weather interval must be > 0");
+        self.config.auto_weather_every_ticks = Some(every_ticks);
+        self.auto_weather_policy = Some(Box::new(DefaultEntityWeathering::default()));
+        self
+    }
+
+    /// Enable automatic entity weathering every `every_ticks` steps,
+    /// using a custom `EntityWeatheringPolicy`.
+    pub fn auto_weather_with(
+        mut self,
+        every_ticks: u32,
+        policy: impl EntityWeatheringPolicy + 'static,
+    ) -> Self {
+        assert!(every_ticks > 0, "auto_weather interval must be > 0");
+        self.config.auto_weather_every_ticks = Some(every_ticks);
+        self.auto_weather_policy = Some(Box::new(policy));
+        self
+    }
+
     /// Build the `Simulation`.
     ///
     /// Panics if `default_influence` was set to a name that was not
@@ -176,6 +201,9 @@ impl SimulationBuilder {
             sim.default_influence = Some(*id);
         }
 
+        // Transfer auto-weather policy (trait objects can't go through SimulationConfig).
+        sim.auto_weather_policy = self.auto_weather_policy;
+
         sim
     }
 }
@@ -191,6 +219,7 @@ impl Default for SimulationBuilder {
 pub struct LocusKindBuilder {
     refractory_batches: u32,
     encoder: Option<Box<dyn Encoder>>,
+    max_proposals_per_dispatch: Option<usize>,
 }
 
 impl LocusKindBuilder {
@@ -201,6 +230,15 @@ impl LocusKindBuilder {
 
     pub fn encoder(mut self, encoder: impl Encoder + 'static) -> Self {
         self.encoder = Some(Box::new(encoder));
+        self
+    }
+
+    /// Cap the number of `ProposedChange`s this locus kind may produce per dispatch.
+    ///
+    /// Proposals beyond the limit are silently dropped after `process` returns.
+    /// Use this to bound cascades from high-fanout programs.
+    pub fn max_proposals(mut self, n: usize) -> Self {
+        self.max_proposals_per_dispatch = Some(n);
         self
     }
 }

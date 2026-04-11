@@ -59,6 +59,11 @@ pub struct SimulationConfig {
     /// before it can be evicted to cold storage. Only meaningful when
     /// `cold_relationship_threshold` is `Some`. Default: 50.
     pub cold_relationship_min_idle_batches: u64,
+    /// When set, `EntityWeatheringPolicy` is applied automatically every
+    /// N `step()` calls. The policy itself is supplied separately via
+    /// `SimulationBuilder::auto_weather` or `auto_weather_with`.
+    /// `None` disables automatic weathering (the default).
+    pub auto_weather_every_ticks: Option<u32>,
 }
 
 impl Default for SimulationConfig {
@@ -72,6 +77,7 @@ impl Default for SimulationConfig {
             change_retention_batches: None,
             cold_relationship_threshold: None,
             cold_relationship_min_idle_batches: 50,
+            auto_weather_every_ticks: None,
         }
     }
 }

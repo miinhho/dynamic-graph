@@ -8,6 +8,7 @@
 
 pub mod change;
 pub mod cohere;
+pub mod inbox;
 pub mod encoder;
 pub mod entity;
 pub mod event;
@@ -25,7 +26,10 @@ pub mod weathering;
 pub use change::{Change, ChangeSubject};
 pub use ids::{BatchId, ChangeId, InfluenceKindId, LocusId, LocusKindId, RelationshipKindId};
 pub use locus::Locus;
-pub use program::{LocusContext, LocusProgram, ProposedChange, StructuralProposal};
+pub use program::{
+    changes_of_kind, locus_changes, relationship_changes, relationship_changes_of_kind,
+    LocusContext, LocusProgram, ProposedChange, StructuralProposal,
+};
 pub use cohere::{Cohere, CohereId, CohereMembers};
 pub use entity::{
     CompressedTransition, CompressionLevel, Entity, EntityId, EntityLayer, EntityLineage,

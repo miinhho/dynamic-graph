@@ -134,11 +134,15 @@ impl Engine {
                 let PendingChange { proposed, derived_predecessors } = pending_change;
                 let mut predecessors = derived_predecessors;
                 predecessors.extend(proposed.extra_predecessors.iter().copied());
-                let id = world.mint_change_id();
                 let kind = proposed.kind;
 
                 match proposed.subject {
                     ChangeSubject::Locus(locus_id) => {
+                        debug_assert!(
+                            proposed.slot_patches.is_none(),
+                            "slot_patches is only valid for ChangeSubject::Relationship changes; \
+                             for locus changes, apply deltas to a StateVector directly and pass via ProposedChange::new"
+                        );
                         // Drop changes targeting non-existent loci.
                         if world.locus(locus_id).is_none() {
                             continue;
@@ -151,7 +155,14 @@ impl Engine {
                             .iter()
                             .filter_map(|pid| world.log().get(*pid))
                             .filter_map(|pred| match pred.subject {
-                                ChangeSubject::Locus(pl) if pl != locus_id => {
+                                // Only include predecessors from loci that still exist.
+                                // A locus deleted by a DeleteLocus structural proposal in
+                                // the previous batch would still appear in the ChangeLog,
+                                // but auto-emerging a relationship from it would create a
+                                // dangling edge pointing at a non-existent locus.
+                                ChangeSubject::Locus(pl)
+                                    if pl != locus_id && world.locus(pl).is_some() =>
+                                {
                                     let pre = pred.after.as_slice().first().copied().unwrap_or(0.0);
                                     Some((pl, pre))
                                 }
@@ -163,6 +174,24 @@ impl Engine {
                             Some(cfg) => cfg.stabilization.stabilize(&before, proposed.after),
                             None => proposed.after,
                         };
+                        // Elide program-generated follow-up changes that
+                        // produce no effect: state unchanged, no cross-locus
+                        // causal flow (no auto-emerge needed), no metadata,
+                        // and no property patch to record.
+                        // Root stimuli (predecessors empty) are always
+                        // committed so programs fire and co-occurrence
+                        // relationships auto-emerge correctly.
+                        // ChangeId is not minted for elided changes, preserving
+                        // the dense sequence invariant.
+                        if !predecessors.is_empty()
+                            && cross_locus_preds.is_empty()
+                            && stabilized_after == before
+                            && proposed.metadata.is_none()
+                            && proposed.property_patch.is_none()
+                        {
+                            continue;
+                        }
+                        let id = world.mint_change_id();
                         let post_signal = stabilized_after.as_slice().first().copied().unwrap_or(0.0);
                         let change = Change {
                             id,
@@ -179,6 +208,13 @@ impl Engine {
                             locus.state = stabilized_after;
                         }
                         world.append_change(change);
+                        if let Some(patch) = proposed.property_patch {
+                            if let Some(props) = world.properties_mut().get_mut(locus_id) {
+                                props.extend(&patch);
+                            } else {
+                                world.properties_mut().insert(locus_id, patch);
+                            }
+                        }
                         let plasticity_active = kind_cfg
                             .map(|cfg| cfg.plasticity.is_active())
                             .unwrap_or(false);
@@ -196,14 +232,26 @@ impl Engine {
                         }
                     }
                     ChangeSubject::Relationship(rel_id) => {
+                        let id = world.mint_change_id();
                         let before = world
                             .relationships()
                             .get(rel_id)
                             .map(|r| r.state.clone())
                             .unwrap_or_default();
-                        let stabilized_after = match influence_registry.get(kind) {
-                            Some(cfg) => cfg.stabilization.stabilize(&before, proposed.after),
+                        // When slot_patches are provided, compute `after` by
+                        // applying additive deltas to the current live state.
+                        // This preserves untouched slots (e.g. Hebbian weight)
+                        // and avoids the program/Hebbian overwrite conflict.
+                        // When absent, use `proposed.after` as a full replacement.
+                        let raw_after = match proposed.slot_patches {
+                            Some(patches) => patches
+                                .into_iter()
+                                .fold(before.clone(), |s, (idx, delta)| s.with_slot_delta(idx, delta)),
                             None => proposed.after,
+                        };
+                        let stabilized_after = match influence_registry.get(kind) {
+                            Some(cfg) => cfg.stabilization.stabilize(&before, raw_after),
+                            None => raw_after,
                         };
                         let change = Change {
                             id,
@@ -280,7 +328,8 @@ impl Engine {
             // slot_defs is borrowed from the registry — no per-batch allocation.
             let batch_ctx = graph_world::BatchContext::new(
                 world.loci(), world.relationships(), world.log(),
-                world.entities(), world.coheres(), batch, slot_defs,
+                world.entities(), world.coheres(), batch,
+                world.properties(), slot_defs,
             );
 
             let dispatch_results: Vec<DispatchResult> = dispatch_inputs
@@ -292,7 +341,13 @@ impl Engine {
                 })
                 .collect();
 
-            for (idx, (state_proposals, structural, derived)) in dispatch_results.into_iter().enumerate() {
+            for (idx, (mut state_proposals, structural, derived)) in dispatch_results.into_iter().enumerate() {
+                // Truncate proposals to the per-kind budget if configured.
+                if let Some(cfg) = loci_registry.get_config(dispatch_inputs[idx].locus.kind)
+                    && let Some(max) = cfg.max_proposals_per_dispatch
+                {
+                    state_proposals.truncate(max);
+                }
                 if !state_proposals.is_empty() {
                     // Record that this locus fired for refractory tracking.
                     last_fired.insert(dispatch_inputs[idx].locus.id, batch_num);

@@ -19,6 +19,6 @@ pub use store::property_store::PropertyStore;
 pub use store::relationship_store::RelationshipStore;
 pub use store::subscription_store::SubscriptionStore;
 pub use context::BatchContext;
-pub use diff::WorldDiff;
+pub use diff::{RelationshipDelta, WorldDiff};
 pub use metrics::{ACTIVITY_THRESHOLD, TOP_N, WorldMetrics};
 pub use world::{World, WorldMeta, WorldSnapshot};

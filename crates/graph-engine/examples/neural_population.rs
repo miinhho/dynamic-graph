@@ -289,11 +289,13 @@ fn build_world(topo: Arc<NetworkTopology>) -> (World, LocusKindRegistry, Influen
         program: Box::new(ExcitatoryProgram { topo: Arc::clone(&topo) }),
         refractory_batches: 3,
         encoder: None,
+        max_proposals_per_dispatch: None,
     });
     loci.insert_with_config(KIND_INH, LocusKindConfig {
         program: Box::new(InhibitoryProgram { topo }),
         refractory_batches: 2,
         encoder: None,
+        max_proposals_per_dispatch: None,
     });
 
     let mut influences = InfluenceKindRegistry::new();

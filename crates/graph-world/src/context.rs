@@ -9,9 +9,10 @@
 
 use rustc_hash::FxHashMap;
 
-use graph_core::{BatchId, Change, Cohere, Entity, EntityId, Locus, LocusContext, LocusId, Relationship, RelationshipId, RelationshipKindId, RelationshipSlotDef};
+use graph_core::{BatchId, Change, Cohere, Entity, EntityId, Locus, LocusContext, LocusId, Properties, Relationship, RelationshipId, RelationshipKindId, RelationshipSlotDef};
 
 use crate::store::change_log::ChangeLog;
+use crate::store::property_store::PropertyStore;
 use crate::{CohereStore, EntityStore, LocusStore, RelationshipStore};
 
 /// Read-only view of the world's stores for one batch dispatch.
@@ -24,6 +25,10 @@ pub struct BatchContext<'a> {
     pub(crate) entities: &'a EntityStore,
     pub(crate) coheres: &'a CohereStore,
     pub(crate) batch: BatchId,
+    /// Domain-level properties per locus (set via `ingest()` or
+    /// `world.properties_mut()`). Programs can read these to access
+    /// human-readable labels, type tags, and other domain data.
+    pub(crate) properties: &'a PropertyStore,
     /// Reverse index: locus → owning active entity. Built once at
     /// context creation to make `entity_of()` O(1). When a locus
     /// belongs to multiple active entities, the one with the highest
@@ -35,6 +40,7 @@ pub struct BatchContext<'a> {
 }
 
 impl<'a> BatchContext<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         loci: &'a LocusStore,
         relationships: &'a RelationshipStore,
@@ -42,30 +48,27 @@ impl<'a> BatchContext<'a> {
         entities: &'a EntityStore,
         coheres: &'a CohereStore,
         batch: BatchId,
+        properties: &'a PropertyStore,
         slot_defs: &'a FxHashMap<RelationshipKindId, Vec<RelationshipSlotDef>>,
     ) -> Self {
-        // Build reverse index: for each active entity, map its members
-        // to its id. If a locus appears in multiple entities, the one
-        // with the highest coherence wins.
-        let mut locus_to_entity = FxHashMap::default();
-        let mut coherence_by_entity: FxHashMap<EntityId, f32> = FxHashMap::default();
+        // Build reverse index: locus → (owning entity id, entity coherence).
+        // Stored as (EntityId, f32) so tie-breaking requires no second map.
+        // If a locus appears in multiple active entities, the one with the
+        // highest coherence wins.
+        let mut winner: FxHashMap<LocusId, (EntityId, f32)> = FxHashMap::default();
         for entity in entities.active() {
-            coherence_by_entity.insert(entity.id, entity.current.coherence);
+            let coh = entity.current.coherence;
             for &lid in &entity.current.members {
-                let replace = match locus_to_entity.get(&lid) {
-                    None => true,
-                    Some(&existing_eid) => {
-                        let existing_coh = coherence_by_entity.get(&existing_eid).copied().unwrap_or(0.0);
-                        entity.current.coherence > existing_coh
-                    }
-                };
+                let replace = winner.get(&lid).is_none_or(|&(_, prev_coh)| coh > prev_coh);
                 if replace {
-                    locus_to_entity.insert(lid, entity.id);
+                    winner.insert(lid, (entity.id, coh));
                 }
             }
         }
+        let locus_to_entity: FxHashMap<LocusId, EntityId> =
+            winner.into_iter().map(|(lid, (eid, _))| (lid, eid)).collect();
 
-        Self { loci, relationships, log, entities, coheres, batch, locus_to_entity, slot_defs }
+        Self { loci, relationships, log, entities, coheres, batch, properties, locus_to_entity, slot_defs }
     }
 }
 
@@ -113,6 +116,22 @@ impl<'a> LocusContext for BatchContext<'a> {
 
     fn relationship(&self, id: RelationshipId) -> Option<&Relationship> {
         self.relationships.get(id)
+    }
+
+    fn properties(&self, id: LocusId) -> Option<&Properties> {
+        self.properties.get(id)
+    }
+
+    fn recent_changes_to_relationship<'b>(
+        &'b self,
+        rel_id: RelationshipId,
+        since: BatchId,
+    ) -> Box<dyn Iterator<Item = &'b Change> + 'b> {
+        Box::new(
+            self.log
+                .changes_to_relationship(rel_id)
+                .take_while(move |c| c.batch.0 >= since.0),
+        )
     }
 
     fn extra_slots_for_kind(&self, kind: RelationshipKindId) -> &[RelationshipSlotDef] {

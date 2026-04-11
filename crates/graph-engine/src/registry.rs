@@ -100,6 +100,13 @@ pub struct InfluenceKindConfig {
     /// per-batch by their individual `decay` rate (if any), and ignored
     /// by the Hebbian plasticity rule.
     pub extra_slots: Vec<RelationshipSlotDef>,
+    /// When `true`, auto-emerged relationships for this kind use
+    /// `Endpoints::Symmetric` instead of `Endpoints::Directed`.
+    ///
+    /// Useful for inherently undirected influences (co-occurrence, mutual
+    /// conflict, shared resonance) where A→B and B→A represent the same
+    /// coupling. Default: `false` (directed).
+    pub symmetric: bool,
 }
 
 impl InfluenceKindConfig {
@@ -111,6 +118,7 @@ impl InfluenceKindConfig {
             plasticity: PlasticityConfig::default(),
             prune_activity_threshold: 0.0,
             extra_slots: Vec::new(),
+            symmetric: false,
         }
     }
 
@@ -139,11 +147,19 @@ impl InfluenceKindConfig {
         self
     }
 
+    /// Mark this kind as symmetric: auto-emerged edges use
+    /// `Endpoints::Symmetric` so A↔B co-occurrence produces one edge
+    /// instead of two directed ones.
+    pub fn symmetric(mut self) -> Self {
+        self.symmetric = true;
+        self
+    }
+
     /// Build the initial `StateVector` for a new relationship of this kind.
     ///
     /// Activity starts at 1.0 (one touch), weight at 0.0, then the
     /// default values for each extra slot in declaration order.
-    pub(crate) fn initial_relationship_state(&self) -> StateVector {
+    pub fn initial_relationship_state(&self) -> StateVector {
         let mut values = vec![1.0f32, 0.0f32];
         for slot in &self.extra_slots {
             values.push(slot.default);
@@ -186,6 +202,12 @@ pub struct LocusKindConfig {
     /// `StateVector` the engine consumes. Used by the ingest API.
     /// When `None`, the ingest API falls back to `PassthroughEncoder`.
     pub encoder: Option<Box<dyn Encoder>>,
+    /// Maximum number of `ProposedChange`s a single dispatch may produce.
+    ///
+    /// When `Some(n)`, the program's output is silently truncated to the
+    /// first `n` proposals after `process` returns. This caps runaway
+    /// programs without aborting the tick. `None` means unlimited (default).
+    pub max_proposals_per_dispatch: Option<usize>,
 }
 
 /// Owns the per-locus-kind program implementations.
@@ -201,7 +223,12 @@ impl LocusKindRegistry {
 
     /// Register a program for a locus kind with no refractory period.
     pub fn insert(&mut self, kind: LocusKindId, program: Box<dyn LocusProgram>) {
-        self.insert_with_config(kind, LocusKindConfig { program, refractory_batches: 0, encoder: None });
+        self.insert_with_config(kind, LocusKindConfig {
+            program,
+            refractory_batches: 0,
+            encoder: None,
+            max_proposals_per_dispatch: None,
+        });
     }
 
     /// Register a program with a full config (refractory period, etc.).
@@ -261,7 +288,45 @@ impl InfluenceKindRegistry {
         Self::default()
     }
 
+    /// Register a config for an influence kind.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `kind` was already registered (duplicate registration) or
+    /// if `config` contains out-of-range values:
+    ///
+    /// - `decay_per_batch` must be in `(0.0, 1.0]` — `0.0` kills all
+    ///   relationships in one batch; values > 1.0 cause unbounded growth.
+    /// - `plasticity.learning_rate` must be `>= 0.0`.
+    /// - `plasticity.weight_decay` must be in `(0.0, 1.0]`.
+    /// - `plasticity.max_weight` must be `> 0.0`.
+    /// - `prune_activity_threshold` must be `>= 0.0`.
     pub fn insert(&mut self, kind: InfluenceKindId, config: InfluenceKindConfig) {
+        assert!(
+            config.decay_per_batch > 0.0 && config.decay_per_batch <= 1.0,
+            "InfluenceKindConfig '{}': decay_per_batch must be in (0.0, 1.0], got {}",
+            config.name, config.decay_per_batch
+        );
+        assert!(
+            config.plasticity.learning_rate >= 0.0,
+            "InfluenceKindConfig '{}': plasticity.learning_rate must be >= 0, got {}",
+            config.name, config.plasticity.learning_rate
+        );
+        assert!(
+            config.plasticity.weight_decay > 0.0 && config.plasticity.weight_decay <= 1.0,
+            "InfluenceKindConfig '{}': plasticity.weight_decay must be in (0.0, 1.0], got {}",
+            config.name, config.plasticity.weight_decay
+        );
+        assert!(
+            config.plasticity.max_weight > 0.0,
+            "InfluenceKindConfig '{}': plasticity.max_weight must be > 0, got {}",
+            config.name, config.plasticity.max_weight
+        );
+        assert!(
+            config.prune_activity_threshold >= 0.0,
+            "InfluenceKindConfig '{}': prune_activity_threshold must be >= 0, got {}",
+            config.name, config.prune_activity_threshold
+        );
         if self.configs.insert(kind, config).is_some() {
             panic!("InfluenceKindRegistry: duplicate registration for {kind:?}");
         }
@@ -286,6 +351,26 @@ impl InfluenceKindRegistry {
 
     pub fn get(&self, kind: InfluenceKindId) -> Option<&InfluenceKindConfig> {
         self.configs.get(&kind)
+    }
+
+    /// Build the initial `StateVector` for a new relationship of `kind`.
+    ///
+    /// Returns the kind-config's `initial_relationship_state()` when registered,
+    /// or a minimal `[1.0, 0.0]` (activity=1, weight=0) when the kind is unknown.
+    /// Use this in world-construction code that creates relationships before the
+    /// first tick so the initial state matches the kind's extra-slot defaults.
+    pub fn initial_state_for(&self, kind: InfluenceKindId) -> StateVector {
+        self.configs
+            .get(&kind)
+            .map(|cfg| cfg.initial_relationship_state())
+            .unwrap_or_else(|| {
+                debug_assert!(
+                    false,
+                    "initial_state_for called with unregistered InfluenceKindId: {kind:?}; \
+                     extra-slot defaults will be missing from the returned state"
+                );
+                StateVector::from_slice(&[1.0, 0.0])
+            })
     }
 
     pub fn require(&self, kind: InfluenceKindId) -> Option<&InfluenceKindConfig> {
@@ -400,5 +485,65 @@ mod tests {
         );
         assert_eq!(reg.slot_defs().len(), 1);
         assert!(reg.slot_defs().contains_key(&InfluenceKindId(1)));
+    }
+
+    // ── InfluenceKindConfig validation ───────────────────────────────────────
+
+    #[test]
+    fn valid_config_inserts_without_panic() {
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(InfluenceKindId(1), InfluenceKindConfig::new("ok").with_decay(0.95));
+    }
+
+    #[test]
+    #[should_panic(expected = "decay_per_batch must be in (0.0, 1.0]")]
+    fn zero_decay_panics() {
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(InfluenceKindId(1), InfluenceKindConfig::new("bad").with_decay(0.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "decay_per_batch must be in (0.0, 1.0]")]
+    fn decay_above_one_panics() {
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(InfluenceKindId(1), InfluenceKindConfig::new("bad").with_decay(1.1));
+    }
+
+    #[test]
+    #[should_panic(expected = "plasticity.learning_rate must be >= 0")]
+    fn negative_learning_rate_panics() {
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(
+            InfluenceKindId(1),
+            InfluenceKindConfig::new("bad").with_plasticity(PlasticityConfig {
+                learning_rate: -0.1,
+                weight_decay: 1.0,
+                max_weight: 1.0,
+            }),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "plasticity.max_weight must be > 0")]
+    fn zero_max_weight_panics() {
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(
+            InfluenceKindId(1),
+            InfluenceKindConfig::new("bad").with_plasticity(PlasticityConfig {
+                learning_rate: 0.0,
+                weight_decay: 1.0,
+                max_weight: 0.0,
+            }),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "prune_activity_threshold must be >= 0")]
+    fn negative_prune_threshold_panics() {
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(
+            InfluenceKindId(1),
+            InfluenceKindConfig::new("bad").with_prune_threshold(-0.1),
+        );
     }
 }

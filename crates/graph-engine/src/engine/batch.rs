@@ -50,10 +50,20 @@ pub(crate) fn auto_emerge_relationship(
     current_batch: u64,
     cfg: Option<&InfluenceKindConfig>,
 ) -> graph_core::RelationshipId {
+    debug_assert!(
+        cfg.is_some(),
+        "auto_emerge_relationship: InfluenceKindId {kind:?} is not registered — \
+         relationships of this kind will use no-decay defaults. \
+         Register it with InfluenceKindRegistry::insert() in SimulationBuilder."
+    );
     let activity_decay = cfg.map(|c| c.decay_per_batch).unwrap_or(1.0);
     let weight_decay = cfg.map(|c| c.plasticity.weight_decay).unwrap_or(1.0);
 
-    let endpoints = Endpoints::Directed { from, to };
+    let endpoints = if cfg.map(|c| c.symmetric).unwrap_or(false) {
+        Endpoints::Symmetric { a: from, b: to }
+    } else {
+        Endpoints::Directed { from, to }
+    };
     let key = endpoints.key();
     let store = world.relationships_mut();
     if let Some(rel_id) = store.lookup(&key, kind) {
@@ -136,26 +146,41 @@ pub(crate) fn apply_structural_proposals(
     let batch_id = BatchId(current_batch);
     for proposal in proposals {
         match proposal {
-            StructuralProposal::CreateRelationship { endpoints, kind } => {
+            StructuralProposal::CreateRelationship { endpoints, kind, initial_activity, initial_state } => {
                 let key = endpoints.key();
                 let store = world.relationships_mut();
                 if let Some(rel_id) = store.lookup(&key, kind) {
+                    // Already exists: treat as activity touch regardless of initial_* fields.
                     let rel = store.get_mut(rel_id).expect("indexed id must exist");
                     if let Some(a) = rel.state.as_mut_slice().get_mut(Relationship::ACTIVITY_SLOT) {
                         *a += 1.0;
                     }
                     rel.lineage.change_count += 1;
                 } else {
-                    let initial_state = influence_registry
-                        .get(kind)
-                        .map(|c| c.initial_relationship_state())
-                        .unwrap_or_else(|| StateVector::from_slice(&[1.0, 0.0]));
+                    // New relationship: resolve initial state in priority order.
+                    // 1. initial_state (full vector) takes precedence.
+                    // 2. initial_activity overrides only slot 0.
+                    // 3. Kind config default.
+                    let state = if let Some(s) = initial_state {
+                        s
+                    } else {
+                        let mut s = influence_registry
+                            .get(kind)
+                            .map(|c| c.initial_relationship_state())
+                            .unwrap_or_else(|| StateVector::from_slice(&[1.0, 0.0]));
+                        if let Some(act) = initial_activity {
+                            if let Some(a) = s.as_mut_slice().get_mut(Relationship::ACTIVITY_SLOT) {
+                                *a = act;
+                            }
+                        }
+                        s
+                    };
                     let new_id = store.mint_id();
                     store.insert(Relationship {
                         id: new_id,
                         kind,
                         endpoints,
-                        state: initial_state,
+                        state,
                         lineage: RelationshipLineage {
                             created_by: None,
                             last_touched_by: None,
@@ -175,6 +200,23 @@ pub(crate) fn apply_structural_proposals(
             }
             StructuralProposal::UnsubscribeFromRelationship { subscriber, rel_id } => {
                 world.subscriptions_mut().unsubscribe_at(subscriber, rel_id, Some(batch_id));
+            }
+            StructuralProposal::DeleteLocus { locus_id } => {
+                // Collect all relationship ids touching this locus first to avoid
+                // holding an immutable borrow on the store during removal.
+                let rel_ids: Vec<graph_core::RelationshipId> = world
+                    .relationships()
+                    .relationships_for_locus(locus_id)
+                    .map(|r| r.id)
+                    .collect();
+                for rel_id in rel_ids {
+                    world.subscriptions_mut().remove_relationship(rel_id);
+                    world.relationships_mut().remove(rel_id);
+                }
+                world.subscriptions_mut().remove_locus(locus_id);
+                world.properties_mut().remove(locus_id);
+                world.names_mut().remove(locus_id);
+                world.loci_mut().remove(locus_id);
             }
         }
     }

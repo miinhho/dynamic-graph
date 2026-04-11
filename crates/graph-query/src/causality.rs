@@ -10,6 +10,70 @@
 use graph_core::{BatchId, Change, ChangeId, LocusId, RelationshipId};
 use graph_world::World;
 
+// ─── Relationship causality ───────────────────────────────────────────────────
+
+/// Walk backwards from the creation of `rel` to find all root changes
+/// (stimuli — changes with no predecessors) that ultimately caused the
+/// relationship to form.
+///
+/// Returns an empty `Vec` when:
+/// - The relationship is not in the world.
+/// - The relationship was pre-created with no `created_by` change (e.g.
+///   inserted before the engine ran, or via `StructuralProposal::CreateRelationship`).
+///
+/// Returns `vec![created_by]` when the creation change itself is a root
+/// stimulus (no predecessors). Otherwise walks the DAG from `created_by`
+/// and returns all leaf ancestors.
+///
+/// This is the primary API for answering **"why does this relationship exist?"**
+pub fn root_stimuli_for_relationship(world: &World, rel: RelationshipId) -> Vec<ChangeId> {
+    let Some(created_by) = world
+        .relationships()
+        .get(rel)
+        .and_then(|r| r.lineage.created_by)
+    else {
+        return Vec::new();
+    };
+
+    // If the creation change is itself a root stimulus, return it directly.
+    if world.log().get(created_by).is_some_and(|c| c.predecessors.is_empty()) {
+        return vec![created_by];
+    }
+
+    root_stimuli(world, created_by)
+}
+
+// ─── Relationship volatility ──────────────────────────────────────────────────
+
+/// Activity volatility of `rel` over `[from_batch, to_batch]`.
+///
+/// Computed as the **standard deviation** of the activity slot (slot 0) across
+/// all explicit `ChangeSubject::Relationship` changes in the range. A value
+/// close to 0.0 indicates stable, steady coupling; a high value indicates
+/// burst-driven or oscillating coupling.
+///
+/// Returns `0.0` when fewer than two explicit relationship changes exist in
+/// the range — including when the relationship was only touched by
+/// auto-emergence (which does not produce `ChangeSubject::Relationship` log
+/// entries).
+pub fn relationship_volatility(
+    world: &World,
+    rel: RelationshipId,
+    from_batch: BatchId,
+    to_batch: BatchId,
+) -> f32 {
+    let changes = changes_to_relationship_in_range(world, rel, from_batch, to_batch);
+    let n = changes.len();
+    if n < 2 {
+        return 0.0;
+    }
+    let nf = n as f32;
+    let activity = |c: &&Change| c.after.as_slice().first().copied().unwrap_or(0.0);
+    let mean = changes.iter().map(activity).sum::<f32>() / nf;
+    let variance = changes.iter().map(|c| (activity(c) - mean).powi(2)).sum::<f32>() / nf;
+    variance.sqrt()
+}
+
 // ─── Ancestor queries ─────────────────────────────────────────────────────────
 
 /// All causal ancestor `ChangeId`s of `target`, via BFS in the predecessor
@@ -165,5 +229,157 @@ mod tests {
     fn root_stimuli_empty_for_stimulus_itself() {
         let w = chain_world();
         assert!(root_stimuli(&w, ChangeId(0)).is_empty());
+    }
+
+    // ── root_stimuli_for_relationship ────────────────────────────────────────
+
+    fn world_with_relationship_created_by(
+        created_by: Option<u64>,
+        root_pred: Vec<u64>,
+    ) -> (World, RelationshipId) {
+        use graph_core::{
+            Endpoints, InfluenceKindId, Locus, LocusKindId, Relationship,
+            RelationshipKindId, RelationshipLineage, StateVector,
+        };
+        let mut w = World::new();
+        let rk: RelationshipKindId = InfluenceKindId(1);
+        w.insert_locus(graph_core::Locus::new(LocusId(0), LocusKindId(1), StateVector::zeros(1)));
+        w.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+
+        // Push a root change (no predecessors) at id 0.
+        push_change(&mut w, 0, 0, vec![], 0);
+        // Push a derived change with `root_pred` as predecessors.
+        if let Some(cid) = created_by {
+            push_change(&mut w, cid, 1, root_pred, 1);
+        }
+
+        let rel_id = w.relationships_mut().mint_id();
+        w.relationships_mut().insert(Relationship {
+            id: rel_id,
+            kind: rk,
+            endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(1) },
+            state: StateVector::from_slice(&[1.0, 0.0]),
+            lineage: RelationshipLineage {
+                created_by: created_by.map(ChangeId),
+                last_touched_by: None,
+                change_count: 1,
+                kinds_observed: vec![rk],
+            },
+            last_decayed_batch: 0,
+        });
+        (w, rel_id)
+    }
+
+    #[test]
+    fn root_stimuli_for_relationship_returns_empty_when_no_created_by() {
+        let (w, rel_id) = world_with_relationship_created_by(None, vec![]);
+        assert!(root_stimuli_for_relationship(&w, rel_id).is_empty());
+    }
+
+    #[test]
+    fn root_stimuli_for_relationship_returns_stimulus_when_created_by_is_root() {
+        // Change 1 has no predecessors → it IS the root stimulus.
+        let (w, rel_id) = world_with_relationship_created_by(Some(1), vec![]);
+        let roots = root_stimuli_for_relationship(&w, rel_id);
+        assert_eq!(roots, vec![ChangeId(1)]);
+    }
+
+    #[test]
+    fn root_stimuli_for_relationship_traces_through_predecessors() {
+        // Chain: c0 (root) → c1 → c2 (created_by for rel)
+        let mut w = World::new();
+        push_change(&mut w, 0, 0, vec![], 0);     // root
+        push_change(&mut w, 1, 1, vec![0], 1);    // derived
+        push_change(&mut w, 2, 2, vec![1], 2);    // created_by
+
+        use graph_core::{
+            Endpoints, InfluenceKindId, Locus, LocusKindId, Relationship,
+            RelationshipKindId, RelationshipLineage, StateVector,
+        };
+        let rk: RelationshipKindId = InfluenceKindId(1);
+        for i in 0..3 {
+            w.insert_locus(Locus::new(LocusId(i), LocusKindId(1), StateVector::zeros(1)));
+        }
+        let rel_id = w.relationships_mut().mint_id();
+        w.relationships_mut().insert(Relationship {
+            id: rel_id,
+            kind: rk,
+            endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(1) },
+            state: StateVector::from_slice(&[1.0, 0.0]),
+            lineage: RelationshipLineage {
+                created_by: Some(ChangeId(2)),
+                last_touched_by: None,
+                change_count: 1,
+                kinds_observed: vec![rk],
+            },
+            last_decayed_batch: 0,
+        });
+
+        let roots = root_stimuli_for_relationship(&w, rel_id);
+        assert_eq!(roots, vec![ChangeId(0)]);
+    }
+
+    // ── relationship_volatility ──────────────────────────────────────────────
+
+    fn world_with_rel_changes(activity_values: &[f32]) -> (World, RelationshipId) {
+        use graph_core::{
+            Change, ChangeSubject, Endpoints, InfluenceKindId, Locus, LocusKindId,
+            Relationship, RelationshipKindId, RelationshipLineage, StateVector,
+        };
+        let rk: RelationshipKindId = InfluenceKindId(1);
+        let mut w = World::new();
+        w.insert_locus(Locus::new(LocusId(0), LocusKindId(1), StateVector::zeros(1)));
+        w.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+
+        let rel_id = w.relationships_mut().mint_id();
+        w.relationships_mut().insert(Relationship {
+            id: rel_id,
+            kind: rk,
+            endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(1) },
+            state: StateVector::from_slice(&[1.0, 0.0]),
+            lineage: RelationshipLineage {
+                created_by: None,
+                last_touched_by: None,
+                change_count: activity_values.len() as u64,
+                kinds_observed: vec![rk],
+            },
+            last_decayed_batch: 0,
+        });
+
+        for (batch, &act) in activity_values.iter().enumerate() {
+            let cid = w.mint_change_id();
+            w.append_change(Change {
+                id: cid,
+                subject: ChangeSubject::Relationship(rel_id),
+                kind: InfluenceKindId(1),
+                predecessors: vec![],
+                before: StateVector::from_slice(&[0.0, 0.0]),
+                after: StateVector::from_slice(&[act, 0.0]),
+                batch: BatchId(batch as u64),
+                wall_time: None,
+                metadata: None,
+            });
+        }
+        (w, rel_id)
+    }
+
+    #[test]
+    fn relationship_volatility_zero_for_fewer_than_two_changes() {
+        let (w, rel_id) = world_with_rel_changes(&[0.5]);
+        assert_eq!(relationship_volatility(&w, rel_id, BatchId(0), BatchId(10)), 0.0);
+    }
+
+    #[test]
+    fn relationship_volatility_zero_for_constant_activity() {
+        let (w, rel_id) = world_with_rel_changes(&[0.5, 0.5, 0.5]);
+        let v = relationship_volatility(&w, rel_id, BatchId(0), BatchId(10));
+        assert!(v.abs() < 1e-5, "constant activity should have ~0 volatility, got {v}");
+    }
+
+    #[test]
+    fn relationship_volatility_nonzero_for_variable_activity() {
+        let (w, rel_id) = world_with_rel_changes(&[0.1, 0.9, 0.1, 0.9]);
+        let v = relationship_volatility(&w, rel_id, BatchId(0), BatchId(10));
+        assert!(v > 0.3, "alternating activity should have high volatility, got {v}");
     }
 }

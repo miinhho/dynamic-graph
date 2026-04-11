@@ -5,7 +5,7 @@
 //! no builder pattern, no lazy iterators — just composable free functions
 //! that can be chained by the caller.
 
-use graph_core::{InfluenceKindId, Locus, LocusKindId, Relationship};
+use graph_core::{Entity, InfluenceKindId, Locus, LocusId, LocusKindId, Relationship};
 use graph_world::World;
 
 // ─── Locus filters ────────────────────────────────────────────────────────────
@@ -138,6 +138,82 @@ where
     world.relationships().iter().filter(|r| pred(r)).collect()
 }
 
+/// All directed relationships that originate **from** `locus`
+/// (`Directed { from == locus }`). Symmetric edges are excluded.
+pub fn relationships_from(world: &World, locus: LocusId) -> Vec<&Relationship> {
+    world.relationships_from(locus).collect()
+}
+
+/// Directed outgoing relationships of a specific kind from `locus`.
+/// Symmetric edges are excluded.
+pub fn relationships_from_of_kind(world: &World, locus: LocusId, kind: InfluenceKindId) -> Vec<&Relationship> {
+    world.relationships_from_of_kind(locus, kind).collect()
+}
+
+/// All directed relationships that arrive **at** `locus`
+/// (`Directed { to == locus }`). Symmetric edges are excluded.
+pub fn relationships_to(world: &World, locus: LocusId) -> Vec<&Relationship> {
+    world.relationships_to(locus).collect()
+}
+
+/// Directed incoming relationships of a specific kind to `locus`.
+/// Symmetric edges are excluded.
+pub fn relationships_to_of_kind(world: &World, locus: LocusId, kind: InfluenceKindId) -> Vec<&Relationship> {
+    world.relationships_to_of_kind(locus, kind).collect()
+}
+
+/// All relationships whose endpoints include both `a` and `b`,
+/// across all kinds and directions. O(k_a).
+pub fn relationships_between(world: &World, a: LocusId, b: LocusId) -> Vec<&Relationship> {
+    world.relationships_between(a, b).collect()
+}
+
+/// All relationships between `a` and `b` of a specific influence kind.
+pub fn relationships_between_of_kind(
+    world: &World,
+    a: LocusId,
+    b: LocusId,
+    kind: InfluenceKindId,
+) -> Vec<&Relationship> {
+    world.relationships_between_of_kind(a, b, kind).collect()
+}
+
+// ─── Entity filters ───────────────────────────────────────────────────────────
+
+/// All currently active entities.
+pub fn active_entities(world: &World) -> Vec<&Entity> {
+    world.entities().active().collect()
+}
+
+/// All active entities whose current member set contains `locus`.
+pub fn entities_with_member(world: &World, locus: LocusId) -> Vec<&Entity> {
+    world
+        .entities()
+        .active()
+        .filter(|e| e.current.members.contains(&locus))
+        .collect()
+}
+
+/// All active entities whose coherence score satisfies `pred`.
+pub fn entities_with_coherence<F>(world: &World, pred: F) -> Vec<&Entity>
+where
+    F: Fn(f32) -> bool,
+{
+    world
+        .entities()
+        .active()
+        .filter(|e| pred(e.current.coherence))
+        .collect()
+}
+
+/// All active entities matching a custom predicate over the `Entity` itself.
+pub fn entities_matching<F>(world: &World, pred: F) -> Vec<&Entity>
+where
+    F: Fn(&Entity) -> bool,
+{
+    world.entities().active().filter(|e| pred(e)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,5 +320,139 @@ mod tests {
         let rk = InfluenceKindId(1);
         assert_eq!(relationships_of_kind(&w, rk).len(), 1);
         assert!(relationships_of_kind(&w, InfluenceKindId(99)).is_empty());
+    }
+
+    // ── Entity filter tests ──────────────────────────────────────────────
+
+    fn make_world_with_entities() -> World {
+        use graph_core::{BatchId, Entity, EntityId, EntitySnapshot, LocusId};
+        let mut w = World::new();
+        let lk = LocusKindId(1);
+        w.insert_locus(Locus::new(LocusId(0), lk, StateVector::from_slice(&[0.5])));
+        w.insert_locus(Locus::new(LocusId(1), lk, StateVector::from_slice(&[0.8])));
+        w.insert_locus(Locus::new(LocusId(2), lk, StateVector::from_slice(&[0.3])));
+
+        let e0 = w.entities_mut().mint_id();
+        w.entities_mut().insert(Entity::born(
+            e0,
+            BatchId(1),
+            EntitySnapshot { members: vec![LocusId(0), LocusId(1)], member_relationships: vec![], coherence: 0.8 },
+        ));
+        let e1 = w.entities_mut().mint_id();
+        w.entities_mut().insert(Entity::born(
+            e1,
+            BatchId(2),
+            EntitySnapshot { members: vec![LocusId(2)], member_relationships: vec![], coherence: 0.2 },
+        ));
+        w
+    }
+
+    #[test]
+    fn active_entities_returns_all() {
+        let w = make_world_with_entities();
+        assert_eq!(active_entities(&w).len(), 2);
+    }
+
+    #[test]
+    fn entities_with_member_finds_correct_entity() {
+        let w = make_world_with_entities();
+        use graph_core::LocusId;
+        let found = entities_with_member(&w, LocusId(1));
+        assert_eq!(found.len(), 1);
+        assert!(found[0].current.members.contains(&LocusId(1)));
+
+        let not_found = entities_with_member(&w, LocusId(99));
+        assert!(not_found.is_empty());
+    }
+
+    #[test]
+    fn entities_with_coherence_filters() {
+        let w = make_world_with_entities();
+        let high = entities_with_coherence(&w, |c| c > 0.5);
+        assert_eq!(high.len(), 1);
+        assert!((high[0].current.coherence - 0.8).abs() < 1e-5);
+
+        let low = entities_with_coherence(&w, |c| c <= 0.5);
+        assert_eq!(low.len(), 1);
+    }
+
+    #[test]
+    fn entities_matching_custom_pred() {
+        let w = make_world_with_entities();
+        let large = entities_matching(&w, |e| e.current.members.len() >= 2);
+        assert_eq!(large.len(), 1);
+        assert_eq!(large[0].current.members.len(), 2);
+    }
+
+    // ── Directed relationship filter tests ──────────────────────────────────
+
+    fn directed_world() -> World {
+        use graph_core::{Endpoints, LocusId};
+        let mut w = World::new();
+        // L0→L1 kind 1, L2→L1 kind 1, L0→L2 kind 2
+        w.add_relationship(Endpoints::directed(LocusId(0), LocusId(1)), InfluenceKindId(1), StateVector::from_slice(&[1.0, 0.0]));
+        w.add_relationship(Endpoints::directed(LocusId(2), LocusId(1)), InfluenceKindId(1), StateVector::from_slice(&[1.0, 0.0]));
+        w.add_relationship(Endpoints::directed(LocusId(0), LocusId(2)), InfluenceKindId(2), StateVector::from_slice(&[1.0, 0.0]));
+        w
+    }
+
+    #[test]
+    fn relationships_from_returns_outgoing_only() {
+        use graph_core::LocusId;
+        let w = directed_world();
+        // L0 has two outgoing edges (to L1 and L2)
+        let out = relationships_from(&w, LocusId(0));
+        assert_eq!(out.len(), 2);
+        // L1 has no outgoing edges
+        let none = relationships_from(&w, LocusId(1));
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn relationships_to_returns_incoming_only() {
+        use graph_core::LocusId;
+        let w = directed_world();
+        // L1 has two incoming edges
+        let inc = relationships_to(&w, LocusId(1));
+        assert_eq!(inc.len(), 2);
+        // L0 has no incoming edges
+        let none = relationships_to(&w, LocusId(0));
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn relationships_between_returns_all_kinds() {
+        use graph_core::LocusId;
+        let w = directed_world();
+        // L0→L1 (kind 1): one edge between L0 and L1
+        let between01 = relationships_between(&w, LocusId(0), LocusId(1));
+        assert_eq!(between01.len(), 1);
+        // L0→L2 (kind 2): one edge between L0 and L2
+        let between02 = relationships_between(&w, LocusId(0), LocusId(2));
+        assert_eq!(between02.len(), 1);
+        // L2→L1 (kind 1): one edge between L1 and L2 (direction-agnostic)
+        let between12 = relationships_between(&w, LocusId(1), LocusId(2));
+        assert_eq!(between12.len(), 1);
+        // No edge between L3 and L0
+        let none = relationships_between(&w, LocusId(0), LocusId(99));
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn relationships_between_of_kind_filters_kind() {
+        use graph_core::LocusId;
+        // Add a second edge between L0→L1 of kind 2
+        let mut w = directed_world();
+        w.add_relationship(
+            graph_core::Endpoints::directed(LocusId(0), LocusId(1)),
+            InfluenceKindId(2),
+            StateVector::from_slice(&[1.0, 0.0]),
+        );
+        let kind1 = relationships_between_of_kind(&w, LocusId(0), LocusId(1), InfluenceKindId(1));
+        assert_eq!(kind1.len(), 1);
+        let kind2 = relationships_between_of_kind(&w, LocusId(0), LocusId(1), InfluenceKindId(2));
+        assert_eq!(kind2.len(), 1);
+        let kind99 = relationships_between_of_kind(&w, LocusId(0), LocusId(1), InfluenceKindId(99));
+        assert!(kind99.is_empty());
     }
 }

@@ -60,13 +60,17 @@ impl LocusProgram for SinkProgram {
 }
 
 /// Always proposes another change — used to drive the batch cap.
+/// Emits a strictly increasing state on each activation — never quiesces.
+/// Used to verify the batch cap: no-op elision does not apply because the
+/// state changes every batch, so only the cap can stop this program.
 struct InfiniteProgram;
 impl LocusProgram for InfiniteProgram {
     fn process(&self, locus: &Locus, _: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+        let next = locus.state.as_slice().first().copied().unwrap_or(0.0) + 0.001;
         vec![ProposedChange::new(
             ChangeSubject::Locus(locus.id),
             InfluenceKindId(1),
-            locus.state.clone(),
+            StateVector::from_slice(&[next]),
         )]
     }
 }
@@ -86,6 +90,8 @@ impl LocusProgram for WiringProgram {
             let mut out = vec![StructuralProposal::CreateRelationship {
                 endpoints: Endpoints::Directed { from: LocusId(1), to: self.new_target },
                 kind: InfluenceKindId(1),
+                initial_activity: None,
+                initial_state: None,
             }];
             if let Some(rid) = self.delete_rel {
                 out.push(StructuralProposal::DeleteRelationship { rel_id: rid });
@@ -1022,4 +1028,638 @@ fn trim_change_log_large_retention_is_noop() {
     let removed = engine.trim_change_log(&mut world, 9999);
     assert_eq!(removed, 0);
     assert_eq!(world.log().len(), before);
+}
+
+// ─── DeleteLocus structural proposal ─────────────────────────────────────────
+
+#[test]
+fn delete_locus_removes_locus_and_its_relationships() {
+    // Two connected loci. After a tick, a relationship exists between them.
+    // A program on locus 2 then proposes to delete locus 1.
+    struct DeleteL1Program;
+    impl LocusProgram for DeleteL1Program {
+        fn process(&self, _: &Locus, incoming: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+            let _ = incoming;
+            Vec::new()
+        }
+        fn structural_proposals(&self, _: &Locus, incoming: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<StructuralProposal> {
+            if incoming.is_empty() { return Vec::new(); }
+            vec![StructuralProposal::delete_locus(LocusId(1))]
+        }
+    }
+
+    let mut world = World::new();
+    world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+    world.insert_locus(Locus::new(LocusId(2), LocusKindId(2), StateVector::zeros(1)));
+    let mut loci = LocusKindRegistry::new();
+    loci.insert(LocusKindId(1), Box::new(ForwarderProgram { downstream: LocusId(2) }));
+    loci.insert(LocusKindId(2), Box::new(DeleteL1Program));
+    let mut influences = InfluenceKindRegistry::new();
+    influences.insert(InfluenceKindId(1), InfluenceKindConfig::new("signal"));
+
+    let engine = Engine::default();
+    engine.tick(&mut world, &loci, &influences, vec![ProposedChange::new(
+        ChangeSubject::Locus(LocusId(1)),
+        InfluenceKindId(1),
+        StateVector::from_slice(&[1.0]),
+    )]);
+
+    assert!(world.locus(LocusId(1)).is_none(), "locus 1 must be removed");
+    assert_eq!(world.relationships().len(), 0, "relationship must be removed with locus");
+}
+
+#[test]
+fn delete_locus_pending_changes_are_dropped() {
+    // DeleteL1Program fires on the first batch (locus 2 receives the forwarded change).
+    // Any subsequent changes targeting locus 1 must be silently dropped, not panic.
+    struct DeleteAndReplyProgram;
+    impl LocusProgram for DeleteAndReplyProgram {
+        fn process(&self, _: &Locus, incoming: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+            if incoming.is_empty() { return Vec::new(); }
+            // Try to reply to locus 1 — it will be deleted this batch.
+            vec![ProposedChange::new(
+                ChangeSubject::Locus(LocusId(1)),
+                InfluenceKindId(1),
+                StateVector::from_slice(&[0.5]),
+            )]
+        }
+        fn structural_proposals(&self, _: &Locus, incoming: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<StructuralProposal> {
+            if incoming.is_empty() { return Vec::new(); }
+            vec![StructuralProposal::delete_locus(LocusId(1))]
+        }
+    }
+
+    let mut world = World::new();
+    world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+    world.insert_locus(Locus::new(LocusId(2), LocusKindId(2), StateVector::zeros(1)));
+    let mut loci = LocusKindRegistry::new();
+    loci.insert(LocusKindId(1), Box::new(ForwarderProgram { downstream: LocusId(2) }));
+    loci.insert(LocusKindId(2), Box::new(DeleteAndReplyProgram));
+    let mut influences = InfluenceKindRegistry::new();
+    influences.insert(InfluenceKindId(1), InfluenceKindConfig::new("signal"));
+
+    let engine = Engine::default();
+    // Must not panic even though locus 1 is deleted mid-tick.
+    engine.tick(&mut world, &loci, &influences, vec![ProposedChange::new(
+        ChangeSubject::Locus(LocusId(1)),
+        InfluenceKindId(1),
+        StateVector::from_slice(&[1.0]),
+    )]);
+
+    assert!(world.locus(LocusId(1)).is_none(), "locus 1 must be removed");
+}
+
+#[test]
+fn delete_locus_no_dangling_relationship_from_deleted_locus() {
+    // Regression: after DeleteLocus fires for A in batch 1, a change FROM A
+    // that appears as a cross-locus predecessor in batch 2 must NOT cause
+    // auto_emerge_relationship to recreate a relationship from the now-deleted
+    // locus A.
+    //
+    // Three-locus setup (required so the forwarded-to locus is different from
+    // the deleting locus, which is what actually exercises the fix):
+    //
+    //   A (kind 1): ForwarderProgram → C.
+    //   B (kind 2): on stimulus proposes DeleteLocus(A) via structural_proposals.
+    //   C (kind 3): SinkProgram — accepts whatever A forwards.
+    //
+    // Stimuli: [stim(A), stim(B)] committed together in one tick.
+    //
+    // Batch 1:
+    //   - stim(A) and stim(B) committed.
+    //   - A dispatches → ForwarderProgram sends change to C (pending,
+    //     derived predecessors = [stim_A.id]).
+    //   - B dispatches → structural_proposals yields DeleteLocus(A).
+    //   - End of batch: A deleted, all relationships touching A removed.
+    //
+    // Batch 2:
+    //   - C's pending change committed. predecessors = [stim_A.id].
+    //   - stim_A.subject = Locus(A). Without the `world.locus(pl).is_some()`
+    //     fix, cross_locus_preds would include (A, stim_A) and
+    //     auto_emerge_relationship(A, C, …) would create a dangling edge.
+    //   - With the fix: world.locus(A).is_some() == false → filtered out.
+    //
+    // Assertion: no relationship references A after the tick.
+    struct DeleteAOnStimulusProgram;
+    impl LocusProgram for DeleteAOnStimulusProgram {
+        fn process(&self, _: &Locus, _: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+            Vec::new()
+        }
+        fn structural_proposals(&self, _: &Locus, incoming: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<StructuralProposal> {
+            if incoming.is_empty() { return Vec::new(); }
+            vec![StructuralProposal::delete_locus(LocusId(1))]
+        }
+    }
+
+    let a = LocusId(1);
+    let b = LocusId(2);
+    let c = LocusId(3);
+
+    let mut world = World::new();
+    world.insert_locus(Locus::new(a, LocusKindId(1), StateVector::zeros(1)));
+    world.insert_locus(Locus::new(b, LocusKindId(2), StateVector::zeros(1)));
+    world.insert_locus(Locus::new(c, LocusKindId(3), StateVector::zeros(1)));
+
+    let mut loci = LocusKindRegistry::new();
+    // A forwards to C (not B), so C's batch-2 change has A as cross-locus pred.
+    loci.insert(LocusKindId(1), Box::new(ForwarderProgram { downstream: c }));
+    loci.insert(LocusKindId(2), Box::new(DeleteAOnStimulusProgram));
+    loci.insert(LocusKindId(3), Box::new(SinkProgram));
+
+    let mut influences = InfluenceKindRegistry::new();
+    influences.insert(InfluenceKindId(1), InfluenceKindConfig::new("signal"));
+
+    let engine = Engine::default();
+    engine.tick(&mut world, &loci, &influences, vec![
+        ProposedChange::new(ChangeSubject::Locus(a), InfluenceKindId(1), StateVector::from_slice(&[1.0])),
+        ProposedChange::new(ChangeSubject::Locus(b), InfluenceKindId(1), StateVector::from_slice(&[1.0])),
+    ]);
+
+    // A must be deleted.
+    assert!(world.locus(a).is_none(), "locus A must be deleted");
+
+    // No relationship may reference A — the cross-locus auto-emerge must not
+    // have recreated an A→C edge in batch 2.
+    let dangling = world
+        .relationships()
+        .iter()
+        .any(|r| r.endpoints.involves(a));
+    assert!(!dangling, "no relationship should reference the deleted locus A");
+}
+
+// ─── Feature: CreateRelationship with_initial_state ───────────────────────────
+
+#[test]
+fn create_relationship_initial_state_overrides_entire_vector() {
+    // A program that creates a relationship via structural proposal using
+    // with_initial_state — all slots should match the provided vector.
+    struct MakeRelProgram { to: LocusId }
+    impl LocusProgram for MakeRelProgram {
+        fn process(&self, _: &Locus, _: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+            Vec::new()
+        }
+        fn structural_proposals(&self, locus: &Locus, incoming: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<StructuralProposal> {
+            if incoming.is_empty() { return Vec::new(); }
+            vec![
+                StructuralProposal::create_directed(locus.id, self.to, InfluenceKindId(1))
+                    .with_initial_state(StateVector::from_slice(&[7.0, 3.0])),
+            ]
+        }
+    }
+
+    let mut world = World::new();
+    world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+    world.insert_locus(Locus::new(LocusId(2), LocusKindId(2), StateVector::zeros(1)));
+
+    let mut loci = LocusKindRegistry::new();
+    loci.insert(LocusKindId(1), Box::new(MakeRelProgram { to: LocusId(2) }));
+    loci.insert(LocusKindId(2), Box::new(SinkProgram));
+    let mut influences = InfluenceKindRegistry::new();
+    influences.insert(InfluenceKindId(1), InfluenceKindConfig::new("signal"));
+
+    let engine = Engine::default();
+    engine.tick(&mut world, &loci, &influences, vec![
+        ProposedChange::new(ChangeSubject::Locus(LocusId(1)), InfluenceKindId(1), StateVector::from_slice(&[1.0])),
+    ]);
+
+    let rel = world.relationships().iter()
+        .find(|r| r.endpoints.involves(LocusId(1)) && r.endpoints.involves(LocusId(2)))
+        .expect("relationship must have been created by structural proposal");
+    assert_eq!(rel.activity(), 7.0, "activity (slot 0) from initial_state");
+    assert_eq!(rel.weight(), 3.0, "weight (slot 1) from initial_state");
+}
+
+#[test]
+fn create_relationship_initial_state_takes_precedence_over_initial_activity() {
+    // When both initial_state and initial_activity are set, initial_state wins.
+    struct MakeRelWithBothProgram { to: LocusId }
+    impl LocusProgram for MakeRelWithBothProgram {
+        fn process(&self, _: &Locus, _: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+            Vec::new()
+        }
+        fn structural_proposals(&self, locus: &Locus, incoming: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<StructuralProposal> {
+            if incoming.is_empty() { return Vec::new(); }
+            // Build via explicit struct — initial_state overrides initial_activity.
+            vec![StructuralProposal::CreateRelationship {
+                endpoints: Endpoints::directed(locus.id, self.to),
+                kind: InfluenceKindId(1),
+                initial_activity: Some(99.0), // should be ignored
+                initial_state: Some(StateVector::from_slice(&[5.0, 1.0])),
+            }]
+        }
+    }
+
+    let mut world = World::new();
+    world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+    world.insert_locus(Locus::new(LocusId(2), LocusKindId(2), StateVector::zeros(1)));
+    let mut loci = LocusKindRegistry::new();
+    loci.insert(LocusKindId(1), Box::new(MakeRelWithBothProgram { to: LocusId(2) }));
+    loci.insert(LocusKindId(2), Box::new(SinkProgram));
+    let mut influences = InfluenceKindRegistry::new();
+    influences.insert(InfluenceKindId(1), InfluenceKindConfig::new("signal"));
+
+    Engine::default().tick(&mut world, &loci, &influences, vec![
+        ProposedChange::new(ChangeSubject::Locus(LocusId(1)), InfluenceKindId(1), StateVector::from_slice(&[1.0])),
+    ]);
+
+    let rel = world.relationships().iter()
+        .find(|r| r.endpoints.involves(LocusId(1)) && r.endpoints.involves(LocusId(2)))
+        .expect("relationship must exist");
+    assert_eq!(rel.activity(), 5.0, "initial_state beats initial_activity");
+    assert_eq!(rel.weight(), 1.0);
+}
+
+// ─── Feature: recent_changes_to_relationship ─────────────────────────────────
+
+#[test]
+fn recent_changes_to_relationship_sees_committed_changes() {
+    // A monitor locus subscribed to a relationship uses
+    // ctx.recent_changes_to_relationship to count how many changes the rel
+    // has accumulated. The count is written into the monitor's own state so
+    // we can assert it after the tick.
+    struct RelChangeEmitter { rel_id: RelationshipId }
+    impl LocusProgram for RelChangeEmitter {
+        fn process(&self, _: &Locus, incoming: &[&Change], ctx: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+            if incoming.is_empty() { return Vec::new(); }
+            // Bump the relationship's activity slot via an explicit Change.
+            let rel = ctx.relationship(self.rel_id).expect("rel must exist");
+            let mut next = rel.state.clone();
+            next.as_mut_slice()[0] += 1.0;
+            vec![ProposedChange::new(
+                ChangeSubject::Relationship(self.rel_id),
+                InfluenceKindId(1),
+                next,
+            )]
+        }
+    }
+
+    // Monitor: subscribed to the relationship; stores the change count in its own state.
+    struct RelChangeMonitor { rel_id: RelationshipId }
+    impl LocusProgram for RelChangeMonitor {
+        fn process(&self, locus: &Locus, incoming: &[&Change], ctx: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+            let has_rel_notification = incoming.iter()
+                .any(|c| matches!(c.subject, ChangeSubject::Relationship(_)));
+            if !has_rel_notification { return Vec::new(); }
+            // Count all committed changes to this relationship since batch 0.
+            let count = ctx.recent_changes_to_relationship(self.rel_id, BatchId(0)).count();
+            let mut next = locus.state.clone();
+            next.as_mut_slice()[0] = count as f32;
+            vec![ProposedChange::new(
+                ChangeSubject::Locus(locus.id),
+                InfluenceKindId(1),
+                next,
+            )]
+        }
+    }
+
+    let mut world = World::new();
+    world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+    world.insert_locus(Locus::new(LocusId(2), LocusKindId(2), StateVector::zeros(1)));
+
+    // Pre-create the relationship so emitter can reference it by ID.
+    let rel_id = world.add_relationship(
+        Endpoints::directed(LocusId(1), LocusId(2)),
+        InfluenceKindId(1),
+        StateVector::from_slice(&[1.0, 0.0]),
+    );
+
+    // Subscribe the monitor to the relationship before the first tick.
+    world.subscriptions_mut().subscribe_at(LocusId(2), rel_id, None);
+
+    let mut loci = LocusKindRegistry::new();
+    loci.insert(LocusKindId(1), Box::new(RelChangeEmitter { rel_id }));
+    loci.insert(LocusKindId(2), Box::new(RelChangeMonitor { rel_id }));
+    let mut influences = InfluenceKindRegistry::new();
+    influences.insert(InfluenceKindId(1), InfluenceKindConfig::new("signal"));
+
+    let engine = Engine::default();
+
+    // Tick 1: emitter fires → 1 relationship change committed.
+    engine.tick(&mut world, &loci, &influences, vec![
+        ProposedChange::new(ChangeSubject::Locus(LocusId(1)), InfluenceKindId(1), StateVector::from_slice(&[1.0])),
+    ]);
+    let monitor_state = world.locus(LocusId(2)).unwrap().state.as_slice()[0];
+    assert_eq!(monitor_state, 1.0, "monitor must see 1 change after first tick");
+
+    // Tick 2: another stimulus → 2nd relationship change.
+    engine.tick(&mut world, &loci, &influences, vec![
+        ProposedChange::new(ChangeSubject::Locus(LocusId(1)), InfluenceKindId(1), StateVector::from_slice(&[1.0])),
+    ]);
+    let monitor_state = world.locus(LocusId(2)).unwrap().state.as_slice()[0];
+    assert_eq!(monitor_state, 2.0, "monitor must see 2 changes after second tick");
+}
+
+// ─── Feature: relationship_patch (slot_patches) ───────────────────────────────
+
+#[test]
+fn relationship_patch_updates_only_specified_slots() {
+    // A program emits ProposedChange::relationship_patch, which should update
+    // only the named slot without touching the weight slot (slot 1).
+    const EXTRA_SLOT: usize = 2;
+
+    struct PatchRelProgram { rel_id: RelationshipId }
+    impl LocusProgram for PatchRelProgram {
+        fn process(&self, _: &Locus, incoming: &[&Change], ctx: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+            if incoming.is_empty() { return vec![]; }
+            // Only patch slot 2 by +0.5; slot 1 (weight) must be untouched.
+            let _ = ctx.relationship(self.rel_id); // verify it exists
+            vec![ProposedChange::relationship_patch(self.rel_id, InfluenceKindId(1), &[(EXTRA_SLOT, 0.5)])]
+        }
+    }
+
+    let mut world = World::new();
+    world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+    world.insert_locus(Locus::new(LocusId(2), LocusKindId(2), StateVector::zeros(1)));
+    // Pre-create rel with weight=0.9 to verify patch doesn't touch it.
+    let rel_id = world.add_relationship(
+        Endpoints::directed(LocusId(1), LocusId(2)),
+        InfluenceKindId(1),
+        StateVector::from_slice(&[1.0, 0.9, 0.0]), // [activity, weight=0.9, extra=0.0]
+    );
+
+    let mut loci = LocusKindRegistry::new();
+    loci.insert(LocusKindId(1), Box::new(PatchRelProgram { rel_id }));
+    loci.insert(LocusKindId(2), Box::new(SinkProgram));
+    let mut influences = InfluenceKindRegistry::new();
+    influences.insert(InfluenceKindId(1), InfluenceKindConfig::new("signal"));
+
+    Engine::default().tick(&mut world, &loci, &influences, vec![
+        ProposedChange::new(ChangeSubject::Locus(LocusId(1)), InfluenceKindId(1), StateVector::from_slice(&[1.0])),
+    ]);
+
+    let rel = world.relationships().get(rel_id).expect("rel must exist");
+    assert_eq!(rel.state.as_slice().get(EXTRA_SLOT).copied().unwrap_or(0.0), 0.5, "slot 2 must be incremented");
+    assert_eq!(rel.weight(), 0.9, "weight slot must be preserved by patch");
+}
+
+#[test]
+fn relationship_patch_accumulates_across_ticks() {
+    // Multiple ticks of slot-delta patches must accumulate correctly.
+    const EXTRA_SLOT: usize = 2;
+
+    struct DeltaRelProgram { rel_id: RelationshipId }
+    impl LocusProgram for DeltaRelProgram {
+        fn process(&self, _: &Locus, incoming: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+            if incoming.is_empty() { return vec![]; }
+            vec![ProposedChange::relationship_patch(self.rel_id, InfluenceKindId(1), &[(EXTRA_SLOT, 0.1)])]
+        }
+    }
+
+    let mut world = World::new();
+    world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+    world.insert_locus(Locus::new(LocusId(2), LocusKindId(2), StateVector::zeros(1)));
+    let rel_id = world.add_relationship(
+        Endpoints::directed(LocusId(1), LocusId(2)),
+        InfluenceKindId(1),
+        StateVector::from_slice(&[1.0, 0.0, 0.0]),
+    );
+
+    let mut loci = LocusKindRegistry::new();
+    loci.insert(LocusKindId(1), Box::new(DeltaRelProgram { rel_id }));
+    loci.insert(LocusKindId(2), Box::new(SinkProgram));
+    let mut influences = InfluenceKindRegistry::new();
+    influences.insert(InfluenceKindId(1), InfluenceKindConfig::new("signal"));
+
+    let engine = Engine::default();
+    for _ in 0..3 {
+        engine.tick(&mut world, &loci, &influences, vec![
+            ProposedChange::new(ChangeSubject::Locus(LocusId(1)), InfluenceKindId(1), StateVector::from_slice(&[1.0])),
+        ]);
+    }
+
+    let slot_val = world.relationships().get(rel_id)
+        .and_then(|r| r.state.as_slice().get(EXTRA_SLOT).copied())
+        .unwrap_or(0.0);
+    assert!((slot_val - 0.3).abs() < 1e-5, "slot must accumulate 3 × 0.1 = 0.3, got {slot_val}");
+}
+
+// ─── Feature: direction-aware LocusContext methods ────────────────────────────
+
+#[test]
+fn incoming_relationships_of_kind_filters_to_arriving_directed_edges() {
+    // A program reads ctx.incoming_relationships_of_kind and counts them.
+    // The world has: A→C (directed), B→C (directed), C→D (directed).
+    // From C's perspective: 2 incoming (A,B), 1 outgoing (D).
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let incoming_seen = Arc::new(AtomicUsize::new(0));
+    let outgoing_seen = Arc::new(AtomicUsize::new(0));
+    let in_clone = Arc::clone(&incoming_seen);
+    let out_clone = Arc::clone(&outgoing_seen);
+
+    struct DirectionCountProgram {
+        incoming: Arc<AtomicUsize>,
+        outgoing: Arc<AtomicUsize>,
+    }
+    impl LocusProgram for DirectionCountProgram {
+        fn process(&self, locus: &Locus, incoming: &[&Change], ctx: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+            if incoming.is_empty() { return vec![]; }
+            let in_count = ctx.incoming_relationships_of_kind(locus.id, InfluenceKindId(1)).count();
+            let out_count = ctx.outgoing_relationships_of_kind(locus.id, InfluenceKindId(1)).count();
+            self.incoming.store(in_count, Ordering::Relaxed);
+            self.outgoing.store(out_count, Ordering::Relaxed);
+            vec![]
+        }
+    }
+
+    const C: LocusId = LocusId(3);
+
+    let mut world = World::new();
+    for id in [1u64, 2, 3, 4] {
+        world.insert_locus(Locus::new(LocusId(id), LocusKindId(id), StateVector::zeros(1)));
+    }
+    // A(1)→C(3), B(2)→C(3), C(3)→D(4)
+    for (from, to) in [(1u64, 3u64), (2, 3), (3, 4)] {
+        world.add_relationship(
+            Endpoints::directed(LocusId(from), LocusId(to)),
+            InfluenceKindId(1),
+            StateVector::from_slice(&[1.0, 0.0]),
+        );
+    }
+
+    let mut loci = LocusKindRegistry::new();
+    loci.insert(LocusKindId(1), Box::new(ForwarderProgram { downstream: C }));
+    loci.insert(LocusKindId(2), Box::new(ForwarderProgram { downstream: C }));
+    loci.insert(LocusKindId(3), Box::new(DirectionCountProgram {
+        incoming: in_clone,
+        outgoing: out_clone,
+    }));
+    loci.insert(LocusKindId(4), Box::new(SinkProgram));
+
+    let mut influences = InfluenceKindRegistry::new();
+    influences.insert(InfluenceKindId(1), InfluenceKindConfig::new("signal"));
+
+    Engine::default().tick(&mut world, &loci, &influences, vec![
+        ProposedChange::new(ChangeSubject::Locus(LocusId(1)), InfluenceKindId(1), StateVector::from_slice(&[1.0])),
+        ProposedChange::new(ChangeSubject::Locus(LocusId(2)), InfluenceKindId(1), StateVector::from_slice(&[1.0])),
+    ]);
+
+    assert_eq!(incoming_seen.load(Ordering::Relaxed), 2, "C has 2 incoming directed edges");
+    assert_eq!(outgoing_seen.load(Ordering::Relaxed), 1, "C has 1 outgoing directed edge");
+}
+
+// ─── Feature: relationship_changes / locus_changes inbox helpers ─────────────
+
+#[test]
+fn relationship_changes_and_locus_changes_partition_inbox() {
+    use graph_core::{locus_changes, relationship_changes};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let rel_count = Arc::new(AtomicUsize::new(0));
+    let loc_count = Arc::new(AtomicUsize::new(0));
+    let rel_clone = Arc::clone(&rel_count);
+    let loc_clone = Arc::clone(&loc_count);
+
+    struct InboxPartitionProgram {
+        rel_count: Arc<AtomicUsize>,
+        loc_count: Arc<AtomicUsize>,
+    }
+    impl LocusProgram for InboxPartitionProgram {
+        fn process(&self, _: &Locus, incoming: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+            self.rel_count.store(relationship_changes(incoming).len(), Ordering::Relaxed);
+            self.loc_count.store(locus_changes(incoming).len(), Ordering::Relaxed);
+            vec![]
+        }
+    }
+
+    let mut world = World::new();
+    world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+    world.insert_locus(Locus::new(LocusId(2), LocusKindId(2), StateVector::zeros(1)));
+
+    // Pre-create a relationship and subscribe locus 2 to it.
+    let rel_id = world.add_relationship(
+        Endpoints::directed(LocusId(1), LocusId(2)),
+        InfluenceKindId(1),
+        StateVector::from_slice(&[1.0, 0.0]),
+    );
+    world.subscriptions_mut().subscribe_at(LocusId(2), rel_id, None);
+
+    // Locus 1 program: emits a locus change AND a relationship change.
+    struct DualEmitterProgram { rel_id: RelationshipId }
+    impl LocusProgram for DualEmitterProgram {
+        fn process(&self, _: &Locus, incoming: &[&Change], ctx: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+            if incoming.is_empty() { return vec![]; }
+            let rel = ctx.relationship(self.rel_id).expect("rel must exist");
+            vec![
+                // Relationship change (notifies subscriber locus 2).
+                ProposedChange::new(
+                    ChangeSubject::Relationship(self.rel_id),
+                    InfluenceKindId(1),
+                    rel.state.clone().with_slot_delta(0, 1.0),
+                ),
+            ]
+        }
+    }
+
+    let mut loci = LocusKindRegistry::new();
+    loci.insert(LocusKindId(1), Box::new(DualEmitterProgram { rel_id }));
+    loci.insert(LocusKindId(2), Box::new(InboxPartitionProgram {
+        rel_count: rel_clone,
+        loc_count: loc_clone,
+    }));
+
+    let mut influences = InfluenceKindRegistry::new();
+    influences.insert(InfluenceKindId(1), InfluenceKindConfig::new("signal"));
+
+    Engine::default().tick(&mut world, &loci, &influences, vec![
+        ProposedChange::new(ChangeSubject::Locus(LocusId(1)), InfluenceKindId(1), StateVector::from_slice(&[1.0])),
+    ]);
+
+    // Locus 2 receives: 1 relationship change (via subscription) + 0 direct locus changes.
+    assert_eq!(rel_count.load(Ordering::Relaxed), 1, "subscriber sees 1 relationship change");
+    assert_eq!(loc_count.load(Ordering::Relaxed), 0, "no direct locus changes in subscriber inbox");
+}
+
+// ── ctx.relationships_between (plural) ───────────────────────────────────────
+
+/// Program that reads the relationship count between `self` and `peer` via
+/// `ctx.relationships_between(locus.id, peer)` and records it.
+struct CountEdgesBetweenProgram {
+    peer: LocusId,
+    count_out: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+impl LocusProgram for CountEdgesBetweenProgram {
+    fn process(&self, locus: &Locus, _incoming: &[&Change], ctx: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+        let n = ctx.relationships_between(locus.id, self.peer).count();
+        self.count_out.store(n, std::sync::atomic::Ordering::Relaxed);
+        vec![]
+    }
+}
+
+#[test]
+fn ctx_relationships_between_returns_all_edges_between_pair() {
+    use graph_engine::LocusKindRegistry;
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+
+    let mut world = World::new();
+    world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+    world.insert_locus(Locus::new(LocusId(2), LocusKindId(2), StateVector::zeros(1)));
+
+    // Two edges between L1 and L2 of different kinds.
+    world.add_relationship(Endpoints::directed(LocusId(1), LocusId(2)), InfluenceKindId(1), StateVector::from_slice(&[1.0, 0.0]));
+    world.add_relationship(Endpoints::directed(LocusId(1), LocusId(2)), InfluenceKindId(2), StateVector::from_slice(&[1.0, 0.0]));
+
+    let count = Arc::new(AtomicUsize::new(0));
+    let count_clone = count.clone();
+
+    let mut loci = LocusKindRegistry::new();
+    loci.insert(LocusKindId(1), Box::new(CountEdgesBetweenProgram {
+        peer: LocusId(2),
+        count_out: count_clone,
+    }));
+    loci.insert(LocusKindId(2), Box::new(SinkProgram));
+
+    let mut influences = graph_engine::InfluenceKindRegistry::new();
+    influences.insert(InfluenceKindId(1), InfluenceKindConfig::new("kind1"));
+    influences.insert(InfluenceKindId(2), InfluenceKindConfig::new("kind2"));
+
+    Engine::default().tick(
+        &mut world, &loci, &influences,
+        vec![ProposedChange::activation(LocusId(1), InfluenceKindId(1), 1.0)],
+    );
+
+    assert_eq!(count.load(Ordering::Relaxed), 2, "ctx.relationships_between returns both edges");
+}
+
+// ── ProposedChange::relationship_slot_patch ───────────────────────────────────
+
+#[test]
+fn relationship_slot_patch_single_slot_convenience() {
+    use graph_engine::{InfluenceKindRegistry, LocusKindRegistry};
+
+    let mut world = World::new();
+    world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+    world.insert_locus(Locus::new(LocusId(2), LocusKindId(2), StateVector::zeros(1)));
+
+    // Pre-create a relationship with an extra slot (index 2 = 0.5).
+    let rel_id = world.add_relationship(
+        Endpoints::directed(LocusId(1), LocusId(2)),
+        InfluenceKindId(1),
+        StateVector::from_slice(&[1.0, 0.0, 0.5]),
+    );
+
+    // Program uses relationship_slot_patch to increment slot 2 by 0.3.
+    struct SlotPatchProgram { rel_id: RelationshipId }
+    impl LocusProgram for SlotPatchProgram {
+        fn process(&self, _locus: &Locus, _incoming: &[&Change], _ctx: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+            vec![ProposedChange::relationship_slot_patch(self.rel_id, InfluenceKindId(1), 2, 0.3)]
+        }
+    }
+
+    let mut loci = LocusKindRegistry::new();
+    loci.insert(LocusKindId(1), Box::new(SlotPatchProgram { rel_id }));
+    loci.insert(LocusKindId(2), Box::new(SinkProgram));
+
+    let mut influences = InfluenceKindRegistry::new();
+    influences.insert(InfluenceKindId(1), InfluenceKindConfig::new("sig"));
+
+    Engine::default().tick(
+        &mut world, &loci, &influences,
+        vec![ProposedChange::activation(LocusId(1), InfluenceKindId(1), 1.0)],
+    );
+
+    let slot2 = world.relationships().get(rel_id).unwrap().state.as_slice()[2];
+    assert!((slot2 - 0.8).abs() < 1e-5, "expected 0.5 + 0.3 = 0.8, got {slot2}");
 }

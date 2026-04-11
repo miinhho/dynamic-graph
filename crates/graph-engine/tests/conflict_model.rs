@@ -57,8 +57,7 @@
 
 use graph_core::{
     Change, ChangeSubject, Endpoints, InfluenceKindId, Locus, LocusContext, LocusId, LocusKindId,
-    LocusProgram, Properties, ProposedChange, RelationshipId,
-    RelationshipLineage, StateVector, StructuralProposal,
+    LocusProgram, Properties, ProposedChange, RelationshipId, StateVector, StructuralProposal,
 };
 use graph_engine::{
     Engine, EngineConfig, InfluenceKindConfig, InfluenceKindRegistry, LocusKindRegistry,
@@ -253,23 +252,13 @@ fn build_conflict_world() -> (World, LocusKindRegistry, InfluenceKindRegistry, R
 
     // ── Pre-create the A↔B conflict relationship ─────────────────────────
     // Initial state: activity=1.0, weight=0.0, hostility=0.3, engagements=0
-    let ab_rel_id = world.relationships_mut().mint_id();
-    world.relationships_mut().insert(graph_core::Relationship {
-        id: ab_rel_id,
-        kind: CONFLICT_KIND,
-        endpoints: Endpoints::Symmetric {
-            a: FORCE_A,
-            b: FORCE_B,
-        },
-        state: StateVector::from_slice(&[1.0, 0.0, 0.3, 0.0]),
-        lineage: RelationshipLineage {
-            created_by: None,
-            last_touched_by: None,
-            change_count: 0,
-            kinds_observed: vec![CONFLICT_KIND],
-        },
-        last_decayed_batch: 0,
-    });
+    // `add_relationship` sets last_decayed_batch = current_batch(), preventing
+    // spurious decay debt on first touch.
+    let ab_rel_id = world.add_relationship(
+        Endpoints::Symmetric { a: FORCE_A, b: FORCE_B },
+        CONFLICT_KIND,
+        StateVector::from_slice(&[1.0, 0.0, 0.3, 0.0]),
+    );
 
     // ── Loci ─────────────────────────────────────────────────────────────
     world.insert_locus(Locus::new(FORCE_A, FORCE_A_KIND, StateVector::from_slice(&[1.0])));

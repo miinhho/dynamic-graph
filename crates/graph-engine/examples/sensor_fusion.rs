@@ -123,6 +123,8 @@ impl LocusProgram for SensorProgram {
             return vec![StructuralProposal::CreateRelationship {
                 endpoints: Endpoints::Directed { from: locus.id, to: self.controller },
                 kind: KIND_TEMP,
+                initial_activity: None,
+                initial_state: None,
             }];
         }
         vec![]

@@ -50,7 +50,25 @@
 //!
 //! For large worlds with long histories, consider narrowing the range.
 
-use graph_core::{BatchId, ChangeId, EntityId, LocusId, RelationshipId};
+use graph_core::{BatchId, ChangeId, ChangeSubject, EntityId, LocusId, RelationshipId};
+use rustc_hash::FxHashMap;
+
+/// Activity delta for a relationship over a `WorldDiff` batch range.
+///
+/// Computed only from explicit `ChangeSubject::Relationship` log entries.
+/// Relationships whose activity changed solely via auto-emergence do not
+/// produce a `RelationshipDelta` — they appear in `relationships_updated`
+/// only.
+#[derive(Debug, Clone)]
+pub struct RelationshipDelta {
+    pub id: RelationshipId,
+    /// Activity (slot 0) from the `before` state of the **first** explicit
+    /// relationship change in the range.
+    pub activity_before: f32,
+    /// Activity (slot 0) from the `after` state of the **last** explicit
+    /// relationship change in the range.
+    pub activity_after: f32,
+}
 
 /// Summary of world state changes between `from_batch` (inclusive) and
 /// `to_batch` (exclusive).
@@ -87,6 +105,21 @@ pub struct WorldDiff {
     pub subscriptions_added: Vec<(LocusId, RelationshipId)>,
     /// (subscriber, rel_id) pairs for subscriptions cancelled in the range.
     pub subscriptions_removed: Vec<(LocusId, RelationshipId)>,
+
+    // ── relationship trajectory ───────────────────────────────────────────
+    /// Relationships whose activity **increased** over the range, computed
+    /// from explicit `ChangeSubject::Relationship` log entries. The delta
+    /// reflects the first `before` and last `after` activity in the range.
+    pub relationships_strengthening: Vec<RelationshipDelta>,
+    /// Relationships whose activity **decreased** over the range (same
+    /// semantics as `relationships_strengthening`).
+    pub relationships_weakening: Vec<RelationshipDelta>,
+
+    // ── pruning ───────────────────────────────────────────────────────────
+    /// Relationships pruned (activity below threshold) during the range.
+    /// These IDs no longer exist in the world — this field is the only
+    /// record of their removal.
+    pub relationships_pruned: Vec<RelationshipId>,
 }
 
 impl WorldDiff {
@@ -104,6 +137,9 @@ impl WorldDiff {
             && self.entities_changed.is_empty()
             && self.subscriptions_added.is_empty()
             && self.subscriptions_removed.is_empty()
+            && self.relationships_strengthening.is_empty()
+            && self.relationships_weakening.is_empty()
+            && self.relationships_pruned.is_empty()
     }
 
     /// Build a `WorldDiff` for `[from, to)`.
@@ -116,11 +152,25 @@ impl WorldDiff {
             };
         }
 
-        // ── changes ───────────────────────────────────────────────────────
+        // ── changes + relationship trajectory ─────────────────────────────
         let mut change_ids: Vec<ChangeId> = Vec::new();
+        // rel_id → (activity_before_range, activity_after_range)
+        // Populated lazily — allocated only if the range contains at least
+        // one ChangeSubject::Relationship entry (uncommon in pure locus workloads).
+        let mut rel_activity_range: Option<FxHashMap<RelationshipId, (f32, f32)>> = None;
+
         for b in from.0..to.0 {
             for c in world.log().batch(BatchId(b)) {
                 change_ids.push(c.id);
+                if let ChangeSubject::Relationship(rel_id) = c.subject {
+                    let before_act = c.before.as_slice().first().copied().unwrap_or(0.0);
+                    let after_act = c.after.as_slice().first().copied().unwrap_or(0.0);
+                    rel_activity_range
+                        .get_or_insert_with(FxHashMap::default)
+                        .entry(rel_id)
+                        .and_modify(|r| r.1 = after_act)
+                        .or_insert((before_act, after_act));
+                }
             }
         }
 
@@ -168,6 +218,27 @@ impl WorldDiff {
             }
         }
 
+        // ── relationship trajectory ───────────────────────────────────────
+        let mut relationships_strengthening = Vec::new();
+        let mut relationships_weakening = Vec::new();
+        for (id, (activity_before, activity_after)) in rel_activity_range.unwrap_or_default() {
+            let delta = RelationshipDelta { id, activity_before, activity_after };
+            if activity_after > activity_before {
+                relationships_strengthening.push(delta);
+            } else if activity_after < activity_before {
+                relationships_weakening.push(delta);
+            }
+            // Equal: no trajectory signal — skip.
+        }
+
+        // ── pruning ───────────────────────────────────────────────────────
+        let relationships_pruned: Vec<RelationshipId> = world
+            .pruned_log()
+            .iter()
+            .filter(|(_, b)| b.0 >= from.0 && b.0 < to.0)
+            .map(|(id, _)| *id)
+            .collect();
+
         WorldDiff {
             from_batch: from,
             to_batch: to,
@@ -177,6 +248,9 @@ impl WorldDiff {
             entities_changed,
             subscriptions_added,
             subscriptions_removed,
+            relationships_strengthening,
+            relationships_weakening,
+            relationships_pruned,
         }
     }
 }
@@ -312,5 +386,139 @@ mod tests {
         // Only look at batch 1 (exclusive of batch 0 event).
         let diff = w.diff_between(batch1, w.current_batch());
         assert_eq!(diff.subscriptions_added, vec![(locus, rel_b)]);
+    }
+
+    // ── relationship trajectory ──────────────────────────────────────────────
+
+    fn append_rel_change(world: &mut World, rel_id: graph_core::RelationshipId, activity: f32) -> ChangeId {
+        use graph_core::{Change, StateVector as SV};
+        let id = world.mint_change_id();
+        let batch = world.current_batch();
+        let old_act = world.relationships().get(rel_id)
+            .map(|r| r.state.as_slice()[0])
+            .unwrap_or(0.0);
+        world.append_change(Change {
+            id,
+            subject: ChangeSubject::Relationship(rel_id),
+            kind: InfluenceKindId(1),
+            predecessors: vec![],
+            before: SV::from_slice(&[old_act, 0.0]),
+            after: SV::from_slice(&[activity, 0.0]),
+            batch,
+            wall_time: None,
+            metadata: None,
+        });
+        id
+    }
+
+    fn world_with_relationship() -> (World, graph_core::RelationshipId) {
+        use graph_core::{
+            Endpoints, InfluenceKindId as IKId, Relationship, RelationshipKindId,
+            RelationshipLineage, StateVector as SV,
+        };
+        let rk: RelationshipKindId = IKId(1);
+        let mut w = two_locus_world();
+        let rel_id = w.relationships_mut().mint_id();
+        w.relationships_mut().insert(Relationship {
+            id: rel_id,
+            kind: rk,
+            endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(1) },
+            state: SV::from_slice(&[0.5, 0.0]),
+            lineage: RelationshipLineage {
+                created_by: None,
+                last_touched_by: None,
+                change_count: 0,
+                kinds_observed: vec![rk],
+            },
+            last_decayed_batch: 0,
+        });
+        (w, rel_id)
+    }
+
+    #[test]
+    fn diff_trajectory_strengthening_detected() {
+        let (mut w, rel_id) = world_with_relationship();
+        let from = w.current_batch();
+        append_rel_change(&mut w, rel_id, 0.9); // activity 0.5 → 0.9
+        w.advance_batch();
+        let diff = w.diff_between(from, w.current_batch());
+
+        assert_eq!(diff.relationships_strengthening.len(), 1);
+        assert!(diff.relationships_weakening.is_empty());
+        let delta = &diff.relationships_strengthening[0];
+        assert_eq!(delta.id, rel_id);
+        assert!((delta.activity_before - 0.5).abs() < 1e-5);
+        assert!((delta.activity_after - 0.9).abs() < 1e-5);
+    }
+
+    #[test]
+    fn diff_trajectory_weakening_detected() {
+        let (mut w, rel_id) = world_with_relationship();
+        let from = w.current_batch();
+        append_rel_change(&mut w, rel_id, 0.1); // activity 0.5 → 0.1
+        w.advance_batch();
+        let diff = w.diff_between(from, w.current_batch());
+
+        assert_eq!(diff.relationships_weakening.len(), 1);
+        assert!(diff.relationships_strengthening.is_empty());
+    }
+
+    #[test]
+    fn diff_trajectory_uses_first_before_and_last_after() {
+        // Multiple changes in range: first.before → last.after determines trajectory.
+        let (mut w, rel_id) = world_with_relationship();
+        let from = w.current_batch();
+        // 0.5 → 0.8 → 0.3 → 0.7: net is strengthening (0.5 → 0.7)
+        for &act in &[0.8f32, 0.3, 0.7] {
+            append_rel_change(&mut w, rel_id, act);
+        }
+        w.advance_batch();
+        let diff = w.diff_between(from, w.current_batch());
+
+        // Net: 0.5 before, 0.7 after → strengthening
+        assert_eq!(diff.relationships_strengthening.len(), 1);
+        let delta = &diff.relationships_strengthening[0];
+        assert!((delta.activity_before - 0.5).abs() < 1e-5, "before={}", delta.activity_before);
+        assert!((delta.activity_after - 0.7).abs() < 1e-5, "after={}", delta.activity_after);
+    }
+
+    // ── pruning log ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn diff_includes_pruned_relationships_in_range() {
+        use graph_core::RelationshipId;
+        let mut w = two_locus_world();
+        let from = w.current_batch(); // batch 0
+        w.record_pruned(RelationshipId(42));
+        w.advance_batch(); // batch 1
+        let diff = w.diff_between(from, w.current_batch());
+        assert_eq!(diff.relationships_pruned, vec![RelationshipId(42)]);
+    }
+
+    #[test]
+    fn diff_excludes_pruned_outside_range() {
+        use graph_core::RelationshipId;
+        let mut w = two_locus_world();
+        w.record_pruned(RelationshipId(1)); // batch 0
+        w.advance_batch();                  // batch 1
+        let from = w.current_batch();
+        // No pruning in batch 1
+        w.advance_batch();
+        let diff = w.diff_between(from, w.current_batch());
+        assert!(diff.relationships_pruned.is_empty());
+    }
+
+    #[test]
+    fn trim_pruned_log_clears_old_entries() {
+        use graph_core::RelationshipId;
+        let mut w = two_locus_world();
+        w.record_pruned(RelationshipId(1));
+        w.advance_batch();
+        w.record_pruned(RelationshipId(2));
+
+        // Trim entries before batch 1 — removes entry for RelationshipId(1).
+        w.trim_pruned_log_before(BatchId(1));
+        assert_eq!(w.pruned_log().len(), 1);
+        assert_eq!(w.pruned_log()[0].0, RelationshipId(2));
     }
 }

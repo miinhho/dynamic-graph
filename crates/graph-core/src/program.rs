@@ -44,6 +44,12 @@ pub trait LocusContext {
     /// Iterate all relationships that include `locus` as an endpoint.
     /// Direction is preserved — use `r.endpoints` to determine which end
     /// is the source and which is the target.
+    ///
+    /// The return type is `Box<dyn Iterator>` because this is a `dyn`-safe
+    /// trait. The boxing is a one-time allocation per call; iteration itself
+    /// is zero-copy. If you need a `Vec`, collect the iterator: the cost of
+    /// the collect dominates the box. For tight hot-path code, prefer
+    /// keeping the iterator lazy.
     fn relationships_for<'a>(
         &'a self,
         locus: LocusId,
@@ -54,6 +60,19 @@ pub trait LocusContext {
     fn relationship_between(&self, a: LocusId, b: LocusId) -> Option<&Relationship> {
         self.relationships_for(a)
             .find(|r| r.endpoints.involves(b))
+    }
+
+    /// Iterate **all** relationships connecting `a` and `b`, across all
+    /// kinds and directions. Complements `relationship_between` (which
+    /// returns only the first match) for topologies where two loci can be
+    /// connected by multiple relationship kinds simultaneously (e.g. both
+    /// "trust" and "conflict" edges between the same pair of loci).
+    fn relationships_between<'a>(
+        &'a self,
+        a: LocusId,
+        b: LocusId,
+    ) -> Box<dyn Iterator<Item = &'a Relationship> + 'a> {
+        Box::new(self.relationships_for(a).filter(move |r| r.endpoints.involves(b)))
     }
 
     /// Recent changes that targeted `locus`, newest first, limited to
@@ -73,6 +92,13 @@ pub trait LocusContext {
 
     /// The current batch id. Programs can use this together with
     /// `recent_changes` to compute elapsed batches since an event.
+    ///
+    /// **Default implementation returns `BatchId(0)` as a sentinel** — it
+    /// does NOT reflect the real batch counter. The concrete `BatchContext`
+    /// in graph-world overrides this with the actual current batch. If you
+    /// are implementing a custom `LocusContext` outside the engine, you
+    /// must override this method; otherwise temporal queries will silently
+    /// read stale data.
     fn current_batch(&self) -> BatchId {
         BatchId(0)
     }
@@ -156,6 +182,105 @@ pub trait LocusContext {
         Box::new(self.relationships_for(locus).filter(move |r| r.kind == kind))
     }
 
+    /// Iterate relationships that arrive **at** `locus`:
+    /// - `Directed { from, to }` where `to == locus`.
+    /// - `Symmetric` edges (always included on both sides — if you sum
+    ///   incoming + outgoing, deduplicate symmetric edges).
+    fn incoming_relationships<'a>(
+        &'a self,
+        locus: LocusId,
+    ) -> Box<dyn Iterator<Item = &'a Relationship> + 'a> {
+        Box::new(
+            self.relationships_for(locus)
+                .filter(move |r| match r.endpoints {
+                    Endpoints::Directed { to, .. } => to == locus,
+                    Endpoints::Symmetric { .. } => true,
+                }),
+        )
+    }
+
+    /// Iterate relationships that **originate** from `locus`:
+    /// - `Directed { from, to }` where `from == locus`.
+    /// - `Symmetric` edges (always included on both sides — if you sum
+    ///   incoming + outgoing, deduplicate symmetric edges).
+    fn outgoing_relationships<'a>(
+        &'a self,
+        locus: LocusId,
+    ) -> Box<dyn Iterator<Item = &'a Relationship> + 'a> {
+        Box::new(
+            self.relationships_for(locus)
+                .filter(move |r| match r.endpoints {
+                    Endpoints::Directed { from, .. } => from == locus,
+                    Endpoints::Symmetric { .. } => true,
+                }),
+        )
+    }
+
+    /// Incoming relationships filtered to a specific kind.
+    ///
+    /// Applies the direction and kind predicates in a single pass to avoid
+    /// double dynamic dispatch overhead.
+    fn incoming_relationships_of_kind<'a>(
+        &'a self,
+        locus: LocusId,
+        kind: RelationshipKindId,
+    ) -> Box<dyn Iterator<Item = &'a Relationship> + 'a> {
+        Box::new(self.relationships_for(locus).filter(move |r| {
+            r.kind == kind
+                && match r.endpoints {
+                    Endpoints::Directed { to, .. } => to == locus,
+                    Endpoints::Symmetric { .. } => true,
+                }
+        }))
+    }
+
+    /// Outgoing relationships filtered to a specific kind.
+    ///
+    /// Applies the direction and kind predicates in a single pass to avoid
+    /// double dynamic dispatch overhead.
+    fn outgoing_relationships_of_kind<'a>(
+        &'a self,
+        locus: LocusId,
+        kind: RelationshipKindId,
+    ) -> Box<dyn Iterator<Item = &'a Relationship> + 'a> {
+        Box::new(self.relationships_for(locus).filter(move |r| {
+            r.kind == kind
+                && match r.endpoints {
+                    Endpoints::Directed { from, .. } => from == locus,
+                    Endpoints::Symmetric { .. } => true,
+                }
+        }))
+    }
+
+    /// Return the domain-level properties for a locus, if any.
+    ///
+    /// Properties are set via `ingest()` or `world.properties_mut().insert()`.
+    /// They hold human-readable, domain-specific data (e.g. `"name"`, `"type"`)
+    /// that the engine never touches. The default returns `None`; the concrete
+    /// `BatchContext` in graph-world wires this to `PropertyStore::get`.
+    fn properties(&self, _id: LocusId) -> Option<&Properties> {
+        None
+    }
+
+    /// Recent changes that targeted `rel_id`, newest first, limited to
+    /// changes in batches no older than `since`. Programs use this for
+    /// temporal reasoning on edges — e.g. detecting sudden activity spikes,
+    /// measuring reliability drift, or computing rolling slot averages.
+    ///
+    /// Only explicit `ChangeSubject::Relationship` changes are returned;
+    /// auto-emergence touches that do not emit a `Change` are not visible here.
+    ///
+    /// The default implementation returns an empty iterator; the concrete
+    /// `BatchContext` in graph-world wires this to
+    /// `ChangeLog::changes_to_relationship`.
+    fn recent_changes_to_relationship<'a>(
+        &'a self,
+        _rel_id: RelationshipId,
+        _since: BatchId,
+    ) -> Box<dyn Iterator<Item = &'a Change> + 'a> {
+        Box::new(std::iter::empty())
+    }
+
     /// Return the slot definitions for relationships of the given kind.
     ///
     /// Programs use this together with `relationship_slot` to read extra
@@ -190,12 +315,87 @@ pub trait LocusContext {
     }
 }
 
+/// Filter `incoming` to changes of a specific influence kind.
+///
+/// Programs use this to scan only the signals they care about without
+/// iterating the full inbox. Allocation is proportional to the match count,
+/// not the full inbox size.
+///
+/// ```rust,ignore
+/// let fires = changes_of_kind(incoming, FIRE_KIND);
+/// if !fires.is_empty() {
+///     // react to fire signals only
+/// }
+/// ```
+pub fn changes_of_kind<'a>(incoming: &[&'a Change], kind: InfluenceKindId) -> Vec<&'a Change> {
+    incoming.iter().copied().filter(|c| c.kind == kind).collect()
+}
+
+/// Filter `incoming` to changes whose subject is a `Relationship`.
+///
+/// Subscriber programs use this to separate relationship-state notifications
+/// (delivered via subscription) from ordinary locus-to-locus signals in the
+/// same inbox.
+///
+/// ```rust,ignore
+/// let edge_updates = relationship_changes(incoming);
+/// for c in edge_updates {
+///     if let ChangeSubject::Relationship(rid) = c.subject { … }
+/// }
+/// ```
+pub fn relationship_changes<'a>(incoming: &[&'a Change]) -> Vec<&'a Change> {
+    incoming
+        .iter()
+        .copied()
+        .filter(|c| matches!(c.subject, ChangeSubject::Relationship(_)))
+        .collect()
+}
+
+/// Filter `incoming` to changes whose subject is a `Locus`.
+///
+/// Use alongside `relationship_changes` when a program handles both locus
+/// signals and relationship-subscription notifications.
+pub fn locus_changes<'a>(incoming: &[&'a Change]) -> Vec<&'a Change> {
+    incoming
+        .iter()
+        .copied()
+        .filter(|c| matches!(c.subject, ChangeSubject::Locus(_)))
+        .collect()
+}
+
+/// Filter `incoming` to relationship-subject changes of a specific influence kind.
+///
+/// Combines `relationship_changes` + `changes_of_kind` in a single pass,
+/// avoiding the double-allocation of calling them in sequence. The common
+/// pattern in subscriber programs is to react to a specific kind of
+/// relationship update:
+///
+/// ```rust,ignore
+/// // Before: two allocations
+/// changes_of_kind(&relationship_changes(incoming), SUPPLY_KIND)
+///
+/// // After: one allocation
+/// relationship_changes_of_kind(incoming, SUPPLY_KIND)
+/// ```
+pub fn relationship_changes_of_kind<'a>(
+    incoming: &[&'a Change],
+    kind: InfluenceKindId,
+) -> Vec<&'a Change> {
+    incoming
+        .iter()
+        .copied()
+        .filter(|c| c.kind == kind && matches!(c.subject, ChangeSubject::Relationship(_)))
+        .collect()
+}
+
 /// A change a locus program wants to make. The engine assigns the final
 /// `ChangeId`, `BatchId`, and `before` snapshot when committing.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProposedChange {
     pub subject: ChangeSubject,
     pub kind: InfluenceKindId,
+    /// Desired full state after the change. Ignored when `slot_patches`
+    /// is `Some` — use `StateVector::empty()` as a placeholder in that case.
     pub after: StateVector,
     /// Predecessors the program wants to declare beyond whatever the
     /// engine auto-detects from read tracking. Usually empty.
@@ -208,6 +408,27 @@ pub struct ProposedChange {
     /// Useful for attaching provenance (source, confidence, event ID)
     /// that doesn't fit in the numeric state.
     pub metadata: Option<Properties>,
+    /// Domain-level property updates to apply to the subject locus when
+    /// this change is committed. Keys in the patch are merged into the
+    /// locus's `PropertyStore` entry (existing keys are overwritten).
+    ///
+    /// Use this to update human-readable metadata (e.g. `"label"`, `"score"`)
+    /// atomically with a state change, without a separate `properties_mut` call.
+    /// Has no effect on `ChangeSubject::Relationship` changes.
+    pub property_patch: Option<Properties>,
+    /// **Relationship-only** additive slot updates. When `Some`, the engine
+    /// applies each `(slot_index, delta)` to the **current live state** of
+    /// the relationship at commit time, rather than replacing the full vector.
+    ///
+    /// This avoids the Hebbian/program overwrite conflict: a program can
+    /// increment `reliability` (slot 2) without reading or touching the
+    /// weight slot (slot 1) that Hebbian just updated at end-of-batch.
+    ///
+    /// Ordering: patches are applied in slice order; duplicate indices are
+    /// summed. Ignored for `ChangeSubject::Locus` subjects.
+    ///
+    /// Use `ProposedChange::relationship_patch` to construct.
+    pub slot_patches: Option<Vec<(usize, f32)>>,
 }
 
 impl ProposedChange {
@@ -219,7 +440,64 @@ impl ProposedChange {
             extra_predecessors: Vec::new(),
             wall_time: None,
             metadata: None,
+            property_patch: None,
+            slot_patches: None,
         }
+    }
+
+    /// Propose additive slot deltas for a relationship, without replacing its
+    /// full state vector.
+    ///
+    /// Each `(slot_index, delta)` in `patches` is **added** to the relationship's
+    /// current slot value at commit time. Slots not mentioned in `patches` — including
+    /// the Hebbian weight (slot 1) — are preserved exactly as-is.
+    ///
+    /// This is the recommended way to update domain-specific extra slots (e.g.
+    /// `"reliability"`) on relationships when Hebbian plasticity is also active,
+    /// since a full-state replacement via `ProposedChange::new` would overwrite
+    /// Hebbian's weight updates.
+    ///
+    /// ```rust,ignore
+    /// // Increment reliability slot by 0.1 without touching activity or weight.
+    /// proposals.push(ProposedChange::relationship_patch(
+    ///     rel.id, SUPPLY_KIND, &[(RELIABILITY_SLOT, 0.1)],
+    /// ));
+    /// ```
+    pub fn relationship_patch(
+        rel_id: RelationshipId,
+        kind: InfluenceKindId,
+        patches: &[(usize, f32)],
+    ) -> Self {
+        Self {
+            subject: ChangeSubject::Relationship(rel_id),
+            kind,
+            after: StateVector::empty(), // resolved at commit time from patches
+            extra_predecessors: Vec::new(),
+            wall_time: None,
+            metadata: None,
+            property_patch: None,
+            slot_patches: Some(patches.to_vec()),
+        }
+    }
+
+    /// Apply an additive delta to a single slot of a relationship.
+    ///
+    /// Convenience wrapper for the single-slot case of `relationship_patch`.
+    /// Use `relationship_patch` when updating multiple slots in one proposal.
+    ///
+    /// ```rust,ignore
+    /// // Increment reliability slot by 0.1.
+    /// proposals.push(ProposedChange::relationship_slot_patch(
+    ///     rel.id, SUPPLY_KIND, RELIABILITY_SLOT, 0.1,
+    /// ));
+    /// ```
+    pub fn relationship_slot_patch(
+        rel_id: RelationshipId,
+        kind: InfluenceKindId,
+        slot_idx: usize,
+        delta: f32,
+    ) -> Self {
+        Self::relationship_patch(rel_id, kind, &[(slot_idx, delta)])
     }
 
     /// Shorthand for creating a stimulus — a change targeting a locus with
@@ -264,6 +542,16 @@ impl ProposedChange {
         self.metadata = Some(props);
         self
     }
+
+    /// Patch the subject locus's domain properties when this change is committed.
+    ///
+    /// The given `props` are merged into the locus's `PropertyStore` entry —
+    /// existing keys are overwritten, unmentioned keys are preserved.
+    /// Has no effect on `ChangeSubject::Relationship` changes.
+    pub fn with_property_patch(mut self, props: Properties) -> Self {
+        self.property_patch = Some(props);
+        self
+    }
 }
 
 /// A structural change to the relationship graph proposed by a program.
@@ -283,9 +571,27 @@ pub enum StructuralProposal {
     /// If a relationship with the same `(endpoints.key(), kind)` already
     /// exists, this is treated as an activity touch rather than a
     /// duplicate — same semantics as `auto_emerge_relationship`.
+    ///
+    /// **Initial state priority** (highest wins):
+    /// 1. `initial_state: Some(v)` — the entire `StateVector` is used as-is.
+    ///    Must have at least 2 slots (activity + weight); extra slots must match
+    ///    the kind's configured slot count or behaviour is unspecified.
+    /// 2. `initial_activity: Some(a)` — kind default state with slot 0 overridden.
+    /// 3. Neither set — kind's configured default state is used (typically
+    ///    `[1.0, 0.0, …]`).
+    ///
+    /// Both fields are ignored when the relationship already exists (touch
+    /// semantics: activity bumped by 1.0, no other slots changed).
     CreateRelationship {
         endpoints: Endpoints,
         kind: RelationshipKindId,
+        /// Override the initial activity (slot 0) only. Ignored when
+        /// `initial_state` is `Some`. `None` uses the kind's configured default.
+        initial_activity: Option<f32>,
+        /// Override the **entire** initial state vector for the new relationship.
+        /// Takes precedence over `initial_activity` when `Some`.
+        /// Has no effect if the relationship already exists.
+        initial_state: Option<StateVector>,
     },
     /// Remove a relationship from the world.
     ///
@@ -314,17 +620,32 @@ pub enum StructuralProposal {
         subscriber: LocusId,
         rel_id: RelationshipId,
     },
+
+    /// Remove a locus and all its associated data from the world.
+    ///
+    /// Applied at end-of-batch. The engine removes all relationships
+    /// touching `locus_id` first (cleaning up their subscriptions), then
+    /// removes the locus's subscriptions, domain properties, name-index
+    /// entry, and finally the locus itself.
+    ///
+    /// Changes that previously targeted this locus remain in the log —
+    /// the `ChangeSubject` becomes a dangling reference after deletion,
+    /// but the causal history is intact. Any pending changes targeting
+    /// this locus in the same or subsequent batches are silently dropped
+    /// by the engine's non-existent-locus guard.
+    DeleteLocus { locus_id: LocusId },
 }
 
 impl StructuralProposal {
     /// Create a directed relationship `from → to` of `kind`.
     ///
-    /// Equivalent to `StructuralProposal::CreateRelationship { endpoints: Endpoints::directed(from, to), kind }`.
     /// Idempotent — if the relationship already exists, it receives an activity touch instead.
     pub fn create_directed(from: LocusId, to: LocusId, kind: RelationshipKindId) -> Self {
         StructuralProposal::CreateRelationship {
             endpoints: Endpoints::directed(from, to),
             kind,
+            initial_activity: None,
+            initial_state: None,
         }
     }
 
@@ -333,6 +654,63 @@ impl StructuralProposal {
         StructuralProposal::CreateRelationship {
             endpoints: Endpoints::symmetric(a, b),
             kind,
+            initial_activity: None,
+            initial_state: None,
+        }
+    }
+
+    /// Override the initial activity (slot 0) for a `CreateRelationship` proposal.
+    /// Ignored when `with_initial_state` is also set.
+    ///
+    /// Panics in debug builds if called on a non-`CreateRelationship` variant.
+    ///
+    /// ```rust
+    /// # use graph_core::{LocusId, InfluenceKindId, StructuralProposal};
+    /// let proposal = StructuralProposal::create_directed(LocusId(0), LocusId(1), InfluenceKindId(1))
+    ///     .with_initial_activity(0.3);
+    /// ```
+    pub fn with_initial_activity(self, activity: f32) -> Self {
+        match self {
+            StructuralProposal::CreateRelationship { endpoints, kind, initial_state, .. } => {
+                StructuralProposal::CreateRelationship {
+                    endpoints,
+                    kind,
+                    initial_activity: Some(activity),
+                    initial_state,
+                }
+            }
+            other => {
+                debug_assert!(false, "with_initial_activity called on non-CreateRelationship variant");
+                other
+            }
+        }
+    }
+
+    /// Override the **entire** initial state vector for a `CreateRelationship` proposal.
+    /// Takes precedence over `with_initial_activity` when set.
+    /// Has no effect if the relationship already exists.
+    ///
+    /// Panics in debug builds if called on a non-`CreateRelationship` variant.
+    ///
+    /// ```rust
+    /// # use graph_core::{LocusId, InfluenceKindId, StateVector, StructuralProposal};
+    /// let proposal = StructuralProposal::create_directed(LocusId(0), LocusId(1), InfluenceKindId(1))
+    ///     .with_initial_state(StateVector::from_slice(&[2.0, 0.0, 0.5]));
+    /// ```
+    pub fn with_initial_state(self, state: StateVector) -> Self {
+        match self {
+            StructuralProposal::CreateRelationship { endpoints, kind, initial_activity, .. } => {
+                StructuralProposal::CreateRelationship {
+                    endpoints,
+                    kind,
+                    initial_activity,
+                    initial_state: Some(state),
+                }
+            }
+            other => {
+                debug_assert!(false, "with_initial_state called on non-CreateRelationship variant");
+                other
+            }
         }
     }
 
@@ -349,6 +727,11 @@ impl StructuralProposal {
     /// Cancel a subscription from `subscriber` to `rel_id`.
     pub fn unsubscribe(subscriber: LocusId, rel_id: RelationshipId) -> Self {
         StructuralProposal::UnsubscribeFromRelationship { subscriber, rel_id }
+    }
+
+    /// Remove a locus and all its associated data.
+    pub fn delete_locus(locus_id: LocusId) -> Self {
+        StructuralProposal::DeleteLocus { locus_id }
     }
 }
 

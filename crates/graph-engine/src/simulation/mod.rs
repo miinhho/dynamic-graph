@@ -43,11 +43,15 @@ use graph_storage::Storage;
 pub struct Simulation {
     /// Direct read/write access to the world state.
     ///
+    /// This field is `pub` so that callers in other crates can read query
+    /// the world (e.g. `sim.world.loci()`, `sim.world.relationships()`).
+    /// For writes, prefer the `Simulation` methods or `StructuralProposal`
+    /// so the engine's internal state stays consistent.
+    ///
     /// # Invariants — direct mutation can break these
     ///
-    /// Most callers should use `Simulation` methods rather than mutating
-    /// `world` directly. The following engine invariants can be violated by
-    /// bypassing the normal mutation paths:
+    /// The following engine invariants can be violated by bypassing the
+    /// normal mutation paths:
     ///
     /// - **Change log coherence**: `ChangeLog` is append-only and relies on
     ///   ChangeId density (`id − offset = index`). Inserting non-sequential
@@ -96,6 +100,13 @@ pub struct Simulation {
     /// Stimuli queued by `ingest()`, drained on the next `step()` or
     /// `flush_ingested()` call.
     pub(crate) pending_stimuli: Vec<ProposedChange>,
+    /// Monotone counter of `step()` calls. Used for auto-weathering cadence.
+    tick_count: u64,
+    /// Interval (in ticks) at which auto-weathering fires. `None` = disabled.
+    auto_weather_every_ticks: Option<u32>,
+    /// Policy applied by auto-weathering. `None` suppresses auto-weathering
+    /// even when `auto_weather_every_ticks` is set.
+    pub(crate) auto_weather_policy: Option<Box<dyn graph_core::EntityWeatheringPolicy>>,
     /// String → LocusKindId lookup. Populated by `SimulationBuilder` or
     /// `register_locus_kind_name()`.
     pub(crate) locus_kind_names: FxHashMap<String, graph_core::LocusKindId>,
@@ -109,6 +120,32 @@ pub struct Simulation {
 impl Simulation {
     pub fn new(world: World, loci: LocusKindRegistry, influences: InfluenceKindRegistry) -> Self {
         Self::with_config(world, loci, influences, SimulationConfig::default())
+    }
+
+    // ── World accessors ───────────────────────────────────────────────────
+
+    /// Read-only access to the world.
+    ///
+    /// Equivalent to `&sim.world`. Prefer this over direct field access when
+    /// writing generic code that may later need to work through a trait or
+    /// wrapper type.
+    #[inline]
+    pub fn world(&self) -> &World {
+        &self.world
+    }
+
+    /// Mutable access to the world.
+    ///
+    /// Use this to make one-off mutations (e.g. inserting a locus before the
+    /// first tick). For structural changes that must happen *during* a tick
+    /// (topology changes, subscriptions), prefer `StructuralProposal` so the
+    /// engine's indices and audit log stay in sync.
+    ///
+    /// See the `pub world` field documentation for the invariants that must
+    /// be preserved when writing directly.
+    #[inline]
+    pub fn world_mut(&mut self) -> &mut World {
+        &mut self.world
     }
 
     pub fn with_config(
@@ -150,6 +187,9 @@ impl Simulation {
             cold_relationship_threshold: config.cold_relationship_threshold,
             cold_relationship_min_idle_batches: config.cold_relationship_min_idle_batches,
             pending_stimuli: Vec::new(),
+            tick_count: 0,
+            auto_weather_every_ticks: config.auto_weather_every_ticks,
+            auto_weather_policy: None,
             locus_kind_names: FxHashMap::default(),
             influence_kind_names: FxHashMap::default(),
             default_influence: None,
@@ -240,6 +280,7 @@ impl Simulation {
             let cutoff = BatchId(current_batch.0 - retention);
             self.engine.trim_change_log_to(&mut self.world, cutoff);
             self.world.subscriptions_mut().trim_audit_before(cutoff);
+            self.world.trim_pruned_log_before(cutoff);
         }
 
         // Cold eviction: move inactive relationships out of memory.
@@ -251,6 +292,15 @@ impl Simulation {
                 min_idle,
                 current_batch,
             );
+        }
+
+        // Auto-weathering: compress entity sediment on a periodic cadence.
+        self.tick_count += 1;
+        if let Some(interval) = self.auto_weather_every_ticks
+            && self.tick_count.is_multiple_of(interval as u64)
+            && let Some(policy) = self.auto_weather_policy.as_deref()
+        {
+            self.engine.weather_entities(&mut self.world, policy);
         }
 
         StepObservation {
@@ -276,9 +326,11 @@ impl Simulation {
     /// Run `n` steps, injecting `stimuli` on the **first** step only.
     /// Returns all `StepObservation`s in order.
     ///
-    /// Panics if `n == 0`.
+    /// Returns an empty `Vec` when `n == 0` (no work is done).
     pub fn step_n(&mut self, n: usize, stimuli: Vec<ProposedChange>) -> Vec<StepObservation> {
-        assert!(n > 0, "step_n: n must be at least 1");
+        if n == 0 {
+            return Vec::new();
+        }
         self.step_until(|_, _| false, n, stimuli).0
     }
 
@@ -615,11 +667,11 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "step_n: n must be at least 1")]
-    fn step_n_panics_on_zero() {
+    fn step_n_returns_empty_on_zero() {
         let (world, loci, influences) = two_locus_world();
         let mut sim = Simulation::new(world, loci, influences);
-        sim.step_n(0, vec![]);
+        let obs = sim.step_n(0, vec![]);
+        assert!(obs.is_empty(), "step_n(0) must return an empty Vec");
     }
 
     #[test]

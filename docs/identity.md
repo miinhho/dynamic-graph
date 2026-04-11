@@ -163,6 +163,7 @@ These supersede the old §6 ("Resolved questions from architecture.md §17").
 | Cross-platform determinism | Bit-identical on the same platform/toolchain; cross-platform not promised |
 | Relationship subject in changes | **Done** — `ChangeSubject::Relationship(RelationshipId)` |
 | Structural mutation (topology change) | **Done** — `StructuralProposal` (CreateRelationship / DeleteRelationship) emitted per batch |
+| N-ary hyperedges | **Not modelled** — `Endpoints` is pairwise only (`Directed` / `Symmetric`). Multi-party interactions are expressed as multiple pairwise relationships. |
 
 ## 7. Phase 1+2 retrospective
 
@@ -198,13 +199,27 @@ Relationship, Entity, Cohere) are implemented across four crates
   `by_batch`) make subject/batch queries O(k); `get()` is O(1) via ChangeId
   density invariant.
 
-- **WAL persistence** ✓ — `graph-wal` crate: append-only segment files,
-  periodic checkpoints, two-phase recovery, CRC-32 torn-record detection,
-  atomic checkpoint writes, WAL compaction after `trim_before_batch`.
-- **WAL–Simulation integration** ✓ — `SimulationConfig::wal: Option<WalConfig>`
-  (requires `graph-engine`'s `wal` feature). Auto-writes every committed batch
-  after each `step()`; exposes `flush_wal()`, `compact_wal()`,
-  `last_wal_error()`, and `Simulation::from_recovery()`.
+- **`redb` persistence** ✓ — `graph-storage` crate: `Storage::open(path)` and
+  `Storage::open_and_migrate(path)` (auto-migrates schema v1→v2). Snapshot
+  persistence via `save_world` / `load_world`; incremental per-batch writes via
+  `commit_batch` (skips SUBSCRIPTIONS rewrite when the subscription generation
+  is unchanged). `relationships_for_locus(id)` enables cold→hot promotion.
+  Schema version key guards against accidental cross-version reads; redb uses an
+  exclusive file lock — never open the same database from two `Storage` instances.
+
+- **Hot/cold memory tiering** ✓ — relationships can be demoted to storage-only
+  ("cold") and promoted back on demand. `Simulation::promote_relationship(rel_id)`
+  and `promote_relationships_for_locus(locus_id)` drive promotion from callers.
+
+- **Subscription tracking** ✓ — `SubscriptionStore`: loci can subscribe to
+  relationship state changes via `StructuralProposal::SubscribeToRelationship` /
+  `UnsubscribeFromRelationship`. Subscriptions are persisted in the redb snapshot.
+  The audit log (`events_in_range`, `trim_audit_before`) is automatically trimmed
+  alongside the change log in `Engine::tick`.
+
+- **`WorldDiff` subscription fields** ✓ — `WorldDiff` (from `world.diff_since` /
+  `diff_between`) now includes `subscriptions_added` and `subscriptions_removed`
+  for the queried range.
 
 - **Induced subgraph + activity filter** ✓ —
   `World::induced_subgraph(loci)` (relationships fully contained within a
@@ -243,14 +258,13 @@ Relationship, Entity, Cohere) are implemented across four crates
   per-step WAL overhead (no-WAL / sync / async), checkpoint write+load roundtrip,
   full recovery cost, compaction cost.
 
-- **Cross-crate integration tests** ✓ — `crates/graph-engine/tests/integration.rs`:
-  16 tests covering the full simulation stack: relationship emergence (chain,
+- **Cross-crate integration tests** ✓ — `crates/graph-engine/tests/engine_integration.rs`:
+  tests covering the full simulation stack: relationship emergence (chain,
   star, ring), `WorldDiff` change capture / created-vs-updated classification /
   quiescent empty diff, graph traversal post-emergence (`path_between`,
   `reachable_from`, `connected_components`), `step_until` convergence / stimuli
   applied once / max-steps exhaustion, invariant assertions (bounded activity,
-  DAG structure, no batch-cap hits), and WAL recovery (relationship count and
-  `BatchId` round-trip via `#[cfg(feature = "wal")]`).
+  DAG structure, no batch-cap hits).
 
 - **`WorldDiff` semantics documented** ✓ — module-level doc and
   `relationships_updated` field doc now explicitly state: Hebbian weight
@@ -260,6 +274,45 @@ Relationship, Entity, Cohere) are implemented across four crates
 - **`step_until` clone eliminated** ✓ — replaced `bool first` guard +
   `stimuli.clone()` with `Option<Vec<ProposedChange>>` + `take()`, so
   the stimulus vector is moved on the first iteration and no copy is made.
+
+- **`step()` drains `pending_stimuli`** ✓ — `ingest()` buffers stimuli in
+  `pending_stimuli`; `step()` drains that buffer before processing so mixing
+  `ingest()` + `step()` never silently discards events. `step_with_ingest` is
+  now a thin alias for `step`.
+
+- **`graph-query` crate** ✓ — read-only query surface with three modules:
+  `traversal` (`path_between`, `reachable_from`, `connected_components` and
+  kind-filtered variants), `filter` (`loci_of_kind`, `loci_with_state`,
+  `loci_with_str_property`, `relationships_of_kind`, `relationships_with_activity`,
+  etc.), `causality` (`causal_ancestors`, `is_ancestor_of`, `root_stimuli`,
+  range queries).
+
+- **`LocusContext::properties(locus_id)`** ✓ — programs can now read domain
+  properties (name, type, etc.) through the context interface. Default returns
+  `None`; `BatchContext` wires this to `PropertyStore::get`.
+
+- **`graph_core::inbox` helpers** ✓ — `of_kind(incoming, kind)` (lazy iterator
+  over kind-filtered changes) and `locus_signals(iter)` (sum of `after[0]` for
+  locus-subject changes). Eliminates boilerplate in every single-slot program.
+
+- **`ProposedChange::property_patch`** ✓ — programs can atomically update a locus's domain
+  properties alongside a state change via `.with_property_patch(props)`. The patch is merged
+  into `PropertyStore` at commit time (existing keys overwritten, unmentioned keys preserved).
+  Has no effect on `ChangeSubject::Relationship` changes.
+
+- **`SimulationBuilder::auto_weather` / `auto_weather_with`** ✓ — periodic entity weathering
+  is now first-class: `.auto_weather(n)` fires `DefaultEntityWeathering` every N `step()` calls;
+  `.auto_weather_with(n, policy)` accepts a custom `EntityWeatheringPolicy`. `SimulationConfig`
+  carries `auto_weather_every_ticks: Option<u32>`; the policy is stored separately in
+  `Simulation` (trait objects are not `Clone`).
+
+- **`graph_query::reachable_matching`** ✓ — `reachable_matching(world, start, depth, pred)`
+  returns all matching loci within N hops, traversing through non-matching loci as bridges.
+  Avoids the intermediate full-reachability allocation of a post-filter approach.
+
+- **Storage benchmarks** ✓ — `benches/storage.rs` (requires `--features storage`):
+  `storage_commit_batch` (per-batch incremental write cost, ring_16/64/256) and
+  `storage_save_load` (full save+load roundtrip, ring_16/64/256).
 
 ### Open
 

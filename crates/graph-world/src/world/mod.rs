@@ -16,7 +16,7 @@ mod snapshot;
 
 pub use snapshot::{WorldMeta, WorldSnapshot};
 
-use graph_core::{BatchId, Change, ChangeId, Locus, LocusId};
+use graph_core::{BatchId, Change, ChangeId, Endpoints, Locus, LocusId, Relationship, RelationshipId, RelationshipKindId, RelationshipLineage, StateVector};
 
 use crate::store::change_log::ChangeLog;
 use crate::store::cohere_store::CohereStore;
@@ -39,6 +39,10 @@ pub struct World {
     pub(crate) current_batch: BatchId,
     pub(crate) next_change_id: u64,
     subscriptions: SubscriptionStore,
+    /// Append-only log of relationships pruned by `flush_relationship_decay`.
+    /// Each entry is `(relationship_id, batch_at_pruning_time)`.
+    /// Trim via `trim_pruned_log_before` alongside `ChangeLog::trim_before_batch`.
+    pruned_log: Vec<(RelationshipId, BatchId)>,
 }
 
 impl World {
@@ -60,6 +64,10 @@ impl World {
 
     pub fn loci(&self) -> &LocusStore {
         &self.loci
+    }
+
+    pub fn loci_mut(&mut self) -> &mut LocusStore {
+        &mut self.loci
     }
 
     pub fn relationships(&self) -> &RelationshipStore {
@@ -142,6 +150,58 @@ impl World {
     pub fn advance_batch(&mut self) -> BatchId {
         self.current_batch = BatchId(self.current_batch.0 + 1);
         self.current_batch
+    }
+
+    /// Record that a relationship was pruned at the current batch.
+    ///
+    /// Called by the engine's `flush_relationship_decay` after removing a
+    /// relationship whose activity fell below `prune_activity_threshold`.
+    /// The log is queryable via `pruned_log()` and reflected in `WorldDiff`.
+    pub fn record_pruned(&mut self, rel_id: RelationshipId) {
+        self.pruned_log.push((rel_id, self.current_batch));
+    }
+
+    /// All pruning events recorded since the last `trim_pruned_log_before` call.
+    /// Each entry is `(relationship_id, batch_at_pruning_time)`.
+    pub fn pruned_log(&self) -> &[(RelationshipId, BatchId)] {
+        &self.pruned_log
+    }
+
+    /// Discard pruning log entries older than `batch`. Call alongside
+    /// `ChangeLog::trim_before_batch` to keep memory bounded.
+    pub fn trim_pruned_log_before(&mut self, batch: BatchId) {
+        self.pruned_log.retain(|(_, b)| b.0 >= batch.0);
+    }
+
+    /// Insert a new relationship with `last_decayed_batch` pre-set to
+    /// `current_batch()`, preventing spurious decay debt on first access.
+    ///
+    /// This is the preferred way to pre-create relationships in a running
+    /// world. Using `relationships_mut().insert()` directly leaves
+    /// `last_decayed_batch = 0`, which causes all accumulated batches to be
+    /// replayed as decay on the first touch.
+    pub fn add_relationship(
+        &mut self,
+        endpoints: Endpoints,
+        kind: RelationshipKindId,
+        state: StateVector,
+    ) -> RelationshipId {
+        let id = self.relationships.mint_id();
+        let current_batch = self.current_batch.0;
+        self.relationships.insert(Relationship {
+            id,
+            kind,
+            endpoints,
+            state,
+            lineage: RelationshipLineage {
+                created_by: None,
+                last_touched_by: None,
+                change_count: 0,
+                kinds_observed: vec![kind],
+            },
+            last_decayed_batch: current_batch,
+        });
+        id
     }
 
     /// Restore a relationship that was previously evicted to cold storage.
