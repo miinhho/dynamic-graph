@@ -273,7 +273,7 @@ fn batch_cap_engages_on_runaway_program() {
     loci.insert(LocusKindId(1), Box::new(InfiniteProgram));
     let influences = InfluenceKindRegistry::new();
 
-    let engine = Engine::new(EngineConfig { max_batches_per_tick: 5, ..Default::default() });
+    let engine = Engine::new(EngineConfig { max_batches_per_tick: 5 });
     let stimulus = ProposedChange::new(
         ChangeSubject::Locus(LocusId(1)),
         InfluenceKindId(1),
@@ -899,7 +899,7 @@ fn relationship_subject_change_does_not_trigger_program_dispatch() {
     loci.insert(LocusKindId(2), Box::new(BombProgram));
     let mut influences = InfluenceKindRegistry::new();
     influences.insert(InfluenceKindId(1), InfluenceKindConfig::new("t"));
-    let engine = Engine::new(EngineConfig { max_batches_per_tick: 4, ..Default::default() });
+    let engine = Engine::new(EngineConfig { max_batches_per_tick: 4 });
 
     engine.tick(
         &mut world,

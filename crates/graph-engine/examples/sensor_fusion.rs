@@ -212,16 +212,16 @@ impl LocusProgram for ControllerProgram {
             })
             .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        if let Some((hot_id, hot_temp)) = hottest {
-            if hot_temp > 0.01 {
-                println!(
-                    "    [CTRL ctx-query] hottest=S{}({:.3})  avg_in={:.3}  correction={:+.3}",
-                    hot_id.0,
-                    hot_temp,
-                    avg_temp,
-                    self.setpoint - avg_temp
-                );
-            }
+        if let Some((hot_id, hot_temp)) = hottest
+            && hot_temp > 0.01
+        {
+            println!(
+                "    [CTRL ctx-query] hottest=S{}({:.3})  avg_in={:.3}  correction={:+.3}",
+                hot_id.0,
+                hot_temp,
+                avg_temp,
+                self.setpoint - avg_temp
+            );
         }
 
         let correction = (self.setpoint - avg_temp).clamp(-1.0, 1.0);
@@ -293,7 +293,6 @@ fn main() {
     let (mut world, loci, influences) = build_world();
     let engine = Engine::new(EngineConfig {
         max_batches_per_tick: 16,
-        ..Default::default()
     });
 
     println!("=== Sensor Fusion HVAC Example ===\n");

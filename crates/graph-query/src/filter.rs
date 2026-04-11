@@ -42,7 +42,7 @@ where
                 .properties()
                 .get(l.id)
                 .and_then(|p| p.get_str(key))
-                .is_some_and(|v| pred(v))
+                .is_some_and(&pred)
         })
         .collect()
 }
@@ -60,7 +60,7 @@ where
                 .properties()
                 .get(l.id)
                 .and_then(|p| p.get_f64(key))
-                .is_some_and(|v| pred(v))
+                .is_some_and(&pred)
         })
         .collect()
 }
@@ -68,7 +68,7 @@ where
 /// All loci matching a custom predicate over the `Locus` itself.
 ///
 /// Use this when none of the typed helpers cover your case.
-pub fn loci_matching<'w, F>(world: &'w World, pred: F) -> Vec<&'w Locus>
+pub fn loci_matching<F>(world: &World, pred: F) -> Vec<&Locus>
 where
     F: Fn(&Locus) -> bool,
 {
@@ -131,7 +131,7 @@ where
 }
 
 /// All relationships matching a custom predicate.
-pub fn relationships_matching<'w, F>(world: &'w World, pred: F) -> Vec<&'w Relationship>
+pub fn relationships_matching<F>(world: &World, pred: F) -> Vec<&Relationship>
 where
     F: Fn(&Relationship) -> bool,
 {

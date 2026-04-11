@@ -40,12 +40,12 @@ pub fn is_ancestor_of(world: &World, ancestor: ChangeId, descendant: ChangeId) -
 ///
 /// Wraps `ChangeLog::changes_to_locus` with a batch-range filter. Useful for
 /// auditing what happened to a specific locus over a time window.
-pub fn changes_to_locus_in_range<'w>(
-    world: &'w World,
+pub fn changes_to_locus_in_range(
+    world: &World,
     locus: LocusId,
     from_batch: BatchId,
     to_batch: BatchId,
-) -> Vec<&'w Change> {
+) -> Vec<&Change> {
     world
         .changes_to_locus(locus)
         .filter(|c| c.batch.0 >= from_batch.0 && c.batch.0 <= to_batch.0)
@@ -54,12 +54,12 @@ pub fn changes_to_locus_in_range<'w>(
 
 /// All changes that affected `rel` within the batch range `[from_batch,
 /// to_batch]`, newest first.
-pub fn changes_to_relationship_in_range<'w>(
-    world: &'w World,
+pub fn changes_to_relationship_in_range(
+    world: &World,
     rel: RelationshipId,
     from_batch: BatchId,
     to_batch: BatchId,
-) -> Vec<&'w Change> {
+) -> Vec<&Change> {
     world
         .changes_to_relationship(rel)
         .filter(|c| c.batch.0 >= from_batch.0 && c.batch.0 <= to_batch.0)

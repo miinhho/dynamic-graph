@@ -252,7 +252,7 @@ fn bench_bfs_traversal(c: &mut Criterion) {
     for n in [16u64, 64, 256] {
         let world = make_warm_ring(n);
         let far = LocusId(n / 2);
-        group.bench_function(&format!("path_between_ring_{n}"), |b| {
+        group.bench_function(format!("path_between_ring_{n}"), |b| {
             b.iter(|| path_between(&world, LocusId(0), far))
         });
     }
@@ -261,7 +261,7 @@ fn bench_bfs_traversal(c: &mut Criterion) {
     for n in [16u64, 64, 256] {
         let world = make_warm_ring(n);
         let depth = n as usize;
-        group.bench_function(&format!("reachable_from_ring_{n}"), |b| {
+        group.bench_function(format!("reachable_from_ring_{n}"), |b| {
             b.iter(|| reachable_from(&world, LocusId(0), depth))
         });
     }
@@ -688,7 +688,7 @@ fn bench_extra_slot_decay_flush(c: &mut Criterion) {
                     world.insert_locus(Locus::new(LocusId(1), lk, StateVector::zeros(1)));
 
                     let mut initial = vec![1.0f32, 0.0];
-                    initial.extend(std::iter::repeat(1.0).take(extra_slots));
+                    initial.extend(std::iter::repeat_n(1.0, extra_slots));
 
                     for _ in 0..n_rels {
                         let id = world.relationships_mut().mint_id();

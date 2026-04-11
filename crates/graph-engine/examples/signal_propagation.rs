@@ -151,7 +151,6 @@ fn main() {
     let (mut world, loci, influences) = build_world();
     let engine = Engine::new(EngineConfig {
         max_batches_per_tick: 16,
-        ..Default::default()
     });
 
     println!("=== Signal Propagation Example ===\n");

@@ -209,17 +209,16 @@ impl LocusProgram for ExcitatoryProgram {
             if is_incoming {
                 in_degree += 1;
                 let w = r.weight();
-                if weakest.map_or(true, |(_, ww)| w < ww) {
+                if weakest.is_none_or(|(_, ww)| w < ww) {
                     weakest = Some((r.id, w));
                 }
             }
         }
-        if in_degree > MAX_IN_DEGREE {
-            if let Some((rid, w)) = weakest {
-                if w < PRUNE_WEIGHT {
-                    return vec![StructuralProposal::DeleteRelationship { rel_id: rid }];
-                }
-            }
+        if in_degree > MAX_IN_DEGREE
+            && let Some((rid, w)) = weakest
+            && w < PRUNE_WEIGHT
+        {
+            return vec![StructuralProposal::DeleteRelationship { rel_id: rid }];
         }
         vec![]
     }
@@ -340,6 +339,7 @@ fn pop_stimulus(rng: &mut Rng, pop: u64, count: usize, intensity: f32) -> Vec<Pr
 
 /// Run a phase: N ticks with a stimulus function, recognizing entities
 /// every `recognize_every` ticks. Returns `(duration_ms, events)`.
+#[allow(clippy::too_many_arguments)]
 fn run_phase(
     sim: &mut Simulation,
     rng: &mut Rng,

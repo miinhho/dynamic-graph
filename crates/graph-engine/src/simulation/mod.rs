@@ -627,7 +627,7 @@ mod tests {
         let (world, loci, influences) = two_locus_world();
         let mut sim = Simulation::new(world, loci, influences);
         let (obs, converged) = sim.step_until(
-            |_, world| world.relationships().len() > 0,
+            |_, world| !world.relationships().is_empty(),
             20,
             vec![stimulus_to(LocusId(0), 1.0)],
         );
@@ -698,9 +698,8 @@ mod tests {
         let obs = sim.flush_ingested();
         assert!(obs.tick.changes_committed >= 2);
         assert!(
-            sim.world.relationships().len() >= 1,
-            "expected co-occurrence relationship, got {}",
-            sim.world.relationships().len()
+            !sim.world.relationships().is_empty(),
+            "expected co-occurrence relationship, got 0"
         );
     }
 
@@ -751,7 +750,7 @@ mod tests {
         }
 
         // The relationship between locus 0 and 1 should exist.
-        assert!(sim.world.relationships().len() >= 1);
+        assert!(!sim.world.relationships().is_empty());
 
         // rel_slot_value: unknown slot returns None.
         let rel_id = RelationshipId(0);

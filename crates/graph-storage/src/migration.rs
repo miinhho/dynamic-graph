@@ -141,7 +141,7 @@ impl Storage {
     /// `Err(StorageError::SchemaMismatch)`.
     pub fn open_and_migrate(path: impl AsRef<std::path::Path>) -> Result<Self, StorageError> {
         match Self::open(path.as_ref()) {
-            Ok(s) => return Ok(s),
+            Ok(s) => Ok(s),
             Err(StorageError::SchemaMismatch { found: 1, .. }) => {
                 // Attempt v1 → current migration.
                 let s = Self::open_force(path.as_ref())?;
