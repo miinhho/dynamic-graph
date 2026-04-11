@@ -43,10 +43,12 @@
 //! redb handles crash safety, page management, and compaction internally.
 
 mod error;
+mod migration;
 mod tables;
 
 pub use error::StorageError;
 
+use std::cell::Cell;
 use std::path::Path;
 
 use graph_core::{
@@ -58,17 +60,31 @@ use redb::{Database, ReadableMultimapTable, ReadableTable, ReadableTableMetadata
 
 use tables::*;
 
+/// Increment this whenever a serialized type gains or loses fields.
+/// `open()` rejects databases written under a different version.
+pub(crate) const CURRENT_SCHEMA_VERSION: u64 = 2;
+
 /// redb-backed persistent storage for a `World`.
 pub struct Storage {
     db: Database,
+    /// Generation of the subscription set the last time subscriptions were
+    /// written to the `SUBSCRIPTIONS` table. Compared against
+    /// `world.subscriptions().generation()` in `commit_batch()` to skip
+    /// the clear-and-rewrite when nothing changed. `u64::MAX` means "not
+    /// yet initialised" and forces a write on the first `commit_batch()`.
+    last_subscription_gen: Cell<u64>,
 }
 
 impl Storage {
     /// Open or create a database at `path`.
+    ///
+    /// Returns `Err(StorageError::SchemaMismatch)` when the database was
+    /// created by a different `CURRENT_SCHEMA_VERSION`. Delete (or migrate)
+    /// the file before re-opening with a new build.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
         let db = Database::create(path.as_ref())?;
 
-        // Ensure all tables exist by opening a write transaction.
+        // Ensure all tables exist and validate / write schema version.
         let txn = db.begin_write()?;
         {
             let _ = txn.open_table(LOCI)?;
@@ -79,11 +95,103 @@ impl Storage {
             let _ = txn.open_table(PROPERTIES)?;
             let _ = txn.open_table(NAMES)?;
             let _ = txn.open_table(ALIASES)?;
-            let _ = txn.open_table(META)?;
+            let _ = txn.open_multimap_table(SUBSCRIPTIONS)?;
+            let mut meta = txn.open_table(META)?;
+            let stored_version = meta.get(META_SCHEMA_VERSION)?.map(|v| v.value());
+            match stored_version {
+                None => {
+                    // Fresh database — stamp the current version.
+                    meta.insert(META_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION)?;
+                }
+                Some(v) if v == CURRENT_SCHEMA_VERSION => {}
+                Some(v) => {
+                    return Err(StorageError::SchemaMismatch {
+                        found: v,
+                        expected: CURRENT_SCHEMA_VERSION,
+                    });
+                }
+            }
         }
         txn.commit()?;
 
-        Ok(Self { db })
+        Ok(Self { db, last_subscription_gen: Cell::new(u64::MAX) })
+    }
+
+    /// Open a database **bypassing** the schema version check.
+    ///
+    /// Intended for migration tools that need to read the raw bytes before
+    /// re-serializing them under the current schema. Use with caution: if the
+    /// stored bytes were written by an incompatible schema, postcard
+    /// deserialization will return `Err(StorageError::Serde(...))` at read
+    /// time.
+    ///
+    /// After migrating, call [`reset_schema_version`] to stamp the current
+    /// version so subsequent `open()` calls succeed.
+    pub fn open_force(path: impl AsRef<Path>) -> Result<Self, StorageError> {
+        let db = Database::create(path.as_ref())?;
+        let txn = db.begin_write()?;
+        {
+            let _ = txn.open_table(LOCI)?;
+            let _ = txn.open_table(RELATIONSHIPS)?;
+            let _ = txn.open_table(ENTITIES)?;
+            let _ = txn.open_table(CHANGES)?;
+            let _ = txn.open_multimap_table(CHANGES_BY_BATCH)?;
+            let _ = txn.open_table(PROPERTIES)?;
+            let _ = txn.open_table(NAMES)?;
+            let _ = txn.open_table(ALIASES)?;
+            let _ = txn.open_multimap_table(SUBSCRIPTIONS)?;
+            let _ = txn.open_table(META)?;
+        }
+        txn.commit()?;
+        Ok(Self { db, last_subscription_gen: Cell::new(u64::MAX) })
+    }
+
+    /// Stamp the current `CURRENT_SCHEMA_VERSION` into the META table.
+    ///
+    /// Call this after a successful migration to make `open()` accept the
+    /// database again.
+    pub fn reset_schema_version(&self) -> Result<(), StorageError> {
+        let txn = self.db.begin_write()?;
+        {
+            let mut meta = txn.open_table(META)?;
+            meta.insert(META_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION)?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Drop all domain data and re-stamp the schema version.
+    ///
+    /// Use this as a last-resort when the serialized bytes are not
+    /// recoverable (e.g. structs grew fields that break postcard EOF).
+    /// After calling this, the database is as if freshly created.
+    pub fn reset(&self) -> Result<(), StorageError> {
+        let txn = self.db.begin_write()?;
+        {
+            { let mut t = txn.open_table(LOCI)?; while let Some(g) = t.pop_last()? { drop(g); } }
+            { let mut t = txn.open_table(RELATIONSHIPS)?; while let Some(g) = t.pop_last()? { drop(g); } }
+            { let mut t = txn.open_table(ENTITIES)?; while let Some(g) = t.pop_last()? { drop(g); } }
+            { let mut t = txn.open_table(CHANGES)?; while let Some(g) = t.pop_last()? { drop(g); } }
+            {
+                let mut t = txn.open_multimap_table(CHANGES_BY_BATCH)?;
+                let keys: Vec<u64> = { let mut k = Vec::new(); let mut it = t.iter()?; while let Some(e) = it.next() { k.push(e?.0.value()); } k };
+                for key in keys { t.remove_all(key)?; }
+            }
+            { let mut t = txn.open_table(PROPERTIES)?; while let Some(g) = t.pop_last()? { drop(g); } }
+            { let mut t = txn.open_table(NAMES)?; while let Some(g) = t.pop_last()? { drop(g); } }
+            { let mut t = txn.open_table(ALIASES)?; while let Some(g) = t.pop_last()? { drop(g); } }
+            {
+                let mut t = txn.open_multimap_table(SUBSCRIPTIONS)?;
+                let keys: Vec<u64> = { let mut k = Vec::new(); let mut it = t.iter()?; while let Some(e) = it.next() { k.push(e?.0.value()); } k };
+                for key in keys { t.remove_all(key)?; }
+            }
+            let mut meta = txn.open_table(META)?;
+            // Clear all meta keys.
+            while let Some(g) = meta.pop_last()? { drop(g); }
+            meta.insert(META_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION)?;
+        }
+        txn.commit()?;
+        Ok(())
     }
 
     // ── full save / load ────────────────────────────────────────────
@@ -146,6 +254,21 @@ impl Storage {
                 let mut t = txn.open_table(ALIASES)?;
                 while let Some(g) = t.pop_last()? { drop(g); }
             }
+            {
+                let mut t = txn.open_multimap_table(SUBSCRIPTIONS)?;
+                let keys: Vec<u64> = {
+                    let mut keys = Vec::new();
+                    let mut iter = t.iter()?;
+                    while let Some(entry) = iter.next() {
+                        let (key, _) = entry?;
+                        keys.push(key.value());
+                    }
+                    keys
+                };
+                for key in keys {
+                    t.remove_all(key)?;
+                }
+            }
 
             // Write loci.
             {
@@ -204,6 +327,15 @@ impl Storage {
                 for (alias, id) in world.names().aliases() {
                     aliases_t.insert(alias, id.0)?;
                 }
+            }
+
+            // Write subscriptions.
+            {
+                let mut t = txn.open_multimap_table(SUBSCRIPTIONS)?;
+                for (rel_id, locus_id) in world.subscriptions().iter() {
+                    t.insert(locus_id.0, rel_id.0)?;
+                }
+                self.last_subscription_gen.set(world.subscriptions().generation());
             }
 
             // Write meta counters.
@@ -321,6 +453,24 @@ impl Storage {
             }
         }
 
+        // Read subscriptions.
+        {
+            let t = txn.open_multimap_table(SUBSCRIPTIONS)?;
+            let mut iter = t.iter()?;
+            while let Some(entry) = iter.next() {
+                let (locus_key, mut rel_iter) = entry?;
+                let locus_id = LocusId(locus_key.value());
+                while let Some(rel_entry) = rel_iter.next() {
+                    let rel_id = RelationshipId(rel_entry?.value());
+                    world.subscriptions_mut().subscribe(locus_id, rel_id);
+                }
+            }
+        }
+
+        // Sync generation so the first commit_batch() after load doesn't
+        // redundantly rewrite the SUBSCRIPTIONS table.
+        self.last_subscription_gen.set(world.subscriptions().generation());
+
         Ok(world)
     }
 
@@ -423,6 +573,37 @@ impl Storage {
                 }
             }
 
+            // Rewrite subscriptions only when the set actually changed.
+            // `SubscriptionStore::generation()` is incremented on every
+            // subscribe/unsubscribe mutation; we compare against the last
+            // generation we persisted to avoid the clear-and-rewrite on
+            // batches that contain relationship state changes but no
+            // topology changes.
+            {
+                let current_gen = world.subscriptions().generation();
+                if current_gen != self.last_subscription_gen.get() {
+                    let mut t = txn.open_multimap_table(SUBSCRIPTIONS)?;
+                    // Clear.
+                    let keys: Vec<u64> = {
+                        let mut keys = Vec::new();
+                        let mut iter = t.iter()?;
+                        while let Some(entry) = iter.next() {
+                            let (key, _) = entry?;
+                            keys.push(key.value());
+                        }
+                        keys
+                    };
+                    for key in keys {
+                        t.remove_all(key)?;
+                    }
+                    // Rewrite.
+                    for (rel_id, locus_id) in world.subscriptions().iter() {
+                        t.insert(locus_id.0, rel_id.0)?;
+                    }
+                    self.last_subscription_gen.set(current_gen);
+                }
+            }
+
             // Update meta counters.
             {
                 let meta = world.world_meta();
@@ -467,6 +648,30 @@ impl Storage {
             Some(val) => Ok(Some(postcard::from_bytes(val.value())?)),
             None => Ok(None),
         }
+    }
+
+    /// Read all stored relationships that have `locus_id` as an endpoint.
+    ///
+    /// Scans the full RELATIONSHIPS table — O(total stored relationships).
+    /// Use this when promoting evicted relationships back into hot memory
+    /// for a specific locus. If the dataset is large, consider batching
+    /// promotion only to the loci that are actually active.
+    pub fn relationships_for_locus(
+        &self,
+        locus_id: LocusId,
+    ) -> Result<Vec<Relationship>, StorageError> {
+        let txn = self.db.begin_read()?;
+        let t = txn.open_table(RELATIONSHIPS)?;
+        let mut result = Vec::new();
+        let mut iter = t.iter()?;
+        while let Some(entry) = iter.next() {
+            let (_, val) = entry?;
+            let rel: Relationship = postcard::from_bytes(val.value())?;
+            if rel.endpoints.involves(locus_id) {
+                result.push(rel);
+            }
+        }
+        Ok(result)
     }
 
     /// Read a single change by ID.
@@ -689,5 +894,130 @@ mod tests {
         let loaded = storage.load_world().unwrap();
         assert!(loaded.locus(LocusId(99)).is_some());
         assert!(loaded.locus(LocusId(0)).is_none());
+    }
+
+    #[test]
+    fn change_with_wall_time_and_metadata_round_trips() {
+        use graph_core::{BatchId, Change, ChangeId, ChangeSubject, InfluenceKindId, StateVector, props};
+
+        let (_f, storage) = temp_db();
+        let mut world = sample_world();
+
+        let change = Change {
+            id: ChangeId(0),
+            subject: ChangeSubject::Locus(LocusId(0)),
+            kind: InfluenceKindId(1),
+            predecessors: vec![],
+            before: StateVector::zeros(2),
+            after: StateVector::from_slice(&[0.5, 0.0]),
+            batch: BatchId(0),
+            wall_time: Some(1_700_000_000_000),
+            metadata: Some(props! { "source" => "sensor-A", "confidence" => 0.95_f64 }),
+        };
+        world.log_mut().append(change);
+        storage.save_world(&world).unwrap();
+
+        let restored = storage.load_world().unwrap();
+        let c = restored.log().get(ChangeId(0)).unwrap();
+        assert_eq!(c.wall_time, Some(1_700_000_000_000));
+        let meta = c.metadata.as_ref().unwrap();
+        assert_eq!(meta.get_str("source"), Some("sensor-A"));
+        assert!((meta.get_f64("confidence").unwrap() - 0.95).abs() < 1e-9);
+    }
+
+    #[test]
+    fn subscriptions_round_trip_via_save_load() {
+        let (_f, storage) = temp_db();
+        let mut world = sample_world();
+
+        let rel_a = RelationshipId(10);
+        let rel_b = RelationshipId(11);
+        world.subscriptions_mut().subscribe(LocusId(0), rel_a);
+        world.subscriptions_mut().subscribe(LocusId(0), rel_b);
+        world.subscriptions_mut().subscribe(LocusId(1), rel_a);
+
+        storage.save_world(&world).unwrap();
+
+        let restored = storage.load_world().unwrap();
+        assert_eq!(restored.subscriptions().subscription_count(), 3);
+        assert!(restored.subscriptions().has_subscribers(rel_a));
+        assert!(restored.subscriptions().has_subscribers(rel_b));
+
+        let mut subs_a: Vec<LocusId> = restored.subscriptions().subscribers(rel_a).collect();
+        subs_a.sort_by_key(|l| l.0);
+        assert_eq!(subs_a, vec![LocusId(0), LocusId(1)]);
+
+        let subs_b: Vec<LocusId> = restored.subscriptions().subscribers(rel_b).collect();
+        assert_eq!(subs_b, vec![LocusId(0)]);
+    }
+
+    #[test]
+    fn empty_subscriptions_save_and_load_cleanly() {
+        let (_f, storage) = temp_db();
+        let world = sample_world();
+        storage.save_world(&world).unwrap();
+
+        let restored = storage.load_world().unwrap();
+        assert!(restored.subscriptions().is_empty());
+        assert_eq!(restored.subscriptions().subscription_count(), 0);
+    }
+
+    #[test]
+    fn schema_version_stamped_on_open() {
+        let f = NamedTempFile::new().unwrap();
+        // First open: fresh database, stamps version.
+        drop(Storage::open(f.path()).unwrap());
+        // Second open: reads the stamped version, must succeed.
+        drop(Storage::open(f.path()).unwrap());
+        // Third open: same, must also succeed.
+        drop(Storage::open(f.path()).unwrap());
+    }
+
+    #[test]
+    fn reset_clears_data_and_allows_reopen() {
+        let (_f, storage) = temp_db();
+        let world = sample_world();
+        storage.save_world(&world).unwrap();
+        assert_eq!(storage.table_counts().unwrap().loci, 2);
+
+        storage.reset().unwrap();
+        drop(storage);
+
+        // After reset, open() must succeed (version is current).
+        let storage2 = Storage::open(_f.path()).unwrap();
+        assert_eq!(storage2.table_counts().unwrap().loci, 0);
+        assert!(matches!(storage2.load_world(), Err(StorageError::Empty)));
+    }
+
+    #[test]
+    fn open_force_bypasses_version_check_and_reset_stamps_version() {
+        let f = NamedTempFile::new().unwrap();
+
+        // Simulate a "wrong version" by writing an old version number directly.
+        {
+            let storage = Storage::open(f.path()).unwrap();
+            // Stamp a fake old version to trigger SchemaMismatch on next open().
+            let txn = storage.db.begin_write().unwrap();
+            {
+                let mut meta = txn.open_table(META).unwrap();
+                meta.insert(META_SCHEMA_VERSION, 1u64).unwrap();
+            }
+            txn.commit().unwrap();
+        }
+
+        // Normal open must reject it.
+        assert!(matches!(
+            Storage::open(f.path()),
+            Err(StorageError::SchemaMismatch { found: 1, expected: _ })
+        ));
+
+        // open_force bypasses the check.
+        let storage = Storage::open_force(f.path()).unwrap();
+        // Stamp the correct version.
+        storage.reset_schema_version().unwrap();
+        drop(storage);
+
+        // Now normal open succeeds.
+        drop(Storage::open(f.path()).unwrap());
     }
 }

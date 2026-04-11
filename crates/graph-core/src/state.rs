@@ -46,6 +46,24 @@ impl StateVector {
         &mut self.slots
     }
 
+    /// Returns a copy of this vector with `slots[idx]` set to `val`.
+    ///
+    /// If `idx` is beyond the current length, the vector is extended
+    /// with zeros up to (and including) `idx`. This makes partial slot
+    /// updates concise without requiring the caller to reconstruct the
+    /// full slice:
+    ///
+    /// ```rust,ignore
+    /// let updated = rel.state.with_slot(HOSTILITY_SLOT, new_hostility);
+    /// ```
+    pub fn with_slot(mut self, idx: usize, val: f32) -> Self {
+        if idx >= self.slots.len() {
+            self.slots.resize(idx + 1, 0.0);
+        }
+        self.slots[idx] = val;
+        self
+    }
+
     /// Element-wise sum, padding the shorter vector with zeros. Returns a
     /// fresh vector with `dim = max(self.dim, other.dim)`.
     pub fn add(&self, other: &StateVector) -> StateVector {

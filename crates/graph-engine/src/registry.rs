@@ -15,8 +15,14 @@
 //! an unregistered kind — use `get()` for lenient lookups that tolerate
 //! missing registrations.
 
-use graph_core::{Encoder, InfluenceKindId, LocusKindId, LocusProgram, StabilizationConfig};
+use graph_core::{Encoder, InfluenceKindId, LocusKindId, LocusProgram, RelationshipSlotDef, StabilizationConfig, StateVector};
 use rustc_hash::FxHashMap;
+
+/// Type alias for the slot-definitions map passed into `BatchContext`.
+///
+/// Keys are influence kind ids; values are the extra-slot definitions for
+/// relationships of that kind. Only kinds with at least one extra slot appear.
+pub type SlotDefsMap = FxHashMap<InfluenceKindId, Vec<RelationshipSlotDef>>;
 
 /// Hebbian plasticity parameters for one influence kind.
 ///
@@ -87,6 +93,13 @@ pub struct InfluenceKindConfig {
     /// decay are automatically removed during `flush_relationship_decay`.
     /// `0.0` disables auto-pruning (default).
     pub prune_activity_threshold: f32,
+    /// User-defined extra slots appended to the relationship `StateVector`
+    /// beyond the built-in activity (slot 0) and weight (slot 1).
+    ///
+    /// Slots are initialised with their `default` on creation, decayed
+    /// per-batch by their individual `decay` rate (if any), and ignored
+    /// by the Hebbian plasticity rule.
+    pub extra_slots: Vec<RelationshipSlotDef>,
 }
 
 impl InfluenceKindConfig {
@@ -97,6 +110,7 @@ impl InfluenceKindConfig {
             stabilization: StabilizationConfig::default(),
             plasticity: PlasticityConfig::default(),
             prune_activity_threshold: 0.0,
+            extra_slots: Vec::new(),
         }
     }
 
@@ -118,6 +132,44 @@ impl InfluenceKindConfig {
     pub fn with_prune_threshold(mut self, threshold: f32) -> Self {
         self.prune_activity_threshold = threshold;
         self
+    }
+
+    pub fn with_extra_slots(mut self, slots: Vec<RelationshipSlotDef>) -> Self {
+        self.extra_slots = slots;
+        self
+    }
+
+    /// Build the initial `StateVector` for a new relationship of this kind.
+    ///
+    /// Activity starts at 1.0 (one touch), weight at 0.0, then the
+    /// default values for each extra slot in declaration order.
+    pub(crate) fn initial_relationship_state(&self) -> StateVector {
+        let mut values = vec![1.0f32, 0.0f32];
+        for slot in &self.extra_slots {
+            values.push(slot.default);
+        }
+        StateVector::from_slice(&values)
+    }
+
+    /// Return the `StateVector` index of the named extra slot, or `None` if
+    /// the name is not registered for this kind.
+    ///
+    /// The built-in slots occupy indices 0 (activity) and 1 (weight). Extra
+    /// slots begin at index 2 in declaration order.
+    pub fn slot_index(&self, name: &str) -> Option<usize> {
+        self.extra_slots
+            .iter()
+            .position(|s| s.name == name)
+            .map(|pos| pos + 2)
+    }
+
+    /// Read a named slot value from a relationship `StateVector`.
+    ///
+    /// Returns `None` when the slot name is not registered or the vector is
+    /// too short (should not happen for vectors produced by this registry).
+    pub fn read_slot(&self, state: &StateVector, name: &str) -> Option<f32> {
+        let idx = self.slot_index(name)?;
+        state.as_slice().get(idx).copied()
     }
 }
 
@@ -198,6 +250,10 @@ impl LocusKindRegistry {
 #[derive(Debug, Default, Clone)]
 pub struct InfluenceKindRegistry {
     configs: FxHashMap<InfluenceKindId, InfluenceKindConfig>,
+    /// Pre-built map of extra slot definitions. Rebuilt whenever a new
+    /// kind is inserted. Accessed by the engine to borrow into BatchContext
+    /// without per-batch allocation.
+    slot_defs: SlotDefsMap,
 }
 
 impl InfluenceKindRegistry {
@@ -209,6 +265,23 @@ impl InfluenceKindRegistry {
         if self.configs.insert(kind, config).is_some() {
             panic!("InfluenceKindRegistry: duplicate registration for {kind:?}");
         }
+        self.rebuild_slot_defs();
+    }
+
+    fn rebuild_slot_defs(&mut self) {
+        self.slot_defs = self.configs
+            .iter()
+            .filter(|(_, cfg)| !cfg.extra_slots.is_empty())
+            .map(|(&k, cfg)| (k, cfg.extra_slots.clone()))
+            .collect();
+    }
+
+    /// Borrow the pre-built slot-definitions map.
+    ///
+    /// Pass this into `BatchContext::new` once per tick; the engine holds the
+    /// borrow for the duration of a tick to avoid per-batch allocation.
+    pub fn slot_defs(&self) -> &SlotDefsMap {
+        &self.slot_defs
     }
 
     pub fn get(&self, kind: InfluenceKindId) -> Option<&InfluenceKindConfig> {
@@ -285,5 +358,47 @@ mod tests {
         let mut reg = InfluenceKindRegistry::new();
         reg.insert(InfluenceKindId(1), InfluenceKindConfig::new("a"));
         reg.insert(InfluenceKindId(1), InfluenceKindConfig::new("b"));
+    }
+
+    #[test]
+    fn slot_index_returns_correct_offset() {
+        use graph_core::RelationshipSlotDef;
+        let cfg = InfluenceKindConfig::new("test").with_extra_slots(vec![
+            RelationshipSlotDef::new("tension", 0.0),
+            RelationshipSlotDef::new("trust", 1.0),
+        ]);
+        // Built-in slots: 0=activity, 1=weight. Extra start at 2.
+        assert_eq!(cfg.slot_index("tension"), Some(2));
+        assert_eq!(cfg.slot_index("trust"), Some(3));
+        assert_eq!(cfg.slot_index("unknown"), None);
+    }
+
+    #[test]
+    fn read_slot_returns_value_from_state_vector() {
+        use graph_core::{RelationshipSlotDef, StateVector};
+        let cfg = InfluenceKindConfig::new("test").with_extra_slots(vec![
+            RelationshipSlotDef::new("tension", 0.0),
+            RelationshipSlotDef::new("trust", 1.0),
+        ]);
+        let state = StateVector::from_slice(&[1.0, 0.5, 0.3, 0.8]);
+        assert!((cfg.read_slot(&state, "tension").unwrap() - 0.3).abs() < 1e-6);
+        assert!((cfg.read_slot(&state, "trust").unwrap() - 0.8).abs() < 1e-6);
+        assert!(cfg.read_slot(&state, "missing").is_none());
+    }
+
+    #[test]
+    fn slot_defs_cache_rebuilt_on_insert() {
+        use graph_core::RelationshipSlotDef;
+        let mut reg = InfluenceKindRegistry::new();
+        assert!(reg.slot_defs().is_empty());
+
+        reg.insert(
+            InfluenceKindId(1),
+            InfluenceKindConfig::new("a").with_extra_slots(vec![
+                RelationshipSlotDef::new("x", 0.0),
+            ]),
+        );
+        assert_eq!(reg.slot_defs().len(), 1);
+        assert!(reg.slot_defs().contains_key(&InfluenceKindId(1)));
     }
 }

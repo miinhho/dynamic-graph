@@ -1,11 +1,16 @@
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
-use graph_core::{LocusId, props};
+use graph_core::{
+    Change, ChangeSubject, Endpoints, InfluenceKindId, Locus, LocusContext, LocusId, LocusKindId,
+    LocusProgram, ProposedChange, Relationship, RelationshipLineage, StateVector, props,
+};
 use graph_engine::{
-    DefaultEmergencePerspective, Engine, EngineConfig, SimulationBuilder, Simulation,
+    DefaultEmergencePerspective, Engine, EngineConfig, InfluenceKindConfig, InfluenceKindRegistry,
+    LocusKindRegistry, RelationshipSlotDef, Simulation, SimulationBuilder,
 };
 use graph_query::{connected_components, path_between, reachable_from};
 use graph_testkit::fixtures::{chain_world, fan_in_world, ring_world, star_world, stimulus};
 use graph_testkit::programs::InertProgram;
+use graph_world::World;
 
 fn bench_chain(c: &mut Criterion) {
     // chain_world(64, 0.9): signal propagates 64 hops, attenuates per batch
@@ -468,6 +473,258 @@ fn bench_name_lookup(c: &mut Criterion) {
     group.finish();
 }
 
+// ── subscriber + extra slots benchmarks ──────────────────────────────────────
+
+/// Subscriber notification overhead as a function of subscriber count.
+///
+/// Setup: one "trigger" relationship. `n_subscribers` loci each subscribe to it.
+/// Each tick: one ProposedChange on that relationship → engine delivers a
+/// notification to all subscribers.
+///
+/// Measures: dispatch cost per relationship-change when subscriber count scales.
+fn bench_subscriber_fanout(c: &mut Criterion) {
+    // Simple sink program that just counts relationship notifications.
+    struct RelSinkProgram;
+    impl LocusProgram for RelSinkProgram {
+        fn process(
+            &self,
+            _locus: &Locus,
+            _incoming: &[&Change],
+            _: &dyn LocusContext,
+        ) -> Vec<ProposedChange> {
+            Vec::new()
+        }
+    }
+
+    // Locus that holds the monitored relationship's endpoints.
+    struct RelHolderProgram;
+    impl LocusProgram for RelHolderProgram {
+        fn process(&self, _: &Locus, _: &[&Change], _: &dyn LocusContext) -> Vec<ProposedChange> {
+            Vec::new()
+        }
+    }
+
+    let mut group = c.benchmark_group("subscriber_fanout");
+
+    for n_subs in [8u64, 64, 512, 4096] {
+        let label = format!("subs_{n_subs}");
+        group.bench_function(&label, |b| {
+            b.iter_batched(
+                || {
+                    let conflict_kind = InfluenceKindId(1);
+                    let holder_kind = LocusKindId(1);
+                    let sub_kind = LocusKindId(2);
+
+                    let mut world = World::new();
+                    let mut loci_reg = LocusKindRegistry::new();
+                    let mut inf_reg = InfluenceKindRegistry::new();
+
+                    inf_reg.insert(
+                        conflict_kind,
+                        InfluenceKindConfig::new("conflict")
+                            .with_extra_slots(vec![
+                                RelationshipSlotDef::new("hostility", 0.0),
+                                RelationshipSlotDef::new("engagement_count", 0.0),
+                            ]),
+                    );
+
+                    // Two endpoint loci for the trigger relationship.
+                    let ep_a = LocusId(0);
+                    let ep_b = LocusId(1);
+                    world.insert_locus(Locus::new(ep_a, holder_kind, StateVector::zeros(1)));
+                    world.insert_locus(Locus::new(ep_b, holder_kind, StateVector::zeros(1)));
+                    loci_reg.insert(holder_kind, Box::new(RelHolderProgram));
+
+                    // Trigger relationship.
+                    let rel_id = world.relationships_mut().mint_id();
+                    world.relationships_mut().insert(Relationship {
+                        id: rel_id,
+                        kind: conflict_kind,
+                        endpoints: Endpoints::Directed { from: ep_a, to: ep_b },
+                        state: StateVector::from_slice(&[1.0, 0.0, 0.3, 0.0]),
+                        lineage: RelationshipLineage {
+                            created_by: None, last_touched_by: None,
+                            change_count: 0, kinds_observed: vec![conflict_kind],
+                        },
+                        last_decayed_batch: 0,
+                    });
+
+                    // n_subs subscriber loci, all watching rel_id.
+                    loci_reg.insert(sub_kind, Box::new(RelSinkProgram));
+                    for i in 2..2 + n_subs {
+                        let locus_id = LocusId(i);
+                        world.insert_locus(Locus::new(locus_id, sub_kind, StateVector::zeros(1)));
+                        world.subscriptions_mut().subscribe(locus_id, rel_id);
+                    }
+
+                    (world, loci_reg, inf_reg, rel_id, conflict_kind)
+                },
+                |(mut world, loci_reg, inf_reg, rel_id, conflict_kind)| {
+                    let engine = Engine::new(EngineConfig::default());
+                    engine.tick(
+                        &mut world,
+                        &loci_reg,
+                        &inf_reg,
+                        vec![ProposedChange::new(
+                            ChangeSubject::Relationship(rel_id),
+                            conflict_kind,
+                            StateVector::from_slice(&[2.0, 0.0, 0.6, 1.0]),
+                        )],
+                    )
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    group.finish();
+}
+
+/// Cold-path cost: relationships with NO subscribers.
+///
+/// Baseline: shows that `has_subscribers()` O(1) check means zero-subscriber
+/// relationships have negligible overhead vs. the original (no subscriptions at all).
+fn bench_subscriber_cold_path(c: &mut Criterion) {
+    let mut group = c.benchmark_group("subscriber_cold_path");
+
+    // N relationships, each changed in one tick, zero subscribers.
+    for n_rels in [64u64, 512, 4096] {
+        let label = format!("rels_{n_rels}_no_subs");
+        group.bench_function(&label, |b| {
+            b.iter_batched(
+                || {
+                    let kind = InfluenceKindId(1);
+                    let lk = LocusKindId(1);
+                    let mut world = World::new();
+                    let mut loci_reg = LocusKindRegistry::new();
+                    let mut inf_reg = InfluenceKindRegistry::new();
+
+                    inf_reg.insert(kind, InfluenceKindConfig::new("k"));
+                    loci_reg.insert(lk, Box::new(InertProgram));
+
+                    // Two endpoint loci.
+                    world.insert_locus(Locus::new(LocusId(0), lk, StateVector::zeros(1)));
+                    world.insert_locus(Locus::new(LocusId(1), lk, StateVector::zeros(1)));
+
+                    // n_rels relationships, no subscribers.
+                    let rel_ids: Vec<_> = (0..n_rels)
+                        .map(|_| {
+                            let id = world.relationships_mut().mint_id();
+                            world.relationships_mut().insert(Relationship {
+                                id,
+                                kind,
+                                endpoints: Endpoints::Directed {
+                                    from: LocusId(0),
+                                    to: LocusId(1),
+                                },
+                                state: StateVector::from_slice(&[1.0, 0.0]),
+                                lineage: RelationshipLineage {
+                                    created_by: None, last_touched_by: None,
+                                    change_count: 0, kinds_observed: vec![kind],
+                                },
+                                last_decayed_batch: 0,
+                            });
+                            id
+                        })
+                        .collect();
+                    (world, loci_reg, inf_reg, rel_ids, kind)
+                },
+                |(mut world, loci_reg, inf_reg, rel_ids, kind)| {
+                    let engine = Engine::new(EngineConfig::default());
+                    let stimuli = rel_ids
+                        .iter()
+                        .map(|&id| ProposedChange::new(
+                            ChangeSubject::Relationship(id),
+                            kind,
+                            StateVector::from_slice(&[2.0, 0.0]),
+                        ))
+                        .collect();
+                    engine.tick(&mut world, &loci_reg, &inf_reg, stimuli)
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    group.finish();
+}
+
+/// Extra-slot decay cost during flush: N relationships, each with K extra slots.
+///
+/// Shows how per-slot decay scales with slot count.
+fn bench_extra_slot_decay_flush(c: &mut Criterion) {
+    let mut group = c.benchmark_group("extra_slot_decay");
+
+    for (label, n_rels, extra_slots) in [
+        ("rels_1024_slots_0", 1024usize, 0usize),
+        ("rels_1024_slots_2", 1024, 2),
+        ("rels_1024_slots_8", 1024, 8),
+    ] {
+        group.bench_function(label, |b| {
+            b.iter_batched(
+                || {
+                    let kind = InfluenceKindId(1);
+                    let lk = LocusKindId(1);
+                    let mut world = World::new();
+                    let mut loci_reg = LocusKindRegistry::new();
+                    let mut inf_reg = InfluenceKindRegistry::new();
+
+                    let slots: Vec<RelationshipSlotDef> = (0..extra_slots)
+                        .map(|i| {
+                            RelationshipSlotDef::new(
+                                // 'static str — use a fixed name; slot index is the distinguisher.
+                                "metric",
+                                1.0,
+                            )
+                            .with_decay(0.95 - i as f32 * 0.01)
+                        })
+                        .collect();
+
+                    inf_reg.insert(
+                        kind,
+                        InfluenceKindConfig::new("k").with_decay(0.95).with_extra_slots(slots),
+                    );
+                    loci_reg.insert(lk, Box::new(InertProgram));
+
+                    world.insert_locus(Locus::new(LocusId(0), lk, StateVector::zeros(1)));
+                    world.insert_locus(Locus::new(LocusId(1), lk, StateVector::zeros(1)));
+
+                    let mut initial = vec![1.0f32, 0.0];
+                    initial.extend(std::iter::repeat(1.0).take(extra_slots));
+
+                    for _ in 0..n_rels {
+                        let id = world.relationships_mut().mint_id();
+                        world.relationships_mut().insert(Relationship {
+                            id,
+                            kind,
+                            endpoints: Endpoints::Directed {
+                                from: LocusId(0),
+                                to: LocusId(1),
+                            },
+                            state: StateVector::from_slice(&initial),
+                            lineage: RelationshipLineage {
+                                created_by: None, last_touched_by: None,
+                                change_count: 0, kinds_observed: vec![kind],
+                            },
+                            last_decayed_batch: 0,
+                        });
+                    }
+
+                    let engine = Engine::new(EngineConfig::default());
+                    (world, inf_reg, engine)
+                },
+                |(mut world, inf_reg, engine)| {
+                    // Advance batch to create a decay delta, then flush.
+                    world.advance_batch();
+                    world.advance_batch();
+                    world.advance_batch();
+                    engine.flush_relationship_decay(&mut world, &inf_reg)
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_chain,
@@ -487,5 +744,8 @@ criterion_group!(
     bench_ingest_batch,
     bench_ingest_steady,
     bench_name_lookup,
+    bench_subscriber_fanout,
+    bench_subscriber_cold_path,
+    bench_extra_slot_decay_flush,
 );
 criterion_main!(benches);

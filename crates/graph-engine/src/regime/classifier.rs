@@ -319,6 +319,8 @@ mod tests {
             before: StateVector::zeros(2),
             after: StateVector::from_slice(&[3.0, 4.0]),
             batch: BatchId(0),
+            wall_time: None,
+            metadata: None,
         };
         let m = BatchMetrics::from_changes(std::iter::once(&change));
         // delta norm: ||(3,4) - (0,0)|| = 5

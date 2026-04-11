@@ -4,7 +4,10 @@
 //! simple behavioural archetype useful for testing the engine's batch
 //! loop, relationship auto-emergence, and entity recognition.
 
-use graph_core::{Change, ChangeSubject, InfluenceKindId, Locus, LocusContext, LocusId, LocusProgram, ProposedChange, StateVector};
+use graph_core::{
+    Change, ChangeSubject, InfluenceKindId, Locus, LocusContext, LocusId, LocusProgram,
+    ProposedChange, RelationshipId, StateVector, StructuralProposal,
+};
 
 /// Influence kind used by all testkit fixtures. Callers must register
 /// this id in their `InfluenceKindRegistry`.
@@ -83,6 +86,167 @@ impl LocusProgram for AccumulatorProgram {
             TEST_KIND,
             StateVector::from_slice(&[current + total * self.gain]),
         )]
+    }
+}
+
+/// A locus that models a complex, N-ary real-world event.
+///
+/// ## State layout
+///
+/// `[activation_level, severity, confidence]`
+///
+/// - `activation_level`: accumulated incoming signal (sums over all
+///   locus-subject changes in the inbox).
+/// - `severity`: updated when a locus change exceeds `activation_threshold`
+///   (set to the max incoming signal seen so far).
+/// - `confidence`: nudged upward when subscribed relationships change
+///   (each notification adds `confidence_per_rel_change`).
+///
+/// ## Behaviour
+///
+/// On each batch where the inbox contains **locus-subject** changes, the
+/// program accumulates the signal. Once `activation_level` crosses
+/// `activation_threshold` the event "fires":
+/// - It produces a `ProposedChange` on itself to record the activation.
+/// - `structural_proposals` creates directed relationships to all
+///   `participants` (idempotent — existing edges just get an activity bump).
+///
+/// On each batch where the inbox contains **relationship-subject** changes
+/// (delivered because this locus subscribed to those relationships), the
+/// program updates `confidence` without re-firing the full activation logic.
+///
+/// ## Subscribing
+///
+/// Pass `watch_relationships` at construction time. On every
+/// `structural_proposals` call the program emits
+/// `SubscribeToRelationship` for each watched ID. Because subscriptions
+/// are idempotent the cost is O(|watch_relationships|) per batch when
+/// the event is active — typically very small.
+///
+/// ## Use case
+///
+/// Use this in integration tests to verify:
+/// 1. N-ary event participation (multiple participants get relationships).
+/// 2. Meta-locus reaction to relationship changes (confidence tracking).
+/// 3. End-to-end subscriber delivery within a single batch.
+pub struct EventLocusProgram {
+    /// Loci that participate in this event. When activated, directed
+    /// relationships `EventLocus → participant` are proposed.
+    pub participants: Vec<LocusId>,
+    /// Incoming signal sum that triggers event activation.
+    pub activation_threshold: f32,
+    /// Relationship kind used for participant edges.
+    pub event_kind: InfluenceKindId,
+    /// Relationships whose state changes should be forwarded to this
+    /// locus's inbox via the subscriber mechanism.
+    pub watch_relationships: Vec<RelationshipId>,
+    /// How much `confidence` (slot 2) increases per relationship-change
+    /// notification received.
+    pub confidence_per_rel_change: f32,
+}
+
+impl EventLocusProgram {
+    pub fn new(
+        participants: Vec<LocusId>,
+        activation_threshold: f32,
+        event_kind: InfluenceKindId,
+    ) -> Self {
+        Self {
+            participants,
+            activation_threshold,
+            event_kind,
+            watch_relationships: Vec::new(),
+            confidence_per_rel_change: 0.1,
+        }
+    }
+
+    pub fn watching(mut self, rel_ids: Vec<RelationshipId>) -> Self {
+        self.watch_relationships = rel_ids;
+        self
+    }
+}
+
+/// Slot indices for `EventLocusProgram` state.
+impl EventLocusProgram {
+    pub const ACTIVATION_SLOT: usize = 0;
+    pub const SEVERITY_SLOT: usize = 1;
+    pub const CONFIDENCE_SLOT: usize = 2;
+}
+
+impl LocusProgram for EventLocusProgram {
+    fn process(
+        &self,
+        locus: &Locus,
+        incoming: &[&Change],
+        _ctx: &dyn LocusContext,
+    ) -> Vec<ProposedChange> {
+        let current = locus.state.as_slice();
+        let mut activation = current.get(Self::ACTIVATION_SLOT).copied().unwrap_or(0.0);
+        let mut severity = current.get(Self::SEVERITY_SLOT).copied().unwrap_or(0.0);
+        let mut confidence = current.get(Self::CONFIDENCE_SLOT).copied().unwrap_or(0.0);
+
+        let mut any_locus_change = false;
+        let mut any_rel_change = false;
+
+        for change in incoming {
+            match change.subject {
+                ChangeSubject::Locus(_) => {
+                    let signal = change.after.as_slice().first().copied().unwrap_or(0.0);
+                    activation += signal;
+                    if signal > severity {
+                        severity = signal;
+                    }
+                    any_locus_change = true;
+                }
+                ChangeSubject::Relationship(_) => {
+                    // Delivered by the subscriber mechanism — a relationship
+                    // this event is monitoring just changed state.
+                    confidence += self.confidence_per_rel_change;
+                    any_rel_change = true;
+                }
+            }
+        }
+
+        if !any_locus_change && !any_rel_change {
+            return Vec::new();
+        }
+
+        vec![ProposedChange::new(
+            ChangeSubject::Locus(locus.id),
+            self.event_kind,
+            StateVector::from_slice(&[activation, severity, confidence]),
+        )]
+    }
+
+    fn structural_proposals(
+        &self,
+        locus: &Locus,
+        incoming: &[&Change],
+        _ctx: &dyn LocusContext,
+    ) -> Vec<StructuralProposal> {
+        let mut proposals = Vec::new();
+
+        // Re-subscribe to watched relationships every batch (idempotent).
+        for &rel_id in &self.watch_relationships {
+            proposals.push(StructuralProposal::subscribe(locus.id, rel_id));
+        }
+
+        // When the activation threshold is crossed, create participant edges.
+        let incoming_activation: f32 = incoming
+            .iter()
+            .filter(|c| matches!(c.subject, ChangeSubject::Locus(_)))
+            .flat_map(|c| c.after.as_slice().first().copied())
+            .sum();
+
+        let current_activation = locus.state.as_slice().first().copied().unwrap_or(0.0);
+
+        if incoming_activation + current_activation >= self.activation_threshold {
+            for &participant in &self.participants {
+                proposals.push(StructuralProposal::create_directed(locus.id, participant, self.event_kind));
+            }
+        }
+
+        proposals
     }
 }
 

@@ -23,7 +23,8 @@ use crate::cohere::Cohere;
 use crate::entity::{Entity, EntityId};
 use crate::ids::{ChangeId, InfluenceKindId, LocusId, RelationshipKindId};
 use crate::locus::Locus;
-use crate::relationship::{Endpoints, Relationship, RelationshipId};
+use crate::property::Properties;
+use crate::relationship::{Endpoints, Relationship, RelationshipId, RelationshipSlotDef};
 use crate::state::StateVector;
 use crate::BatchId;
 
@@ -96,6 +97,97 @@ pub trait LocusContext {
     fn coheres(&self, _perspective: &str) -> Option<&[Cohere]> {
         None
     }
+
+    /// Look up a relationship by id.
+    ///
+    /// Meta-loci and event-loci use this to read the current state of
+    /// specific relationships they are monitoring — e.g. after receiving
+    /// a subscription notification in their inbox. Returns `None` if the
+    /// relationship does not exist or has been pruned.
+    fn relationship(&self, _id: RelationshipId) -> Option<&Relationship> {
+        None
+    }
+
+    /// IDs of all loci directly connected to `locus` (one hop away).
+    ///
+    /// One entry per relationship — if two relationships of different kinds
+    /// connect to the same neighbor, that neighbor appears twice.
+    fn neighbor_ids(&self, locus: LocusId) -> Vec<LocusId> {
+        self.relationships_for(locus)
+            .map(|r| r.endpoints.other_than(locus))
+            .collect()
+    }
+
+    /// IDs of all loci connected to `locus` via a relationship of `kind`.
+    ///
+    /// Like `neighbor_ids` but restricts to a single influence kind.
+    fn neighbor_ids_of_kind(&self, locus: LocusId, kind: RelationshipKindId) -> Vec<LocusId> {
+        self.relationships_for(locus)
+            .filter(|r| r.kind == kind)
+            .map(|r| r.endpoints.other_than(locus))
+            .collect()
+    }
+
+    /// Find a relationship between `a` and `b` of a specific kind.
+    ///
+    /// When a locus participates in multiple relationship kinds with the
+    /// same neighbor (e.g. "trust" and "conflict"), this lets programs
+    /// select the specific edge they care about without iterating all
+    /// neighbors. Returns the first match found (there should normally
+    /// be at most one per kind pair).
+    fn relationship_between_kind(
+        &self,
+        a: LocusId,
+        b: LocusId,
+        kind: RelationshipKindId,
+    ) -> Option<&Relationship> {
+        self.relationships_for(a)
+            .find(|r| r.kind == kind && r.endpoints.involves(b))
+    }
+
+    /// Iterate all relationships that include `locus` as an endpoint,
+    /// filtered to a specific kind. Useful for programs that react only
+    /// to one type of relationship.
+    fn relationships_for_kind<'a>(
+        &'a self,
+        locus: LocusId,
+        kind: RelationshipKindId,
+    ) -> Box<dyn Iterator<Item = &'a Relationship> + 'a> {
+        Box::new(self.relationships_for(locus).filter(move |r| r.kind == kind))
+    }
+
+    /// Return the slot definitions for relationships of the given kind.
+    ///
+    /// Programs use this together with `relationship_slot` to read extra
+    /// slots by name without hard-coding slot indices. The default
+    /// implementation returns an empty slice; `BatchContext` overrides
+    /// this by threading the kind registry's slot definitions.
+    fn extra_slots_for_kind(&self, _kind: RelationshipKindId) -> &[RelationshipSlotDef] {
+        &[]
+    }
+
+    /// Read a named extra slot from a specific relationship.
+    ///
+    /// Looks up the slot index by name via `extra_slots_for_kind`, then
+    /// reads that slot from the relationship's `StateVector`. Returns
+    /// `None` if the relationship doesn't exist, the slot name is
+    /// unknown, or the index is out of bounds.
+    ///
+    /// ```rust,ignore
+    /// let hostility = ctx.relationship_slot(ab_rel_id, CONFLICT_KIND, "hostility");
+    /// ```
+    fn relationship_slot(
+        &self,
+        rel_id: RelationshipId,
+        kind: RelationshipKindId,
+        name: &str,
+    ) -> Option<f32> {
+        let rel = self.relationship(rel_id)?;
+        let slot_defs = self.extra_slots_for_kind(kind);
+        let slot_idx = slot_defs.iter().position(|s| s.name == name)?;
+        // Extra slots begin at index 2 (after built-in activity + weight).
+        rel.state.as_slice().get(2 + slot_idx).copied()
+    }
 }
 
 /// A change a locus program wants to make. The engine assigns the final
@@ -108,6 +200,14 @@ pub struct ProposedChange {
     /// Predecessors the program wants to declare beyond whatever the
     /// engine auto-detects from read tracking. Usually empty.
     pub extra_predecessors: Vec<ChangeId>,
+    /// Wall-clock timestamp to attach to the committed `Change`, in
+    /// milliseconds since the Unix epoch. When `None` the engine leaves
+    /// `Change::wall_time` as `None` too.
+    pub wall_time: Option<u64>,
+    /// Arbitrary domain properties to propagate into `Change::metadata`.
+    /// Useful for attaching provenance (source, confidence, event ID)
+    /// that doesn't fit in the numeric state.
+    pub metadata: Option<Properties>,
 }
 
 impl ProposedChange {
@@ -117,6 +217,8 @@ impl ProposedChange {
             kind,
             after,
             extra_predecessors: Vec::new(),
+            wall_time: None,
+            metadata: None,
         }
     }
 
@@ -131,8 +233,35 @@ impl ProposedChange {
         )
     }
 
+    /// Shorthand for a single-slot stimulus. The common case — one
+    /// activation value on a single-slot locus. Equivalent to calling
+    /// `stimulus(locus, kind, &[value])`.
+    ///
+    /// ```rust,ignore
+    /// ProposedChange::activation(locus_id, FIRE_KIND, 0.8)
+    /// ```
+    pub fn activation(locus: LocusId, kind: InfluenceKindId, value: f32) -> Self {
+        Self::new(
+            ChangeSubject::Locus(locus),
+            kind,
+            StateVector::from_slice(&[value]),
+        )
+    }
+
     pub fn with_extra_predecessors(mut self, preds: Vec<ChangeId>) -> Self {
         self.extra_predecessors = preds;
+        self
+    }
+
+    /// Attach a wall-clock timestamp (ms since Unix epoch) to this change.
+    pub fn with_wall_time(mut self, ms: u64) -> Self {
+        self.wall_time = Some(ms);
+        self
+    }
+
+    /// Attach arbitrary domain metadata to this change.
+    pub fn with_metadata(mut self, props: Properties) -> Self {
+        self.metadata = Some(props);
         self
     }
 }
@@ -165,6 +294,62 @@ pub enum StructuralProposal {
     /// relationship store is removed. After deletion the relationship id
     /// becomes dangling — do not reuse it.
     DeleteRelationship { rel_id: RelationshipId },
+
+    /// Subscribe `subscriber` to state changes of `rel_id`.
+    ///
+    /// After registration, whenever `rel_id`'s state is updated via a
+    /// `ChangeSubject::Relationship` change, the committed `Change` is
+    /// delivered into `subscriber`'s inbox in the **same batch** — allowing
+    /// meta-loci and event-loci to react to relationship dynamics without
+    /// a second program dispatch path.
+    ///
+    /// Subscription is idempotent: subscribing twice is equivalent to once.
+    SubscribeToRelationship {
+        subscriber: LocusId,
+        rel_id: RelationshipId,
+    },
+
+    /// Cancel a previously registered subscription. Idempotent.
+    UnsubscribeFromRelationship {
+        subscriber: LocusId,
+        rel_id: RelationshipId,
+    },
+}
+
+impl StructuralProposal {
+    /// Create a directed relationship `from → to` of `kind`.
+    ///
+    /// Equivalent to `StructuralProposal::CreateRelationship { endpoints: Endpoints::directed(from, to), kind }`.
+    /// Idempotent — if the relationship already exists, it receives an activity touch instead.
+    pub fn create_directed(from: LocusId, to: LocusId, kind: RelationshipKindId) -> Self {
+        StructuralProposal::CreateRelationship {
+            endpoints: Endpoints::directed(from, to),
+            kind,
+        }
+    }
+
+    /// Create a symmetric (undirected) relationship between `a` and `b` of `kind`.
+    pub fn create_symmetric(a: LocusId, b: LocusId, kind: RelationshipKindId) -> Self {
+        StructuralProposal::CreateRelationship {
+            endpoints: Endpoints::symmetric(a, b),
+            kind,
+        }
+    }
+
+    /// Delete a relationship by id.
+    pub fn delete(rel_id: RelationshipId) -> Self {
+        StructuralProposal::DeleteRelationship { rel_id }
+    }
+
+    /// Subscribe `subscriber` to state changes of `rel_id`.
+    pub fn subscribe(subscriber: LocusId, rel_id: RelationshipId) -> Self {
+        StructuralProposal::SubscribeToRelationship { subscriber, rel_id }
+    }
+
+    /// Cancel a subscription from `subscriber` to `rel_id`.
+    pub fn unsubscribe(subscriber: LocusId, rel_id: RelationshipId) -> Self {
+        StructuralProposal::UnsubscribeFromRelationship { subscriber, rel_id }
+    }
 }
 
 /// User-supplied behavior for a single locus kind.
@@ -195,6 +380,28 @@ pub trait LocusProgram: Send + Sync {
     /// The default implementation returns an empty vec — programs only
     /// override this when they need topology mutation.
     fn structural_proposals(&self, _locus: &Locus, _incoming: &[&Change], _ctx: &dyn LocusContext) -> Vec<StructuralProposal> {
+        Vec::new()
+    }
+
+    /// Declare which relationships this locus should subscribe to from the
+    /// very first batch, before any changes have been committed.
+    ///
+    /// Called once by `Engine::bootstrap_subscriptions` during world setup.
+    /// This solves the chicken-and-egg problem: `structural_proposals` only
+    /// runs when the locus receives an incoming change, but subscriptions
+    /// must be in place *before* the first relevant relationship change
+    /// fires so the notification is not missed.
+    ///
+    /// Programs that monitor specific, pre-existing relationships (e.g. an
+    /// analyst locus watching a relationship created at world-construction
+    /// time) should declare them here. Programs that subscribe dynamically
+    /// (e.g. `EventLocusProgram` subscribing after activation) continue to
+    /// use `StructuralProposal::SubscribeToRelationship` in
+    /// `structural_proposals`.
+    ///
+    /// The default implementation returns an empty vec — most programs do
+    /// not need to override this.
+    fn initial_subscriptions(&self, _locus: &Locus) -> Vec<RelationshipId> {
         Vec::new()
     }
 }

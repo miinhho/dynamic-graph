@@ -18,6 +18,7 @@
 //! and are recorded in the log but do not trigger program dispatch.
 
 use crate::ids::{BatchId, ChangeId, InfluenceKindId, LocusId};
+use crate::property::Properties;
 use crate::relationship::RelationshipId;
 use crate::state::StateVector;
 
@@ -44,6 +45,16 @@ pub struct Change {
     pub before: StateVector,
     pub after: StateVector,
     pub batch: BatchId,
+    /// Wall-clock timestamp at the time the change was committed, in
+    /// milliseconds since the Unix epoch. `None` when the engine is
+    /// running in a context where wall time is unavailable or not needed
+    /// (e.g. deterministic replay, unit tests).
+    pub wall_time: Option<u64>,
+    /// Arbitrary domain properties attached to this change. Use this for
+    /// provenance metadata (source system, confidence score, event ID)
+    /// that does not fit in the numeric `StateVector`. `None` = no
+    /// metadata (zero overhead on the hot path).
+    pub metadata: Option<Properties>,
 }
 
 impl Change {
@@ -66,6 +77,8 @@ impl Change {
             before,
             after,
             batch,
+            wall_time: None,
+            metadata: None,
         }
     }
 
@@ -105,6 +118,8 @@ mod tests {
             before: StateVector::empty(),
             after: StateVector::empty(),
             batch: BatchId(1),
+            wall_time: None,
+            metadata: None,
         };
         assert!(!c.is_stimulus());
     }

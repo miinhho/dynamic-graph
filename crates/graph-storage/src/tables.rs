@@ -32,8 +32,12 @@ pub const NAMES: TableDefinition<&str, u64> = TableDefinition::new("names");
 /// Alias → `LocusId(u64)`.
 pub const ALIASES: TableDefinition<&str, u64> = TableDefinition::new("aliases");
 
+/// Subscription records: `LocusId(u64)` (subscriber) → multimap → `RelationshipId(u64)`.
+pub const SUBSCRIPTIONS: MultimapTableDefinition<u64, u64> =
+    MultimapTableDefinition::new("subscriptions");
+
 /// Metadata counters: string key → u64 value.
-/// Keys: "current_batch", "next_change_id", "next_relationship_id", "next_entity_id".
+/// Keys: "current_batch", "next_change_id", "next_relationship_id", "next_entity_id", "schema_version".
 pub const META: TableDefinition<&str, u64> = TableDefinition::new("meta");
 
 // ── meta key constants ──────────────────────────────────────────────
@@ -42,3 +46,4 @@ pub const META_CURRENT_BATCH: &str = "current_batch";
 pub const META_NEXT_CHANGE_ID: &str = "next_change_id";
 pub const META_NEXT_RELATIONSHIP_ID: &str = "next_relationship_id";
 pub const META_NEXT_ENTITY_ID: &str = "next_entity_id";
+pub const META_SCHEMA_VERSION: &str = "schema_version";

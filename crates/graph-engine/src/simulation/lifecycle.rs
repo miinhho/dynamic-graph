@@ -28,7 +28,7 @@ impl Simulation {
         influences: InfluenceKindRegistry,
         config: SimulationConfig,
     ) -> Result<Self, graph_storage::StorageError> {
-        let storage = graph_storage::Storage::open(path.as_ref())?;
+        let storage = graph_storage::Storage::open_and_migrate(path.as_ref())?;
         let world = storage.load_world()?;
         Ok(Self::with_config(world, loci, influences, config))
     }

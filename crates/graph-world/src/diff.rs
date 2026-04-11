@@ -44,10 +44,13 @@
 //! - Changes: O(k) where k = changes in the range (via `by_batch` index).
 //! - Relationships: O(R) — iterates all relationships and checks lineage.
 //! - Entities: O(E × L_avg) — iterates layers per entity.
+//! - Subscriptions: O(A) where A = total audit log length. Call
+//!   `SubscriptionStore::trim_audit_before` alongside `ChangeLog::trim_before_batch`
+//!   to keep this O(recent events).
 //!
 //! For large worlds with long histories, consider narrowing the range.
 
-use graph_core::{BatchId, ChangeId, EntityId, RelationshipId};
+use graph_core::{BatchId, ChangeId, EntityId, LocusId, RelationshipId};
 
 /// Summary of world state changes between `from_batch` (inclusive) and
 /// `to_batch` (exclusive).
@@ -78,6 +81,12 @@ pub struct WorldDiff {
     /// Entities that deposited at least one layer in the range. Includes
     /// newly born entities and entities that received a continuation layer.
     pub entities_changed: Vec<EntityId>,
+
+    // ── subscription layer ────────────────────────────────────────────────
+    /// (subscriber, rel_id) pairs for new subscriptions registered in the range.
+    pub subscriptions_added: Vec<(LocusId, RelationshipId)>,
+    /// (subscriber, rel_id) pairs for subscriptions cancelled in the range.
+    pub subscriptions_removed: Vec<(LocusId, RelationshipId)>,
 }
 
 impl WorldDiff {
@@ -93,6 +102,8 @@ impl WorldDiff {
             && self.relationships_created.is_empty()
             && self.relationships_updated.is_empty()
             && self.entities_changed.is_empty()
+            && self.subscriptions_added.is_empty()
+            && self.subscriptions_removed.is_empty()
     }
 
     /// Build a `WorldDiff` for `[from, to)`.
@@ -146,6 +157,17 @@ impl WorldDiff {
             }
         }
 
+        // ── subscriptions ─────────────────────────────────────────────────
+        let mut subscriptions_added = Vec::new();
+        let mut subscriptions_removed = Vec::new();
+        for event in world.subscriptions().events_in_range(from, to) {
+            if event.subscribed {
+                subscriptions_added.push((event.subscriber, event.rel_id));
+            } else {
+                subscriptions_removed.push((event.subscriber, event.rel_id));
+            }
+        }
+
         WorldDiff {
             from_batch: from,
             to_batch: to,
@@ -153,6 +175,8 @@ impl WorldDiff {
             relationships_created,
             relationships_updated,
             entities_changed,
+            subscriptions_added,
+            subscriptions_removed,
         }
     }
 }
@@ -182,6 +206,8 @@ mod tests {
             before: SV::zeros(1),
             after: SV::from_slice(&[1.0]),
             batch,
+            wall_time: None,
+            metadata: None,
         });
         id
     }
@@ -225,5 +251,66 @@ mod tests {
         let w = two_locus_world();
         let diff = w.diff_between(BatchId(5), BatchId(3));
         assert!(diff.is_empty());
+    }
+
+    #[test]
+    fn diff_captures_subscription_events() {
+        let mut w = two_locus_world();
+        let locus = LocusId(0);
+
+        // Manufacture a relationship id without actually inserting one — we just
+        // need something to subscribe to for this test.
+        use graph_core::RelationshipId;
+        let rel = RelationshipId(42);
+
+        let before = w.current_batch(); // batch 0
+        // Subscribe at batch 0.
+        w.subscriptions_mut().subscribe_at(locus, rel, Some(before));
+        w.advance_batch(); // batch 1
+
+        let diff = w.diff_between(before, w.current_batch());
+        assert_eq!(diff.subscriptions_added, vec![(locus, rel)]);
+        assert!(diff.subscriptions_removed.is_empty());
+    }
+
+    #[test]
+    fn diff_captures_unsubscribe_event() {
+        let mut w = two_locus_world();
+        let locus = LocusId(0);
+        use graph_core::RelationshipId;
+        let rel = RelationshipId(42);
+
+        // Subscribe before the window we care about.
+        w.subscriptions_mut().subscribe_at(locus, rel, None);
+
+        w.advance_batch(); // batch 1
+        let from = w.current_batch();
+        // Unsubscribe inside the window.
+        w.subscriptions_mut().unsubscribe_at(locus, rel, Some(from));
+        w.advance_batch(); // batch 2
+
+        let diff = w.diff_between(from, w.current_batch());
+        assert!(diff.subscriptions_added.is_empty());
+        assert_eq!(diff.subscriptions_removed, vec![(locus, rel)]);
+    }
+
+    #[test]
+    fn diff_excludes_subscription_events_outside_range() {
+        let mut w = two_locus_world();
+        let locus = LocusId(0);
+        use graph_core::RelationshipId;
+        let rel_a = RelationshipId(10);
+        let rel_b = RelationshipId(11);
+
+        let batch0 = w.current_batch(); // batch 0
+        w.subscriptions_mut().subscribe_at(locus, rel_a, Some(batch0));
+        w.advance_batch(); // batch 1
+        let batch1 = w.current_batch();
+        w.subscriptions_mut().subscribe_at(locus, rel_b, Some(batch1));
+        w.advance_batch(); // batch 2
+
+        // Only look at batch 1 (exclusive of batch 0 event).
+        let diff = w.diff_between(batch1, w.current_batch());
+        assert_eq!(diff.subscriptions_added, vec![(locus, rel_b)]);
     }
 }

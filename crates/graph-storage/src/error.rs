@@ -18,6 +18,8 @@ pub enum StorageError {
     Serde(postcard::Error),
     /// The database is empty (no world has been saved yet).
     Empty,
+    /// The database was written by a different schema version.
+    SchemaMismatch { found: u64, expected: u64 },
 }
 
 impl fmt::Display for StorageError {
@@ -30,6 +32,9 @@ impl fmt::Display for StorageError {
             Self::Storage(e) => write!(f, "storage error: {e}"),
             Self::Serde(e) => write!(f, "storage serialization error: {e}"),
             Self::Empty => write!(f, "storage is empty — no world saved yet"),
+            Self::SchemaMismatch { found, expected } => write!(
+                f, "schema mismatch: database version {found} is incompatible with code version {expected}"
+            ),
         }
     }
 }
@@ -44,6 +49,7 @@ impl std::error::Error for StorageError {
             Self::Storage(e) => Some(e.as_ref()),
             Self::Serde(e) => Some(e),
             Self::Empty => None,
+            Self::SchemaMismatch { .. } => None,
         }
     }
 }

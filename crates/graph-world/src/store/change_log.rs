@@ -241,6 +241,8 @@ mod tests {
             before: StateVector::empty(),
             after: StateVector::empty(),
             batch: BatchId(batch),
+            wall_time: None,
+            metadata: None,
         }
     }
 

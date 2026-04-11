@@ -18,7 +18,7 @@ pub(crate) mod world_ops;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use graph_core::{
-    Change, ChangeId, ChangeSubject, LocusId, ProposedChange, Relationship,
+    Change, ChangeId, ChangeSubject, LocusId, ProposedChange, Relationship, RelationshipId,
     StructuralProposal,
 };
 use graph_world::World;
@@ -27,7 +27,7 @@ use crate::cohere::CoherePerspective;
 use crate::emergence::EmergencePerspective;
 use crate::registry::{InfluenceKindRegistry, LocusKindRegistry};
 
-use batch::{DecayParams, DispatchInput, DispatchResult, PendingChange};
+use batch::{DispatchInput, DispatchResult, PendingChange};
 
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -90,6 +90,8 @@ impl Engine {
         stimuli: Vec<ProposedChange>,
     ) -> TickResult {
         let mut result = TickResult::default();
+        // Pre-build once per tick; the registry is immutable for the duration.
+        let slot_defs = influence_registry.slot_defs();
         let mut pending: Vec<PendingChange> = stimuli
             .into_iter()
             .map(|proposed| PendingChange {
@@ -110,6 +112,9 @@ impl Engine {
         let mut affected_loci_set: FxHashSet<LocusId> = FxHashSet::default();
         let mut plasticity_obs: Vec<(graph_core::RelationshipId, graph_core::InfluenceKindId, f32, f32)> = Vec::new();
         let mut structural_proposals: Vec<StructuralProposal> = Vec::new();
+        // Relationship changes that have subscribers: collected during commit,
+        // resolved to subscriber loci after the commit loop.
+        let mut pending_rel_notifications: Vec<(RelationshipId, ChangeId)> = Vec::new();
 
         while !pending.is_empty() {
             if result.batches_committed >= self.config.max_batches_per_tick {
@@ -123,6 +128,7 @@ impl Engine {
             affected_loci_set.clear();
             plasticity_obs.clear();
             structural_proposals.clear();
+            pending_rel_notifications.clear();
 
             for pending_change in pending.drain(..) {
                 let PendingChange { proposed, derived_predecessors } = pending_change;
@@ -166,6 +172,8 @@ impl Engine {
                             before,
                             after: stabilized_after.clone(),
                             batch,
+                            wall_time: proposed.wall_time,
+                            metadata: proposed.metadata,
                         };
                         if let Some(locus) = world.locus_mut(locus_id) {
                             locus.state = stabilized_after;
@@ -174,15 +182,9 @@ impl Engine {
                         let plasticity_active = kind_cfg
                             .map(|cfg| cfg.plasticity.is_active())
                             .unwrap_or(false);
-                        let decay = kind_cfg
-                            .map(|cfg| DecayParams {
-                                activity: cfg.decay_per_batch,
-                                weight: cfg.plasticity.weight_decay,
-                            })
-                            .unwrap_or(DecayParams { activity: 1.0, weight: 1.0 });
                         for (from_locus, pre_signal) in cross_locus_preds {
                             let rel_id = batch::auto_emerge_relationship(
-                                world, from_locus, locus_id, kind, id, batch.0, &decay,
+                                world, from_locus, locus_id, kind, id, batch.0, kind_cfg,
                             );
                             if plasticity_active {
                                 plasticity_obs.push((rel_id, kind, pre_signal, post_signal));
@@ -211,6 +213,8 @@ impl Engine {
                             before,
                             after: stabilized_after.clone(),
                             batch,
+                            wall_time: proposed.wall_time,
+                            metadata: proposed.metadata,
                         };
                         if let Some(rel) = world.relationships_mut().get_mut(rel_id) {
                             rel.state = stabilized_after;
@@ -218,9 +222,28 @@ impl Engine {
                             rel.lineage.change_count += 1;
                         }
                         world.append_change(change);
+                        // Queue subscriber notification if anyone is watching
+                        // this relationship. Resolved after the commit loop.
+                        if world.subscriptions().has_subscribers(rel_id) {
+                            pending_rel_notifications.push((rel_id, id));
+                        }
                     }
                 }
                 result.changes_committed += 1;
+            }
+
+            // Resolve relationship-change notifications to subscriber loci.
+            // Each subscriber receives the relationship's committed Change
+            // in its inbox, triggering program dispatch in the same batch.
+            for (rel_id, change_id) in pending_rel_notifications.drain(..) {
+                let subscribers: Vec<LocusId> =
+                    world.subscriptions().subscribers(rel_id).collect();
+                for subscriber in subscribers {
+                    committed_ids_by_locus.entry(subscriber).or_default().push(change_id);
+                    if affected_loci_set.insert(subscriber) {
+                        affected_loci.push(subscriber);
+                    }
+                }
             }
 
             // Dispatch programs for every locus that just received at
@@ -254,11 +277,10 @@ impl Engine {
                 .collect();
 
             // Build a read-only context from the world's current stores.
-            // All references are valid for the dispatch phase (no mutations
-            // until apply_structural_proposals below).
+            // slot_defs is borrowed from the registry — no per-batch allocation.
             let batch_ctx = graph_world::BatchContext::new(
                 world.loci(), world.relationships(), world.log(),
-                world.entities(), world.coheres(), batch,
+                world.entities(), world.coheres(), batch, slot_defs,
             );
 
             let dispatch_results: Vec<DispatchResult> = dispatch_inputs
@@ -283,7 +305,11 @@ impl Engine {
             }
 
             // Apply structural proposals at end-of-batch.
-            batch::apply_structural_proposals(world, std::mem::take(&mut structural_proposals));
+            batch::apply_structural_proposals(
+                world,
+                std::mem::take(&mut structural_proposals),
+                influence_registry,
+            );
 
             // End-of-batch: apply Hebbian plasticity updates. Each
             // observation (rel_id, kind, pre, post) contributes
@@ -375,6 +401,44 @@ impl Engine {
         policy: &dyn graph_core::EntityWeatheringPolicy,
     ) {
         world_ops::weather_entities(world, policy);
+    }
+
+    /// Pre-wire subscriptions declared by programs via
+    /// `LocusProgram::initial_subscriptions`.
+    ///
+    /// Call this **once** after registering all loci and programs, before
+    /// the first `tick`. Programs that need to monitor pre-existing
+    /// relationships from the very first batch (e.g. an analyst locus that
+    /// must react to the opening state of a conflict edge) should return
+    /// those `RelationshipId`s from `initial_subscriptions`. Programs that
+    /// subscribe dynamically (e.g. after an activation threshold is crossed)
+    /// should continue to use `StructuralProposal::SubscribeToRelationship`
+    /// inside `structural_proposals` instead.
+    ///
+    /// This is idempotent — calling it multiple times is safe, though
+    /// wasteful. Subscriptions for non-existent relationships are silently
+    /// ignored.
+    pub fn bootstrap_subscriptions(
+        &self,
+        world: &mut World,
+        loci_registry: &LocusKindRegistry,
+    ) {
+        // Collect (locus_id, rel_ids) pairs to avoid borrow conflicts.
+        let pending: Vec<(LocusId, Vec<RelationshipId>)> = world
+            .loci()
+            .iter()
+            .filter_map(|locus| {
+                let program = loci_registry.get(locus.kind)?;
+                let subs = program.initial_subscriptions(locus);
+                if subs.is_empty() { None } else { Some((locus.id, subs)) }
+            })
+            .collect();
+
+        for (locus_id, rel_ids) in pending {
+            for rel_id in rel_ids {
+                world.subscriptions_mut().subscribe(locus_id, rel_id);
+            }
+        }
     }
 }
 

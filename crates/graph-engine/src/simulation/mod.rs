@@ -25,7 +25,7 @@ pub use config::{SimulationConfig, StepObservation};
 
 use rustc_hash::FxHashMap;
 
-use graph_core::{BatchId, InfluenceKindId, ProposedChange, WorldEvent};
+use graph_core::{BatchId, InfluenceKindId, ProposedChange, RelationshipId, WorldEvent};
 use graph_world::World;
 
 use crate::regime::AdaptiveGuardRail;
@@ -41,6 +41,32 @@ use graph_storage::Storage;
 /// Bundles the world, registries, engine, regime classifier, and
 /// adaptive guard rail into a single step-by-step interface.
 pub struct Simulation {
+    /// Direct read/write access to the world state.
+    ///
+    /// # Invariants — direct mutation can break these
+    ///
+    /// Most callers should use `Simulation` methods rather than mutating
+    /// `world` directly. The following engine invariants can be violated by
+    /// bypassing the normal mutation paths:
+    ///
+    /// - **Change log coherence**: `ChangeLog` is append-only and relies on
+    ///   ChangeId density (`id − offset = index`). Inserting non-sequential
+    ///   IDs or removing entries without `trim_before_batch` corrupts `get()`.
+    /// - **Batch monotonicity**: `world.advance_batch()` must be called only
+    ///   by the engine. Calling it externally desynchronizes `prev_batch` and
+    ///   breaks per-tick metrics and storage commit ranges.
+    /// - **Subscription consistency**: add/remove loci or relationships
+    ///   without going through `StructuralProposal` and the subscription
+    ///   store's `remove_locus`/`remove_relationship` helpers will leave
+    ///   dangling subscriber entries that deliver notifications to gone IDs.
+    /// - **Relationship index sync**: `RelationshipStore` maintains a
+    ///   `by_locus` index. Inserting or removing relationships directly
+    ///   (not via the store's own methods) desynchronizes the index and
+    ///   breaks neighbor traversal.
+    /// - **Subscription audit log**: calling `subscribe`/`unsubscribe`
+    ///   directly (without a batch tag) produces events not visible to
+    ///   `WorldDiff`. Use `subscribe_at`/`unsubscribe_at` or a
+    ///   `StructuralProposal`.
     pub world: World,
     pub(crate) loci: LocusKindRegistry,
     /// Original influence configs — never mutated. Each tick we clone
@@ -138,6 +164,17 @@ impl Simulation {
     /// non-fatal — the simulation continues and the error is accessible
     /// via `last_storage_error()`.
     pub fn step(&mut self, stimuli: Vec<ProposedChange>) -> StepObservation {
+        // Merge any buffered stimuli (queued via `ingest`) with the caller's
+        // explicit stimuli. Without this, mixing `ingest()` + `step()` would
+        // silently drop the buffered ones.
+        let stimuli = if self.pending_stimuli.is_empty() {
+            stimuli
+        } else {
+            let mut all = std::mem::take(&mut self.pending_stimuli);
+            all.extend(stimuli);
+            all
+        };
+
         let mut effective = self.base_influences.clone();
         let kinds: Vec<InfluenceKindId> = effective.kinds().collect();
         for kind in &kinds {
@@ -202,6 +239,7 @@ impl Simulation {
         {
             let cutoff = BatchId(current_batch.0 - retention);
             self.engine.trim_change_log_to(&mut self.world, cutoff);
+            self.world.subscriptions_mut().trim_audit_before(cutoff);
         }
 
         // Cold eviction: move inactive relationships out of memory.
@@ -300,7 +338,142 @@ impl Simulation {
         self.world.entities_at_batch(batch)
     }
 
-    // ── accessors ────────────────────────────────────────────────────────
+    // ── cold → hot promotion ─────────────────────────────────────────────
+
+    /// Promote a single evicted relationship back into hot memory.
+    ///
+    /// Loads the relationship from persistent storage and inserts it into
+    /// the in-memory world. Returns `true` if the relationship was found in
+    /// storage and was not already in memory, `false` otherwise.
+    ///
+    /// No-op and returns `false` if storage is not configured.
+    #[cfg(feature = "storage")]
+    pub fn promote_relationship(&mut self, rel_id: graph_core::RelationshipId) -> bool {
+        let Some(ref storage) = self.storage else { return false; };
+        match storage.get_relationship(rel_id) {
+            Ok(Some(rel)) => self.world.restore_relationship(rel),
+            _ => false,
+        }
+    }
+
+    /// Promote all evicted relationships that involve `locus_id`.
+    ///
+    /// Scans the stored relationship table and restores any that are not
+    /// already in hot memory. Returns the number of relationships promoted.
+    ///
+    /// This is O(total stored relationships) — use selectively for loci
+    /// that are actively participating in the simulation again after a
+    /// period of dormancy.
+    ///
+    /// No-op and returns 0 if storage is not configured.
+    #[cfg(feature = "storage")]
+    pub fn promote_relationships_for_locus(&mut self, locus_id: graph_core::LocusId) -> usize {
+        let Some(ref storage) = self.storage else { return 0; };
+        match storage.relationships_for_locus(locus_id) {
+            Ok(rels) => rels.into_iter().filter(|r| self.world.restore_relationship(r.clone())).count(),
+            Err(e) => {
+                self.last_storage_error = Some(e);
+                0
+            }
+        }
+    }
+
+    // ── slot queries ─────────────────────────────────────────────────────
+
+    /// Read a named extra slot value from a relationship's current state.
+    ///
+    /// Returns `None` if the relationship doesn't exist, the kind isn't
+    /// registered, or the slot name isn't declared for that kind.
+    pub fn rel_slot_value(
+        &self,
+        rel_id: RelationshipId,
+        kind: InfluenceKindId,
+        slot_name: &str,
+    ) -> Option<f32> {
+        let rel = self.world.relationships().get(rel_id)?;
+        self.base_influences.get(kind)?.read_slot(&rel.state, slot_name)
+    }
+
+    /// History of a named slot for a relationship, newest-first, back to `since`.
+    ///
+    /// Scans the change log for `ChangeSubject::Relationship(rel_id)` entries
+    /// and extracts the slot value from each `after` vector. Useful for
+    /// plotting how a slot (e.g. `"tension"`) evolved over time.
+    ///
+    /// Returns an empty `Vec` if the kind or slot name is unregistered.
+    pub fn slot_history(
+        &self,
+        rel_id: RelationshipId,
+        kind: InfluenceKindId,
+        slot_name: &str,
+        since: BatchId,
+    ) -> Vec<(BatchId, f32)> {
+        let slot_idx = match self.base_influences.get(kind).and_then(|c| c.slot_index(slot_name)) {
+            Some(idx) => idx,
+            None => return Vec::new(),
+        };
+        self.world
+            .changes_to_relationship(rel_id)
+            .take_while(|c| c.batch.0 >= since.0)
+            .filter_map(|c| c.after.as_slice().get(slot_idx).copied().map(|v| (c.batch, v)))
+            .collect()
+    }
+
+    // ── world convenience accessors ──────────────────────────────────────
+
+    /// Current batch id — the id that will be assigned to the *next* batch
+    /// committed by a `step()` call.
+    pub fn current_batch(&self) -> graph_core::BatchId {
+        self.world.current_batch()
+    }
+
+    /// Return the locus with the given id, if it exists.
+    ///
+    /// Shorthand for `sim.world.locus(id)`. Avoids requiring callers to
+    /// know the internal `world` field layout.
+    pub fn locus(&self, id: graph_core::LocusId) -> Option<&graph_core::Locus> {
+        self.world.locus(id)
+    }
+
+    /// Return the relationship with the given id, if it exists.
+    pub fn relationship(&self, id: graph_core::RelationshipId) -> Option<&graph_core::Relationship> {
+        self.world.relationships().get(id)
+    }
+
+    /// All loci of a specific kind.
+    pub fn loci_of_kind(&self, kind: graph_core::LocusKindId) -> Vec<&graph_core::Locus> {
+        graph_query::loci_of_kind(&self.world, kind)
+    }
+
+    /// Find a relationship between two loci, if any exists.
+    ///
+    /// Checks both directed and symmetric edges in either direction.
+    /// O(k_a) where k_a is the degree of locus `a`.
+    pub fn relationship_between(
+        &self,
+        a: graph_core::LocusId,
+        b: graph_core::LocusId,
+    ) -> Option<&graph_core::Relationship> {
+        self.world.relationships().relationships_between(a, b).next()
+    }
+
+    // ── kind registry accessors ──────────────────────────────────────────
+
+    /// Resolve a locus kind name (e.g. `"ORG"`) to its `LocusKindId`,
+    /// or `None` if the name was never registered.
+    ///
+    /// Names are populated by `SimulationBuilder::locus_kind()` or
+    /// `Simulation::register_locus_kind_name()`.
+    pub fn locus_kind_id(&self, name: &str) -> Option<graph_core::LocusKindId> {
+        self.locus_kind_names.get(name).copied()
+    }
+
+    /// Resolve an influence kind name to its `InfluenceKindId`, or `None`.
+    pub fn influence_kind_id(&self, name: &str) -> Option<graph_core::InfluenceKindId> {
+        self.influence_kind_names.get(name).copied()
+    }
+
+    // ── original accessors ───────────────────────────────────────────────
 
     pub fn engine(&self) -> &Engine {
         &self.engine
@@ -531,6 +704,64 @@ mod tests {
         );
     }
 
+    #[test]
+    fn rel_slot_value_and_slot_history_work() {
+        use graph_core::{RelationshipSlotDef, RelationshipId};
+        use crate::registry::InfluenceKindConfig;
+
+        const SLOTTED: InfluenceKindId = InfluenceKindId(99);
+        const SLOT_KIND: LocusKindId = LocusKindId(10);
+
+        // Two loci with a program that emits a relationship-subject change
+        // carrying an extra slot value.
+        struct SlotProgram { peer: LocusId }
+        impl LocusProgram for SlotProgram {
+            fn process(&self, locus: &Locus, _: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+                let val = locus.state.as_slice().first().copied().unwrap_or(0.0);
+                if val < 0.001 { return Vec::new(); }
+                // Emit a relationship-subject change with extra slot at index 2.
+                vec![ProposedChange::new(
+                    ChangeSubject::Locus(self.peer),
+                    SLOTTED,
+                    StateVector::from_slice(&[val]),
+                )]
+            }
+        }
+
+        let mut world = World::new();
+        world.insert_locus(Locus::new(LocusId(0), SLOT_KIND, StateVector::zeros(1)));
+        world.insert_locus(Locus::new(LocusId(1), SLOT_KIND, StateVector::zeros(1)));
+
+        let mut loci = LocusKindRegistry::new();
+        loci.insert(SLOT_KIND, Box::new(SlotProgram { peer: LocusId(1) }));
+
+        let mut influences = InfluenceKindRegistry::new();
+        influences.insert(SLOTTED, InfluenceKindConfig::new("slotted")
+            .with_extra_slots(vec![RelationshipSlotDef::new("pressure", 0.0)]));
+
+        let mut sim = Simulation::new(world, loci, influences);
+
+        // Stimulate a few steps to build relationship history.
+        for i in 1..=3u32 {
+            sim.step(vec![ProposedChange::new(
+                ChangeSubject::Locus(LocusId(0)),
+                SLOTTED,
+                StateVector::from_slice(&[i as f32 * 0.1]),
+            )]);
+        }
+
+        // The relationship between locus 0 and 1 should exist.
+        assert!(sim.world.relationships().len() >= 1);
+
+        // rel_slot_value: unknown slot returns None.
+        let rel_id = RelationshipId(0);
+        assert!(sim.rel_slot_value(rel_id, SLOTTED, "nonexistent").is_none());
+
+        // slot_history: unregistered kind returns empty.
+        let history = sim.slot_history(rel_id, InfluenceKindId(0), "pressure", BatchId(0));
+        assert!(history.is_empty());
+    }
+
     #[cfg(feature = "storage")]
     mod storage_tests {
         use super::*;
@@ -681,6 +912,57 @@ mod tests {
             // Relationships were evicted from memory but exist in storage.
             assert_eq!(rels_in_memory, 0, "all relationships should be evicted");
             assert!(counts.relationships > 0, "storage should still have relationships");
+        }
+
+        #[test]
+        fn promote_relationship_restores_from_storage() {
+            let f = NamedTempFile::new().unwrap();
+            let (world, loci, influences) = two_locus_world();
+            let config = SimulationConfig {
+                storage_path: Some(f.path().to_path_buf()),
+                // Evict everything immediately.
+                cold_relationship_threshold: Some(100.0),
+                cold_relationship_min_idle_batches: 0,
+                ..Default::default()
+            };
+            let mut sim = Simulation::with_config(world, loci, influences, config);
+            sim.step(vec![stimulus_to(LocusId(0), 1.0)]);
+
+            // All relationships are now evicted from memory.
+            assert_eq!(sim.world.relationships().len(), 0);
+            let stored_count = sim.storage().unwrap().table_counts().unwrap().relationships;
+            assert!(stored_count > 0);
+
+            // Promote back by relationship ID.
+            let rel_id = graph_core::RelationshipId(0);
+            let was_promoted = sim.promote_relationship(rel_id);
+            assert!(was_promoted);
+            assert_eq!(sim.world.relationships().len(), 1);
+
+            // Promoting the same relationship again is a no-op.
+            assert!(!sim.promote_relationship(rel_id));
+            assert_eq!(sim.world.relationships().len(), 1);
+        }
+
+        #[test]
+        fn promote_relationships_for_locus_restores_all_edges() {
+            let f = NamedTempFile::new().unwrap();
+            let (world, loci, influences) = two_locus_world();
+            let config = SimulationConfig {
+                storage_path: Some(f.path().to_path_buf()),
+                cold_relationship_threshold: Some(100.0),
+                cold_relationship_min_idle_batches: 0,
+                ..Default::default()
+            };
+            let mut sim = Simulation::with_config(world, loci, influences, config);
+            sim.step(vec![stimulus_to(LocusId(0), 1.0)]);
+
+            assert_eq!(sim.world.relationships().len(), 0);
+
+            // Promote all relationships involving locus 0.
+            let promoted = sim.promote_relationships_for_locus(LocusId(0));
+            assert!(promoted > 0);
+            assert_eq!(sim.world.relationships().len(), promoted);
         }
     }
 }

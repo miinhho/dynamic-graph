@@ -20,6 +20,40 @@
 use crate::ids::{ChangeId, InfluenceKindId, LocusId, RelationshipKindId};
 use crate::state::StateVector;
 
+/// Definition of one user-defined extra slot in a relationship's `StateVector`.
+///
+/// By default, relationships carry exactly two built-in slots:
+/// - slot 0: activity score (incremented on each touch, decayed per batch)
+/// - slot 1: Hebbian weight (updated by plasticity rule)
+///
+/// `RelationshipSlotDef` lets users attach domain-specific metrics — e.g.
+/// `hostility`, `trust`, or `supply_rate` for a real-world event model —
+/// without wrapping the `Relationship` type.
+///
+/// Extra slots occupy indices **2, 3, 4, …** in the `StateVector`, in the
+/// order they appear in `InfluenceKindConfig::extra_slots`.
+#[derive(Debug, Clone)]
+pub struct RelationshipSlotDef {
+    /// Human-readable name for diagnostics and slot-by-name access.
+    pub name: &'static str,
+    /// Value assigned when the relationship is first created.
+    pub default: f32,
+    /// Per-batch multiplicative decay applied during lazy-decay flush.
+    /// `None` = this slot is not decayed. `Some(1.0)` = explicit no-decay.
+    pub decay: Option<f32>,
+}
+
+impl RelationshipSlotDef {
+    pub fn new(name: &'static str, default: f32) -> Self {
+        Self { name, default, decay: None }
+    }
+
+    pub fn with_decay(mut self, decay: f32) -> Self {
+        self.decay = Some(decay);
+        self
+    }
+}
+
 /// Identity of a relationship in the relationship store.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -40,6 +74,18 @@ pub enum Endpoints {
 }
 
 impl Endpoints {
+    /// Shorthand for `Endpoints::Directed { from, to }`.
+    #[inline]
+    pub fn directed(from: LocusId, to: LocusId) -> Self {
+        Endpoints::Directed { from, to }
+    }
+
+    /// Shorthand for `Endpoints::Symmetric { a, b }`.
+    #[inline]
+    pub fn symmetric(a: LocusId, b: LocusId) -> Self {
+        Endpoints::Symmetric { a, b }
+    }
+
     /// Returns `true` if every endpoint in this relationship is contained
     /// in `set`. Used by `World::induced_subgraph`.
     pub fn all_endpoints_in(&self, set: &rustc_hash::FxHashSet<LocusId>) -> bool {

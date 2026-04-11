@@ -53,6 +53,17 @@ pub(crate) fn flush_relationship_decay(
                 if let Some(w) = slots.get_mut(Relationship::WEIGHT_SLOT) {
                     *w *= wt_factor;
                 }
+                // Decay extra slots with their per-slot rates.
+                if let Some(cfg) = cfg {
+                    for (i, slot_def) in cfg.extra_slots.iter().enumerate() {
+                        if let Some(factor) = slot_def.decay {
+                            let idx = 2 + i;
+                            if let Some(v) = slots.get_mut(idx) {
+                                *v *= factor.powi(delta as i32);
+                            }
+                        }
+                    }
+                }
                 rel.last_decayed_batch = current_batch;
             }
             // Check if this relationship should be pruned.
@@ -66,12 +77,15 @@ pub(crate) fn flush_relationship_decay(
         .collect();
 
     // Phase 2: remove pruned relationships (requires &mut, sequential).
+    // Also clean up any subscriptions pointing at pruned relationships so
+    // subscribers don't receive notifications for non-existent edges.
     let pruned = to_prune.len();
     let events: Vec<WorldEvent> = to_prune
         .iter()
         .map(|&id| WorldEvent::RelationshipPruned { relationship: id })
         .collect();
     for rel_id in to_prune {
+        world.subscriptions_mut().remove_relationship(rel_id);
         world.relationships_mut().remove(rel_id);
     }
     (pruned, events)

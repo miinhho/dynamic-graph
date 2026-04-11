@@ -25,6 +25,7 @@ use crate::store::locus_store::LocusStore;
 use crate::store::name_index::NameIndex;
 use crate::store::property_store::PropertyStore;
 use crate::store::relationship_store::RelationshipStore;
+use crate::store::subscription_store::SubscriptionStore;
 
 #[derive(Debug, Default, Clone)]
 pub struct World {
@@ -37,6 +38,7 @@ pub struct World {
     pub(crate) log: ChangeLog,
     pub(crate) current_batch: BatchId,
     pub(crate) next_change_id: u64,
+    subscriptions: SubscriptionStore,
 }
 
 impl World {
@@ -82,6 +84,14 @@ impl World {
 
     pub fn coheres_mut(&mut self) -> &mut CohereStore {
         &mut self.coheres
+    }
+
+    pub fn subscriptions(&self) -> &SubscriptionStore {
+        &self.subscriptions
+    }
+
+    pub fn subscriptions_mut(&mut self) -> &mut SubscriptionStore {
+        &mut self.subscriptions
     }
 
     pub fn log(&self) -> &ChangeLog {
@@ -132,6 +142,20 @@ impl World {
     pub fn advance_batch(&mut self) -> BatchId {
         self.current_batch = BatchId(self.current_batch.0 + 1);
         self.current_batch
+    }
+
+    /// Restore a relationship that was previously evicted to cold storage.
+    ///
+    /// Unlike `relationships_mut().insert()`, this is idempotent: if the
+    /// relationship is already present in memory (not evicted), the call
+    /// is a no-op and returns `false`. Returns `true` if the relationship
+    /// was actually inserted.
+    pub fn restore_relationship(&mut self, rel: graph_core::Relationship) -> bool {
+        if self.relationships.get(rel.id).is_some() {
+            return false;
+        }
+        self.relationships.insert(rel);
+        true
     }
 
     /// Remove relationships whose activity is below `threshold` and that

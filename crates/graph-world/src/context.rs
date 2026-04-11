@@ -9,7 +9,7 @@
 
 use rustc_hash::FxHashMap;
 
-use graph_core::{BatchId, Change, Cohere, Entity, EntityId, Locus, LocusContext, LocusId, Relationship};
+use graph_core::{BatchId, Change, Cohere, Entity, EntityId, Locus, LocusContext, LocusId, Relationship, RelationshipId, RelationshipKindId, RelationshipSlotDef};
 
 use crate::store::change_log::ChangeLog;
 use crate::{CohereStore, EntityStore, LocusStore, RelationshipStore};
@@ -29,6 +29,9 @@ pub struct BatchContext<'a> {
     /// belongs to multiple active entities, the one with the highest
     /// coherence wins.
     locus_to_entity: FxHashMap<LocusId, EntityId>,
+    /// Borrowed reference to the pre-built slot-definitions map from
+    /// `InfluenceKindRegistry`. Avoids per-batch cloning.
+    slot_defs: &'a FxHashMap<RelationshipKindId, Vec<RelationshipSlotDef>>,
 }
 
 impl<'a> BatchContext<'a> {
@@ -39,6 +42,7 @@ impl<'a> BatchContext<'a> {
         entities: &'a EntityStore,
         coheres: &'a CohereStore,
         batch: BatchId,
+        slot_defs: &'a FxHashMap<RelationshipKindId, Vec<RelationshipSlotDef>>,
     ) -> Self {
         // Build reverse index: for each active entity, map its members
         // to its id. If a locus appears in multiple entities, the one
@@ -61,7 +65,7 @@ impl<'a> BatchContext<'a> {
             }
         }
 
-        Self { loci, relationships, log, entities, coheres, batch, locus_to_entity }
+        Self { loci, relationships, log, entities, coheres, batch, locus_to_entity, slot_defs }
     }
 }
 
@@ -105,5 +109,13 @@ impl<'a> LocusContext for BatchContext<'a> {
 
     fn coheres(&self, perspective: &str) -> Option<&[Cohere]> {
         self.coheres.get(perspective)
+    }
+
+    fn relationship(&self, id: RelationshipId) -> Option<&Relationship> {
+        self.relationships.get(id)
+    }
+
+    fn extra_slots_for_kind(&self, kind: RelationshipKindId) -> &[RelationshipSlotDef] {
+        self.slot_defs.get(&kind).map(|v| v.as_slice()).unwrap_or(&[])
     }
 }

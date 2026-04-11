@@ -77,9 +77,7 @@ impl Simulation {
     /// Step the simulation, draining all pending ingested stimuli plus
     /// any additional explicit stimuli.
     pub fn step_with_ingest(&mut self, extra_stimuli: Vec<ProposedChange>) -> StepObservation {
-        let mut stimuli = std::mem::take(&mut self.pending_stimuli);
-        stimuli.extend(extra_stimuli);
-        self.step(stimuli)
+        self.step(extra_stimuli)
     }
 
     /// Drain pending stimuli without additional stimuli.

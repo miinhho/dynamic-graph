@@ -9,6 +9,7 @@ graph-core = { workspace = true, features = ["serde"] }
 graph-world = { workspace = true, features = ["serde"] }
 redb.workspace = true
 postcard.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 graph-testkit.workspace = true

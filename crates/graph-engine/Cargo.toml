@@ -10,11 +10,11 @@ storage = ["dep:graph-storage"]
 [dependencies]
 graph-core.workspace = true
 graph-world.workspace = true
+graph-query.workspace = true
 rustc-hash.workspace = true
 graph-storage = { workspace = true, optional = true }
 
 [dev-dependencies]
-graph-query.workspace = true
 graph-testkit.workspace = true
 criterion.workspace = true
 tempfile = "3"
