@@ -64,6 +64,15 @@ pub struct SimulationConfig {
     /// `SimulationBuilder::auto_weather` or `auto_weather_with`.
     /// `None` disables automatic weathering (the default).
     pub auto_weather_every_ticks: Option<u32>,
+    /// When `true` (the default), each `step()` automatically persists
+    /// committed batches to the redb storage backend. When `false`,
+    /// batches accumulate in memory until the caller explicitly calls
+    /// `Simulation::flush()`. No-op when storage is not configured.
+    ///
+    /// Lazy flushing reduces write amplification for high-frequency
+    /// simulations: batch N writes of 1 tick each → 1 write of N ticks.
+    #[cfg(feature = "storage")]
+    pub auto_commit: bool,
 }
 
 impl Default for SimulationConfig {
@@ -78,6 +87,8 @@ impl Default for SimulationConfig {
             cold_relationship_threshold: None,
             cold_relationship_min_idle_batches: 50,
             auto_weather_every_ticks: None,
+            #[cfg(feature = "storage")]
+            auto_commit: true,
         }
     }
 }

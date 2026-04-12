@@ -415,7 +415,9 @@ mod tests {
                 change_count: 1,
                 kinds_observed: vec![InfluenceKindId(1)],
             },
+            created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
+            metadata: None,
         });
     }
 

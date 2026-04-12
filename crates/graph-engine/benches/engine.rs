@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use graph_core::{
-    Change, ChangeSubject, Endpoints, InfluenceKindId, Locus, LocusContext, LocusId, LocusKindId,
-    LocusProgram, ProposedChange, Relationship, RelationshipLineage, StateVector, props,
+    BatchId, Change, ChangeSubject, Endpoints, InfluenceKindId, Locus, LocusContext, LocusId,
+    LocusKindId, LocusProgram, ProposedChange, Relationship, RelationshipLineage, StateVector, props,
 };
 use graph_engine::{
     DefaultEmergencePerspective, Engine, EngineConfig, InfluenceKindConfig, InfluenceKindRegistry,
@@ -546,7 +546,9 @@ fn bench_subscriber_fanout(c: &mut Criterion) {
                             created_by: None, last_touched_by: None,
                             change_count: 0, kinds_observed: vec![conflict_kind],
                         },
+                        created_batch: BatchId(0),
                         last_decayed_batch: 0,
+                        metadata: None,
                     });
 
                     // n_subs subscriber loci, all watching rel_id.
@@ -621,7 +623,9 @@ fn bench_subscriber_cold_path(c: &mut Criterion) {
                                     created_by: None, last_touched_by: None,
                                     change_count: 0, kinds_observed: vec![kind],
                                 },
+                                created_batch: BatchId(0),
                                 last_decayed_batch: 0,
+                                metadata: None,
                             });
                             id
                         })
@@ -704,7 +708,9 @@ fn bench_extra_slot_decay_flush(c: &mut Criterion) {
                                 created_by: None, last_touched_by: None,
                                 change_count: 0, kinds_observed: vec![kind],
                             },
+                            created_batch: BatchId(0),
                             last_decayed_batch: 0,
+                            metadata: None,
                         });
                     }
 

@@ -430,7 +430,9 @@ mod tests {
                 change_count: 0,
                 kinds_observed: vec![rk],
             },
+            created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
+            metadata: None,
         });
         (w, rel_id)
     }

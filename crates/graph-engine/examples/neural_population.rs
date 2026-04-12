@@ -286,12 +286,16 @@ fn build_world(topo: Arc<NetworkTopology>) -> (World, LocusKindRegistry, Influen
     // is not dispatched for the next 3 batches within the same tick.
     // This linearizes cascade amplification from O(5^N) to O(N × fan_out).
     loci.insert_with_config(KIND_EXC, LocusKindConfig {
+        name: None,
+        state_slots: Vec::new(),
         program: Box::new(ExcitatoryProgram { topo: Arc::clone(&topo) }),
         refractory_batches: 3,
         encoder: None,
         max_proposals_per_dispatch: None,
     });
     loci.insert_with_config(KIND_INH, LocusKindConfig {
+        name: None,
+        state_slots: Vec::new(),
         program: Box::new(InhibitoryProgram { topo }),
         refractory_batches: 2,
         encoder: None,
@@ -583,8 +587,10 @@ fn main() {
             WorldEvent::EntitySplit { .. } => split_count += 1,
             WorldEvent::EntityMerged { .. } => merge_count += 1,
             WorldEvent::RelationshipPruned { .. } => prune_count += 1,
+            WorldEvent::RelationshipEmerged { .. } => {}
             WorldEvent::RegimeShift { .. } => regime_shifts += 1,
             WorldEvent::CoherenceShift { .. } => coherence_shifts += 1,
+            WorldEvent::SchemaViolation { .. } => {}
         }
     }
     println!("--- Event stream ({} total events) ---", all_events.len());

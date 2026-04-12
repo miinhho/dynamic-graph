@@ -36,6 +36,13 @@ pub const ALIASES: TableDefinition<&str, u64> = TableDefinition::new("aliases");
 pub const SUBSCRIPTIONS: MultimapTableDefinition<u64, u64> =
     MultimapTableDefinition::new("subscriptions");
 
+/// Secondary index for cold→hot promotion: `LocusId(u64)` → multimap → `RelationshipId(u64)`.
+///
+/// Allows `relationships_for_locus` to do an O(k) range scan instead of
+/// an O(n) full RELATIONSHIPS table scan. Added in schema v3.
+pub const REL_BY_LOCUS: MultimapTableDefinition<u64, u64> =
+    MultimapTableDefinition::new("rel_by_locus");
+
 /// Metadata counters: string key → u64 value.
 /// Keys: "current_batch", "next_change_id", "next_relationship_id", "next_entity_id", "schema_version".
 pub const META: TableDefinition<&str, u64> = TableDefinition::new("meta");

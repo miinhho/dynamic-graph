@@ -199,7 +199,9 @@ impl World {
                 change_count: 0,
                 kinds_observed: vec![kind],
             },
+            created_batch: self.current_batch,
             last_decayed_batch: current_batch,
+            metadata: None,
         });
         id
     }
@@ -305,7 +307,9 @@ mod tests {
                     change_count: 1,
                     kinds_observed: vec![rel_kind],
                 },
+                created_batch: graph_core::BatchId(0),
                 last_decayed_batch: 0,
+                metadata: None,
             });
         }
         w
@@ -335,7 +339,9 @@ mod tests {
                     change_count: 1,
                     kinds_observed: vec![rk],
                 },
+                created_batch: graph_core::BatchId(0),
                 last_decayed_batch: 0,
+                metadata: None,
             });
         }
         w
@@ -386,7 +392,9 @@ mod tests {
                 change_count: 1,
                 kinds_observed: vec![rk],
             },
+            created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
+            metadata: None,
         });
 
         let above_0 = w.relationships_active_above(0.0).count();
@@ -429,7 +437,9 @@ mod tests {
                 change_count: 1,
                 kinds_observed: vec![rk],
             },
+            created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0, // idle since batch 0
+            metadata: None,
         });
 
         assert_eq!(w.relationships().len(), 4);

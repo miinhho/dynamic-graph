@@ -39,8 +39,9 @@ pub(crate) type DispatchResult = (Vec<ProposedChange>, Vec<StructuralProposal>, 
 /// `cfg` is the per-kind config, used to derive decay rates and to build
 /// the initial `StateVector` (with extra slots) for newly created relationships.
 ///
-/// Returns the `RelationshipId` (new or existing) so the caller can
-/// record a plasticity observation.
+/// Returns `(rel_id, is_new)` — the `RelationshipId` (new or existing) and
+/// whether the relationship was newly created (vs. an existing touch). The
+/// caller uses `is_new` to emit `WorldEvent::RelationshipEmerged`.
 pub(crate) fn auto_emerge_relationship(
     world: &mut World,
     from: graph_core::LocusId,
@@ -49,7 +50,7 @@ pub(crate) fn auto_emerge_relationship(
     change_id: ChangeId,
     current_batch: u64,
     cfg: Option<&InfluenceKindConfig>,
-) -> graph_core::RelationshipId {
+) -> (graph_core::RelationshipId, bool) {
     debug_assert!(
         cfg.is_some(),
         "auto_emerge_relationship: InfluenceKindId {kind:?} is not registered — \
@@ -58,6 +59,7 @@ pub(crate) fn auto_emerge_relationship(
     );
     let activity_decay = cfg.map(|c| c.decay_per_batch).unwrap_or(1.0);
     let weight_decay = cfg.map(|c| c.plasticity.weight_decay).unwrap_or(1.0);
+    let activity_contribution = cfg.map(|c| c.activity_contribution).unwrap_or(1.0);
 
     let endpoints = if cfg.map(|c| c.symmetric).unwrap_or(false) {
         Endpoints::Symmetric { a: from, b: to }
@@ -93,14 +95,14 @@ pub(crate) fn auto_emerge_relationship(
             rel.last_decayed_batch = current_batch;
         }
         if let Some(slot) = rel.state.as_mut_slice().get_mut(Relationship::ACTIVITY_SLOT) {
-            *slot += 1.0;
+            *slot += activity_contribution;
         }
         rel.lineage.last_touched_by = Some(change_id);
         rel.lineage.change_count += 1;
         if !rel.lineage.kinds_observed.contains(&kind) {
             rel.lineage.kinds_observed.push(kind);
         }
-        rel_id
+        (rel_id, false)
     } else {
         let new_id = store.mint_id();
         let initial_state = cfg
@@ -117,9 +119,11 @@ pub(crate) fn auto_emerge_relationship(
                 change_count: 1,
                 kinds_observed: vec![kind],
             },
+            created_batch: BatchId(current_batch),
             last_decayed_batch: current_batch,
+            metadata: None,
         });
-        new_id
+        (new_id, true)
     }
 }
 
@@ -151,9 +155,13 @@ pub(crate) fn apply_structural_proposals(
                 let store = world.relationships_mut();
                 if let Some(rel_id) = store.lookup(&key, kind) {
                     // Already exists: treat as activity touch regardless of initial_* fields.
+                    let contribution = influence_registry
+                        .get(kind)
+                        .map(|c| c.activity_contribution)
+                        .unwrap_or(1.0);
                     let rel = store.get_mut(rel_id).expect("indexed id must exist");
                     if let Some(a) = rel.state.as_mut_slice().get_mut(Relationship::ACTIVITY_SLOT) {
-                        *a += 1.0;
+                        *a += contribution;
                     }
                     rel.lineage.change_count += 1;
                 } else {
@@ -187,7 +195,9 @@ pub(crate) fn apply_structural_proposals(
                             change_count: 1,
                             kinds_observed: vec![kind],
                         },
+                        created_batch: BatchId(current_batch),
                         last_decayed_batch: current_batch,
+                        metadata: None,
                     });
                 }
             }

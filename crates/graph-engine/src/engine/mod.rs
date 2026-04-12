@@ -19,7 +19,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use graph_core::{
     Change, ChangeId, ChangeSubject, LocusId, ProposedChange, Relationship, RelationshipId,
-    StructuralProposal,
+    StructuralProposal, WorldEvent,
 };
 use graph_world::World;
 
@@ -54,6 +54,9 @@ pub struct TickResult {
     /// rather than because the system went quiescent. A caller can use
     /// this as a signal to escalate (raise the cap, log, etc.).
     pub hit_batch_cap: bool,
+    /// Events emitted during this tick: new relationships auto-emerged,
+    /// and soft schema violations (endpoint kinds not in `applies_between`).
+    pub events: Vec<graph_core::WorldEvent>,
 }
 
 /// A stateless policy object that drives the batch loop and on-demand
@@ -219,9 +222,43 @@ impl Engine {
                             .map(|cfg| cfg.plasticity.is_active())
                             .unwrap_or(false);
                         for (from_locus, pre_signal) in cross_locus_preds {
-                            let rel_id = batch::auto_emerge_relationship(
+                            // Schema violation check: if applies_between is non-empty,
+                            // verify the endpoint kinds are in the declared set.
+                            if let Some(cfg) = kind_cfg
+                                && !cfg.applies_between.is_empty()
+                            {
+                                let from_kind = world.locus(from_locus).map(|l| l.kind);
+                                let to_kind = world.locus(locus_id).map(|l| l.kind);
+                                if let (Some(fk), Some(tk)) = (from_kind, to_kind) {
+                                    if !cfg.allows_endpoint_kinds(fk, tk) {
+                                        // Emit soft violation — still create the relationship.
+                                        // rel_id is not yet known; we emit after emerge below.
+                                        result.events.push(WorldEvent::SchemaViolation {
+                                            relationship: graph_core::RelationshipId(u64::MAX), // placeholder, fixed below
+                                            kind,
+                                            from_locus_kind: fk,
+                                            to_locus_kind: tk,
+                                        });
+                                    }
+                                }
+                            }
+                            let (rel_id, is_new) = batch::auto_emerge_relationship(
                                 world, from_locus, locus_id, kind, id, batch.0, kind_cfg,
                             );
+                            // Fix placeholder rel_id in SchemaViolation if we just emitted one.
+                            if let Some(WorldEvent::SchemaViolation { relationship, .. }) = result.events.last_mut() {
+                                if *relationship == graph_core::RelationshipId(u64::MAX) {
+                                    *relationship = rel_id;
+                                }
+                            }
+                            if is_new {
+                                result.events.push(WorldEvent::RelationshipEmerged {
+                                    relationship: rel_id,
+                                    from: from_locus,
+                                    to: locus_id,
+                                    kind,
+                                });
+                            }
                             if plasticity_active {
                                 plasticity_obs.push((rel_id, kind, pre_signal, post_signal));
                             }

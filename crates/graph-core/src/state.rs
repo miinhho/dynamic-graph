@@ -1,4 +1,4 @@
-//! Plain numeric state container.
+//! Plain numeric state container and slot metadata.
 //!
 //! `StateVector` is the dumbest-possible bag of `f32` slots used uniformly
 //! across the substrate (locus state, change deltas, relationship metrics,
@@ -6,8 +6,45 @@
 //! `LocusKindId` / `InfluenceKindId` carried alongside it tells the engine
 //! and the user how to interpret each slot.
 //!
+//! `StateSlotDef` carries human-readable metadata (name, description, range)
+//! for each slot in a locus kind's `StateVector`, enabling named-slot queries
+//! and diagnostic output without encoding indices in caller code.
+//!
 //! Performance is not a concern at this layer of the redesign; correctness
 //! and clarity are. A SmallVec/aligned-buffer variant can land later.
+
+/// Metadata describing one slot in a locus's `StateVector`.
+///
+/// `StateSlotDef`s are attached to a `LocusKindConfig` so the engine and
+/// query surface can report slot names and expected ranges without the caller
+/// needing to hard-code numeric indices. They are purely advisory — the
+/// engine never enforces clamping based on `range`.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct StateSlotDef {
+    /// Short label used in diagnostics and query filters (e.g. `"belief"`).
+    pub name: String,
+    /// Optional human-readable description of what this slot represents.
+    pub description: Option<String>,
+    /// Optional `(min, max)` expected range. Advisory only — not enforced.
+    pub range: Option<(f32, f32)>,
+}
+
+impl StateSlotDef {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { name: name.into(), description: None, range: None }
+    }
+
+    pub fn with_description(mut self, desc: impl Into<String>) -> Self {
+        self.description = Some(desc.into());
+        self
+    }
+
+    pub fn with_range(mut self, min: f32, max: f32) -> Self {
+        self.range = Some((min, max));
+        self
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

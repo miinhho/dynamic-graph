@@ -98,6 +98,17 @@ impl ChangeLog {
             .filter_map(|&id| self.get(id))
     }
 
+    /// All batch IDs that have at least one committed change, in ascending order.
+    ///
+    /// Useful for iterating the full commit history without knowing the exact
+    /// batch range in advance. After `trim_before_batch`, only batches at or
+    /// after the retain boundary are returned.
+    pub fn committed_batch_ids(&self) -> Vec<BatchId> {
+        let mut ids: Vec<BatchId> = self.by_batch.keys().copied().collect();
+        ids.sort_unstable();
+        ids
+    }
+
     /// Iterate the changes whose subject is a given locus, newest first.
     /// Used by the locus program when assembling its incoming inbox.
     /// O(k) where k is the number of changes to this locus.

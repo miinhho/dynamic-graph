@@ -6,7 +6,7 @@
 //! the `Vec<WorldEvent>` itself.
 
 use crate::entity::EntityId;
-use crate::ids::BatchId;
+use crate::ids::{BatchId, InfluenceKindId, LocusId, LocusKindId};
 use crate::relationship::RelationshipId;
 
 /// A discrete event emitted by a world mutation.
@@ -47,9 +47,25 @@ pub enum WorldEvent {
         to: f32,
         batch: BatchId,
     },
+    /// A new relationship auto-emerged from co-occurrence of two loci.
+    RelationshipEmerged {
+        relationship: RelationshipId,
+        from: LocusId,
+        to: LocusId,
+        kind: InfluenceKindId,
+    },
     /// A relationship was auto-pruned due to low activity.
     RelationshipPruned {
         relationship: RelationshipId,
+    },
+    /// A relationship of `kind` emerged between loci whose kinds are not
+    /// listed in `applies_between` for that influence kind.
+    /// Soft violation — the relationship is still created; this is advisory.
+    SchemaViolation {
+        relationship: RelationshipId,
+        kind: InfluenceKindId,
+        from_locus_kind: LocusKindId,
+        to_locus_kind: LocusKindId,
     },
     /// The dynamics regime shifted.
     RegimeShift {

@@ -5,7 +5,7 @@
 
 use std::collections::{BinaryHeap, VecDeque};
 
-use graph_core::{LocusId, RelationshipKindId};
+use graph_core::{EndpointKey, Endpoints, LocusId, RelationshipId, RelationshipKindId};
 use graph_world::World;
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -237,6 +237,91 @@ pub fn directed_path_of_kind(
     })
 }
 
+// ─── Reciprocal / structural topology helpers ────────────────────────────────
+
+/// Find the reciprocal of a directed relationship.
+///
+/// For a `Directed(A→B)` edge of kind K, returns the `RelationshipId` of the
+/// `Directed(B→A)` edge of the same kind if it exists; otherwise `None`.
+///
+/// Returns `None` for `Symmetric` edges — they are inherently bidirectional
+/// and have no separate "reverse" edge.
+pub fn reciprocal_of(world: &World, rel_id: RelationshipId) -> Option<RelationshipId> {
+    let rel = world.relationships().get(rel_id)?;
+    match &rel.endpoints {
+        Endpoints::Directed { from, to } => {
+            let rev_key = EndpointKey::Directed(*to, *from);
+            world.relationships().lookup(&rev_key, rel.kind)
+        }
+        Endpoints::Symmetric { .. } => None,
+    }
+}
+
+/// Find all mutual (reciprocal) pairs in the world.
+///
+/// Returns each `(a, b)` pair once — `(a, b)` and `(b, a)` are not both
+/// reported. Pair order within the tuple is unspecified. Only `Directed`
+/// edges of the same kind are considered.
+pub fn reciprocal_pairs(world: &World) -> Vec<(RelationshipId, RelationshipId)> {
+    let mut seen: FxHashSet<RelationshipId> = FxHashSet::default();
+    let mut pairs = Vec::new();
+    for rel in world.relationships().iter() {
+        if seen.contains(&rel.id) {
+            continue;
+        }
+        if let Some(rec_id) = reciprocal_of(world, rel.id) {
+            seen.insert(rel.id);
+            seen.insert(rec_id);
+            pairs.push((rel.id, rec_id));
+        }
+    }
+    pairs
+}
+
+/// All loci whose relationship degree (number of edges in any direction) is
+/// at least `min_degree`.
+///
+/// Complexity: O(k) where k is the number of distinct loci that have at
+/// least one edge — the underlying `degree_iter` skips loci with no edges.
+pub fn hub_loci(world: &World, min_degree: usize) -> Vec<LocusId> {
+    world
+        .relationships()
+        .degree_iter()
+        .filter(|(_, degree)| *degree >= min_degree)
+        .map(|(locus, _)| locus)
+        .collect()
+}
+
+/// Immediate undirected neighbors of `locus` — all loci connected by any
+/// relationship, regardless of direction or kind.
+///
+/// This is equivalent to `reachable_from(world, locus, 1)` but avoids the
+/// BFS allocation and is more semantically clear for single-hop lookups.
+pub fn neighbors_of(world: &World, locus: LocusId) -> Vec<LocusId> {
+    neighbors(world, locus, None).collect()
+}
+
+/// Immediate undirected neighbors of `locus` via relationships of `kind` only.
+pub fn neighbors_of_kind(world: &World, locus: LocusId, kind: RelationshipKindId) -> Vec<LocusId> {
+    neighbors(world, locus, Some(kind)).collect()
+}
+
+/// All loci that have zero relationships.
+///
+/// These are structurally "unconnected" — they have never been part of a
+/// causal flow the engine observed. Useful for finding unreached loci after
+/// a simulation run.
+///
+/// Complexity: O(V) where V is the number of loci.
+pub fn isolated_loci(world: &World) -> Vec<LocusId> {
+    world
+        .loci()
+        .iter()
+        .filter(|l| world.relationships().degree(l.id) == 0)
+        .map(|l| l.id)
+        .collect()
+}
+
 // ─── Internal neighbor iterators ─────────────────────────────────────────────
 
 /// Undirected neighbors of `locus` via relationships of `kind` (or all kinds
@@ -260,7 +345,6 @@ fn successors(
     locus: LocusId,
     kind: Option<RelationshipKindId>,
 ) -> impl Iterator<Item = LocusId> + '_ {
-    use graph_core::Endpoints;
     world
         .relationships_for_locus(locus)
         .filter(move |r| kind.is_none_or(|k| r.kind == k))
@@ -279,7 +363,6 @@ fn predecessors(
     locus: LocusId,
     kind: Option<RelationshipKindId>,
 ) -> impl Iterator<Item = LocusId> + '_ {
-    use graph_core::Endpoints;
     world
         .relationships_for_locus(locus)
         .filter(move |r| kind.is_none_or(|k| r.kind == k))
@@ -513,7 +596,9 @@ mod tests {
                     change_count: 1,
                     kinds_observed: vec![rk],
                 },
-                last_decayed_batch: 0,
+            created_batch: graph_core::BatchId(0),
+            last_decayed_batch: 0,
+            metadata: None,
             });
         }
         w
@@ -539,7 +624,9 @@ mod tests {
                     change_count: 1,
                     kinds_observed: vec![rk],
                 },
-                last_decayed_batch: 0,
+            created_batch: graph_core::BatchId(0),
+            last_decayed_batch: 0,
+            metadata: None,
             });
         }
         w
@@ -614,7 +701,9 @@ mod tests {
                     change_count: 1,
                     kinds_observed: vec![rk],
                 },
-                last_decayed_batch: 0,
+            created_batch: graph_core::BatchId(0),
+            last_decayed_batch: 0,
+            metadata: None,
             });
         }
         w
@@ -681,7 +770,9 @@ mod tests {
                     change_count: 1,
                     kinds_observed: vec![kind],
                 },
-                last_decayed_batch: 0,
+            created_batch: graph_core::BatchId(0),
+            last_decayed_batch: 0,
+            metadata: None,
             });
         }
         // kind_a view: {0,1} connected, {2} and {3} isolated
@@ -718,7 +809,9 @@ mod tests {
                     created_by: None, last_touched_by: None,
                     change_count: 1, kinds_observed: vec![rk],
                 },
-                last_decayed_batch: 0,
+            created_batch: graph_core::BatchId(0),
+            last_decayed_batch: 0,
+            metadata: None,
             });
         }
         w
@@ -773,6 +866,143 @@ mod tests {
         assert!(directed_path(&w, LocusId(3), LocusId(0)).is_none());
     }
 
+    // ── reciprocal / hub / isolated ─────────────────────────────────────────
+
+    /// Build: L0 →(k1)→ L1, L1 →(k1)→ L0 (mutual), L0 →(k1)→ L2 (one-way).
+    fn reciprocal_world() -> World {
+        let lk = LocusKindId(1);
+        let rk: RelationshipKindId = InfluenceKindId(1);
+        let mut w = World::new();
+        for i in 0u64..3 {
+            w.insert_locus(Locus::new(LocusId(i), lk, StateVector::zeros(1)));
+        }
+        for (from, to) in [(0u64, 1u64), (1, 0), (0, 2)] {
+            let id = w.relationships_mut().mint_id();
+            w.relationships_mut().insert(Relationship {
+                id,
+                kind: rk,
+                endpoints: Endpoints::Directed { from: LocusId(from), to: LocusId(to) },
+                state: StateVector::from_slice(&[1.0, 0.0]),
+                lineage: RelationshipLineage {
+                    created_by: None, last_touched_by: None,
+                    change_count: 1, kinds_observed: vec![rk],
+                },
+            created_batch: graph_core::BatchId(0),
+            last_decayed_batch: 0,
+            metadata: None,
+            });
+        }
+        w
+    }
+
+    #[test]
+    fn reciprocal_of_finds_reverse_directed_edge() {
+        let w = reciprocal_world();
+        // L0→L1 should have L1→L0 as reciprocal.
+        let rel_01 = w.relationships().relationships_from(LocusId(0))
+            .find(|r| r.endpoints.target() == Some(LocusId(1)))
+            .map(|r| r.id)
+            .unwrap();
+        let rec = reciprocal_of(&w, rel_01);
+        assert!(rec.is_some());
+        let rec_rel = w.relationships().get(rec.unwrap()).unwrap();
+        assert_eq!(rec_rel.endpoints.source(), Some(LocusId(1)));
+        assert_eq!(rec_rel.endpoints.target(), Some(LocusId(0)));
+    }
+
+    #[test]
+    fn reciprocal_of_returns_none_for_one_way_edge() {
+        let w = reciprocal_world();
+        // L0→L2 has no reverse.
+        let rel_02 = w.relationships().relationships_from(LocusId(0))
+            .find(|r| r.endpoints.target() == Some(LocusId(2)))
+            .map(|r| r.id)
+            .unwrap();
+        assert!(reciprocal_of(&w, rel_02).is_none());
+    }
+
+    #[test]
+    fn reciprocal_of_returns_none_for_symmetric() {
+        let lk = LocusKindId(1);
+        let rk: RelationshipKindId = InfluenceKindId(1);
+        let mut w = World::new();
+        for i in 0u64..2 {
+            w.insert_locus(Locus::new(LocusId(i), lk, StateVector::zeros(1)));
+        }
+        let id = w.relationships_mut().mint_id();
+        w.relationships_mut().insert(Relationship {
+            id,
+            kind: rk,
+            endpoints: Endpoints::Symmetric { a: LocusId(0), b: LocusId(1) },
+            state: StateVector::from_slice(&[1.0, 0.0]),
+            lineage: RelationshipLineage {
+                created_by: None, last_touched_by: None,
+                change_count: 1, kinds_observed: vec![rk],
+            },
+            created_batch: graph_core::BatchId(0),
+            last_decayed_batch: 0,
+            metadata: None,
+        });
+        assert!(reciprocal_of(&w, id).is_none());
+    }
+
+    #[test]
+    fn reciprocal_pairs_finds_mutual_pair() {
+        let w = reciprocal_world();
+        let pairs = reciprocal_pairs(&w);
+        assert_eq!(pairs.len(), 1);
+        // Both members of the pair should be the L0↔L1 edges.
+        let (a, b) = pairs[0];
+        let rel_a = w.relationships().get(a).unwrap();
+        let rel_b = w.relationships().get(b).unwrap();
+        assert!(rel_a.endpoints.involves(LocusId(0)));
+        assert!(rel_a.endpoints.involves(LocusId(1)));
+        assert!(rel_b.endpoints.involves(LocusId(0)));
+        assert!(rel_b.endpoints.involves(LocusId(1)));
+    }
+
+    #[test]
+    fn hub_loci_filters_by_degree() {
+        let w = reciprocal_world();
+        // L0 has degree 3 (→L1, ←L1, →L2), L1 has degree 2, L2 has degree 1.
+        let hubs = hub_loci(&w, 3);
+        assert_eq!(hubs, vec![LocusId(0)]);
+
+        let all_connected = hub_loci(&w, 1);
+        assert_eq!(all_connected.len(), 3);
+
+        let none = hub_loci(&w, 10);
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn isolated_loci_returns_loci_with_no_edges() {
+        let lk = LocusKindId(1);
+        let rk: RelationshipKindId = InfluenceKindId(1);
+        let mut w = World::new();
+        for i in 0u64..4 {
+            w.insert_locus(Locus::new(LocusId(i), lk, StateVector::zeros(1)));
+        }
+        // Only L0→L1; L2 and L3 are isolated.
+        let id = w.relationships_mut().mint_id();
+        w.relationships_mut().insert(Relationship {
+            id,
+            kind: rk,
+            endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(1) },
+            state: StateVector::from_slice(&[1.0, 0.0]),
+            lineage: RelationshipLineage {
+                created_by: None, last_touched_by: None,
+                change_count: 1, kinds_observed: vec![rk],
+            },
+            created_batch: graph_core::BatchId(0),
+            last_decayed_batch: 0,
+            metadata: None,
+        });
+        let mut iso = isolated_loci(&w);
+        iso.sort();
+        assert_eq!(iso, vec![LocusId(2), LocusId(3)]);
+    }
+
     #[test]
     fn symmetric_edges_count_in_directed_traversal_both_ways() {
         let lk = LocusKindId(1);
@@ -796,7 +1026,9 @@ mod tests {
                     created_by: None, last_touched_by: None,
                     change_count: 1, kinds_observed: vec![rk],
                 },
-                last_decayed_batch: 0,
+            created_batch: graph_core::BatchId(0),
+            last_decayed_batch: 0,
+            metadata: None,
             });
         }
         // downstream from 0: crosses symmetric 0↔1, then directed 1→2 → reaches {1, 2}
@@ -807,5 +1039,56 @@ mod tests {
         let mut us = upstream_of(&w, LocusId(2), 3);
         us.sort();
         assert_eq!(us, vec![LocusId(0), LocusId(1)]);
+    }
+
+    // ── neighbors_of / neighbors_of_kind ────────────────────────────────────
+
+    #[test]
+    fn neighbors_of_returns_immediate_undirected_neighbors() {
+        // chain: 0→1→2→3→4
+        let w = chain_world(5);
+        // Locus 2 connects to both 1 (predecessor) and 3 (successor) undirectedly
+        let mut nbrs = neighbors_of(&w, LocusId(2));
+        nbrs.sort();
+        assert_eq!(nbrs, vec![LocusId(1), LocusId(3)]);
+        // Locus 0 is an endpoint — only connects to 1
+        let nbrs0 = neighbors_of(&w, LocusId(0));
+        assert_eq!(nbrs0, vec![LocusId(1)]);
+    }
+
+    #[test]
+    fn neighbors_of_kind_filters_to_specific_kind() {
+        let lk = LocusKindId(1);
+        let mut w = World::new();
+        for i in 0u64..4 {
+            w.insert_locus(Locus::new(LocusId(i), lk, StateVector::zeros(1)));
+        }
+        let rk1: RelationshipKindId = InfluenceKindId(1);
+        let rk2: RelationshipKindId = InfluenceKindId(2);
+        let id1 = w.relationships_mut().mint_id();
+        w.relationships_mut().insert(Relationship {
+            id: id1, kind: rk1,
+            endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(1) },
+            state: StateVector::from_slice(&[1.0, 0.0]),
+            lineage: RelationshipLineage { created_by: None, last_touched_by: None, change_count: 1, kinds_observed: vec![rk1] },
+            created_batch: graph_core::BatchId(0), last_decayed_batch: 0,
+            metadata: None,
+        });
+        let id2 = w.relationships_mut().mint_id();
+        w.relationships_mut().insert(Relationship {
+            id: id2, kind: rk2,
+            endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(2) },
+            state: StateVector::from_slice(&[1.0, 0.0]),
+            lineage: RelationshipLineage { created_by: None, last_touched_by: None, change_count: 1, kinds_observed: vec![rk2] },
+            created_batch: graph_core::BatchId(0), last_decayed_batch: 0,
+            metadata: None,
+        });
+        // Kind 1 neighbor of L0 is L1 only
+        assert_eq!(neighbors_of_kind(&w, LocusId(0), rk1), vec![LocusId(1)]);
+        // Kind 2 neighbor of L0 is L2 only
+        assert_eq!(neighbors_of_kind(&w, LocusId(0), rk2), vec![LocusId(2)]);
+        // No kind-3 neighbors
+        let rk3: RelationshipKindId = InfluenceKindId(3);
+        assert!(neighbors_of_kind(&w, LocusId(0), rk3).is_empty());
     }
 }

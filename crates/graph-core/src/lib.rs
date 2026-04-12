@@ -40,7 +40,7 @@ pub use stabilization::{SaturationMode, StabilizationConfig};
 pub use relationship::{
     EndpointKey, Endpoints, Relationship, RelationshipId, RelationshipLineage, RelationshipSlotDef,
 };
-pub use state::StateVector;
+pub use state::{StateSlotDef, StateVector};
 pub use event::WorldEvent;
 pub use property::{Properties, PropertyValue};
 pub use encoder::{Encoder, PassthroughEncoder};

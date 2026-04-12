@@ -228,7 +228,9 @@ mod tests {
                     change_count: 1,
                     kinds_observed: vec![rel_kind],
                 },
+                created_batch: graph_core::BatchId(0),
                 last_decayed_batch: 0,
+                metadata: None,
             });
         }
         w

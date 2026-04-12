@@ -17,7 +17,8 @@
 //! they are valid `ChangeSubject`s — relationship-subject changes update
 //! their state and feed higher emergent layers.
 
-use crate::ids::{ChangeId, InfluenceKindId, LocusId, RelationshipKindId};
+use crate::ids::{BatchId, ChangeId, InfluenceKindId, LocusId, RelationshipKindId};
+use crate::property::Properties;
 use crate::state::StateVector;
 
 /// Definition of one user-defined extra slot in a relationship's `StateVector`.
@@ -208,11 +209,27 @@ pub struct Relationship {
     /// add their own slots.
     pub state: StateVector,
     pub lineage: RelationshipLineage,
+    /// Batch in which this relationship was first created.
+    ///
+    /// Set by the engine (auto-emerge or structural proposal) to the batch
+    /// that was active at creation time. Relationships created via
+    /// `World::add_relationship` use the world's current batch. This field
+    /// survives change-log trimming, unlike `lineage.created_by`.
+    pub created_batch: BatchId,
     /// Batch number at which `state` slots were last explicitly decayed.
     /// The engine uses lazy decay: accumulated decay is applied when a
     /// relationship is touched (auto-emerge) or flushed before entity
     /// recognition. Use `decay^(current_batch - last_decayed_batch)`.
     pub last_decayed_batch: u64,
+    /// Optional domain-specific properties attached to this relationship.
+    ///
+    /// Analogous to `Change::metadata` — zero overhead on the common path
+    /// (stored as `None`), but lets users annotate relationships with
+    /// string or numeric tags without wrapping the struct.
+    ///
+    /// Example uses: semantic type labels (`"type" → "trust"`), confidence
+    /// scores (`"confidence" → 0.9`), provenance (`"source" → "pipeline-v2"`).
+    pub metadata: Option<Properties>,
 }
 
 impl Relationship {
@@ -233,6 +250,22 @@ impl Relationship {
     /// Read the learned Hebbian weight (slot 1).
     pub fn weight(&self) -> f32 {
         self.state.as_slice().get(Self::WEIGHT_SLOT).copied().unwrap_or(0.0)
+    }
+
+    /// How many batches old this relationship is: `current_batch - created_batch`.
+    #[inline]
+    pub fn age_in_batches(&self, current_batch: BatchId) -> u64 {
+        current_batch.0.saturating_sub(self.created_batch.0)
+    }
+
+    /// Combined signal strength: `activity + weight`.
+    ///
+    /// Useful for ranking relationships by overall "importance" — high
+    /// activity alone means a recently active edge, high weight alone means
+    /// a well-learned structural edge, and high strength means both.
+    #[inline]
+    pub fn strength(&self) -> f32 {
+        self.activity() + self.weight()
     }
 
     /// Returns `true` if `locus` appears in any endpoint position.
@@ -258,6 +291,20 @@ impl Relationship {
     /// Returns `None` for `Symmetric` edges.
     pub fn to(&self) -> Option<LocusId> {
         self.endpoints.target()
+    }
+
+    /// Read a string property from this relationship's metadata.
+    ///
+    /// Returns `None` when `metadata` is absent or the key is not a string.
+    pub fn get_str_property(&self, key: &str) -> Option<&str> {
+        self.metadata.as_ref()?.get_str(key)
+    }
+
+    /// Read a numeric (f64) property from this relationship's metadata.
+    ///
+    /// Returns `None` when `metadata` is absent or the key is not numeric.
+    pub fn get_f64_property(&self, key: &str) -> Option<f64> {
+        self.metadata.as_ref()?.get_f64(key)
     }
 }
 
@@ -285,7 +332,9 @@ mod tests {
                 change_count: 0,
                 kinds_observed: vec![],
             },
+            created_batch: BatchId(0),
             last_decayed_batch: 0,
+            metadata: None,
         }
     }
 

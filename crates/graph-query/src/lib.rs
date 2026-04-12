@@ -39,28 +39,49 @@
 
 mod causality;
 mod filter;
+mod query;
 mod traversal;
 
 pub use causality::{
-    causal_ancestors, changes_to_locus_in_range, changes_to_relationship_in_range,
-    is_ancestor_of, relationship_volatility, root_stimuli, root_stimuli_for_relationship,
+    causal_ancestors, causal_depth, changes_to_locus_in_range,
+    changes_to_relationship_in_range, common_ancestors, committed_batches,
+    is_ancestor_of, last_change_to_locus, last_change_to_relationship,
+    loci_changed_in_batch, relationship_volatility, relationship_volatility_all,
+    relationships_changed_in_batch, root_stimuli, root_stimuli_for_relationship,
 };
 pub use filter::{
     active_entities, entities_matching, entities_with_coherence, entities_with_member,
-    loci_matching, loci_of_kind, loci_with_f64_property, loci_with_state,
-    loci_with_str_property,
+    entity_member_loci, locus_entities, top_entity_members,
+    incoming_activity_sum, outgoing_activity_sum, net_influence_balance,
+    loci_matching, loci_of_kind, loci_top_n_by_state, loci_with_f64_property,
+    loci_with_state, loci_with_str_property,
+    locus_degree, locus_in_degree, locus_out_degree,
+    lookup_loci, lookup_relationships,
+    most_connected_loci, most_connected_loci_with_degree,
+    most_changed_relationships, relationships_by_change_count,
+    relationships_above_strength, relationships_top_n_by_strength,
+    relationships_created_in, relationships_idle_for, relationships_older_than,
+    relationship_touch_rate,
     relationships_between, relationships_between_of_kind,
     relationships_from, relationships_from_of_kind,
     relationships_to, relationships_to_of_kind,
     relationships_matching, relationships_of_kind,
     relationships_with_activity, relationships_with_slot, relationships_with_weight,
+    relationships_with_str_property, relationships_with_f64_property,
+};
+pub use query::{
+    loci, loci_from_ids, LociQuery,
+    relationships, relationships_from_ids, RelationshipsQuery,
 };
 pub use traversal::{
     connected_components, connected_components_of_kind,
     directed_path, directed_path_of_kind,
     downstream_of, downstream_of_kind,
+    hub_loci, isolated_loci,
+    neighbors_of, neighbors_of_kind,
     path_between, path_between_of_kind,
     reachable_from, reachable_from_of_kind, reachable_matching,
+    reciprocal_of, reciprocal_pairs,
     strongest_path,
     upstream_of, upstream_of_kind,
 };

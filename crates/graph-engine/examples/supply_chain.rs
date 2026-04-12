@@ -280,6 +280,8 @@ fn build_world() -> Setup {
     loci.insert(KIND_SUPPLIER, Box::new(SupplierProgram { factory: FACTORY }));
     // Factory: max 5 proposals per dispatch caps fan-out.
     loci.insert_with_config(KIND_FACTORY, LocusKindConfig {
+        name: None,
+        state_slots: Vec::new(),
         program: Box::new(FactoryProgram { warehouse: WAREHOUSE, efficiency: 0.8 }),
         refractory_batches: 0,
         encoder: None,

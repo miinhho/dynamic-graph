@@ -7,8 +7,155 @@
 //!
 //! All queries are read-only over `&World`.
 
-use graph_core::{BatchId, Change, ChangeId, LocusId, RelationshipId};
+use graph_core::{BatchId, Change, ChangeId, ChangeSubject, LocusId, RelationshipId};
 use graph_world::World;
+use rustc_hash::FxHashSet;
+
+// ─── Latest-change convenience ───────────────────────────────────────────────
+
+/// The most recent change committed to `locus`, or `None` if the locus has
+/// never been changed or its history has been fully trimmed.
+///
+/// Equivalent to `world.changes_to_locus(locus).next()` but more discoverable
+/// as a named function and avoids the iterator import.
+pub fn last_change_to_locus(world: &World, locus: LocusId) -> Option<&Change> {
+    world.changes_to_locus(locus).next()
+}
+
+/// The most recent change committed to `rel`, or `None` if the relationship
+/// has no explicit change history or it has been fully trimmed.
+///
+/// Only `ChangeSubject::Relationship` changes are considered (subscription
+/// observer changes). Auto-emergence touches are not recorded as
+/// relationship-subject changes.
+pub fn last_change_to_relationship(world: &World, rel: RelationshipId) -> Option<&Change> {
+    world.changes_to_relationship(rel).next()
+}
+
+// ─── Committed batch discovery ───────────────────────────────────────────────
+
+/// All batch IDs that have at least one committed change, in ascending order.
+///
+/// Wraps `ChangeLog::committed_batch_ids`. Use this to iterate the full commit
+/// history without needing to know the exact batch range in advance:
+///
+/// ```ignore
+/// for batch in graph_query::committed_batches(&world) {
+///     let changed = graph_query::loci_changed_in_batch(&world, batch);
+///     // …
+/// }
+/// ```
+///
+/// After `trim_before_batch`, only batches at or after the retain boundary
+/// are returned.
+pub fn committed_batches(world: &World) -> Vec<BatchId> {
+    world.log().committed_batch_ids()
+}
+
+// ─── Batch-temporal queries ───────────────────────────────────────────────────
+
+/// All loci that had at least one change committed in `batch`.
+///
+/// Uses the `ChangeLog::batch` reverse index — O(k) where k is the number of
+/// changes in that batch. Deduplicates: each locus appears at most once even
+/// if it had multiple changes in the batch.
+pub fn loci_changed_in_batch(world: &World, batch: BatchId) -> Vec<LocusId> {
+    let mut seen = FxHashSet::default();
+    world
+        .log()
+        .batch(batch)
+        .filter_map(|c| match c.subject {
+            ChangeSubject::Locus(id) => {
+                if seen.insert(id) { Some(id) } else { None }
+            }
+            ChangeSubject::Relationship(_) => None,
+        })
+        .collect()
+}
+
+/// All relationships that had at least one explicit change committed in `batch`.
+///
+/// Only changes with `ChangeSubject::Relationship` are considered — changes
+/// that merely touched a relationship via locus auto-emergence are not
+/// recorded as relationship-subject changes and will not appear here.
+///
+/// Deduplicates: each relationship appears at most once.
+pub fn relationships_changed_in_batch(world: &World, batch: BatchId) -> Vec<RelationshipId> {
+    let mut seen = FxHashSet::default();
+    world
+        .log()
+        .batch(batch)
+        .filter_map(|c| match c.subject {
+            ChangeSubject::Relationship(id) => {
+                if seen.insert(id) { Some(id) } else { None }
+            }
+            ChangeSubject::Locus(_) => None,
+        })
+        .collect()
+}
+
+// ─── Common ancestors ─────────────────────────────────────────────────────────
+
+/// The set of changes that are causal ancestors of **both** `a` and `b`.
+///
+/// Computed as the intersection of the two ancestor BFS walks. Useful for
+/// identifying the shared causal context of two independent downstream changes.
+///
+/// Returns an empty `Vec` when either change has no ancestors, or when their
+/// ancestor sets are disjoint.
+pub fn common_ancestors(world: &World, a: ChangeId, b: ChangeId) -> Vec<ChangeId> {
+    let ancestors_a: FxHashSet<ChangeId> = causal_ancestors(world, a).into_iter().collect();
+    causal_ancestors(world, b)
+        .into_iter()
+        .filter(|id| ancestors_a.contains(id))
+        .collect()
+}
+
+// ─── Causal depth ─────────────────────────────────────────────────────────────
+
+/// The depth of `change_id` in the causal DAG — the length of the longest
+/// predecessor chain leading back to any root stimulus.
+///
+/// - Depth 0: `change_id` is a root (no predecessors, or not in the log).
+/// - Depth N: there exists a predecessor chain of length N reaching a root.
+///
+/// Uses iterative post-order DFS with memoisation to avoid stack overflow on
+/// long causal chains. Stops at changes trimmed from the log (treated as
+/// depth-0 roots from the trimmed boundary).
+pub fn causal_depth(world: &World, change_id: ChangeId) -> usize {
+    use rustc_hash::FxHashMap;
+    let mut memo: FxHashMap<ChangeId, usize> = FxHashMap::default();
+    // Stack entries: (change_id, processed). First visit pushes predecessors;
+    // second visit (processed=true) computes and memos the depth.
+    let mut stack: Vec<(ChangeId, bool)> = vec![(change_id, false)];
+
+    while let Some((cid, processed)) = stack.pop() {
+        if processed {
+            let depth = world.log().get(cid).map(|c| {
+                if c.predecessors.is_empty() {
+                    0
+                } else {
+                    c.predecessors
+                        .iter()
+                        .map(|&p| memo.get(&p).copied().unwrap_or(0) + 1)
+                        .max()
+                        .unwrap_or(0)
+                }
+            }).unwrap_or(0);
+            memo.insert(cid, depth);
+        } else if !memo.contains_key(&cid) {
+            stack.push((cid, true));
+            if let Some(c) = world.log().get(cid) {
+                for &p in &c.predecessors {
+                    if !memo.contains_key(&p) {
+                        stack.push((p, false));
+                    }
+                }
+            }
+        }
+    }
+    memo.get(&change_id).copied().unwrap_or(0)
+}
 
 // ─── Relationship causality ───────────────────────────────────────────────────
 
@@ -52,10 +199,19 @@ pub fn root_stimuli_for_relationship(world: &World, rel: RelationshipId) -> Vec<
 /// close to 0.0 indicates stable, steady coupling; a high value indicates
 /// burst-driven or oscillating coupling.
 ///
-/// Returns `0.0` when fewer than two explicit relationship changes exist in
-/// the range — including when the relationship was only touched by
-/// auto-emergence (which does not produce `ChangeSubject::Relationship` log
-/// entries).
+/// ## When this returns 0.0
+///
+/// This function measures volatility via the `ChangeLog`. Relationship log
+/// entries (`ChangeSubject::Relationship`) are only created when a program
+/// explicitly proposes a relationship-subject change — typically through a
+/// **subscription** (`SubscribeToRelationship`). Auto-emerged relationships
+/// that are touched exclusively through locus cross-coupling have **no**
+/// relationship-subject log entries, so this always returns `0.0` for them.
+///
+/// For auto-emerged relationships, use
+/// [`relationship_touch_rate`][crate::relationship_touch_rate] instead, which
+/// derives its metric from `lineage.change_count` and `created_batch` — both
+/// present on every relationship regardless of how it was created.
 pub fn relationship_volatility(
     world: &World,
     rel: RelationshipId,
@@ -72,6 +228,16 @@ pub fn relationship_volatility(
     let mean = changes.iter().map(activity).sum::<f32>() / nf;
     let variance = changes.iter().map(|c| (activity(c) - mean).powi(2)).sum::<f32>() / nf;
     variance.sqrt()
+}
+
+/// Activity volatility of `rel` over its **entire committed history**.
+///
+/// Convenience wrapper around `relationship_volatility` that automatically
+/// uses `BatchId(0)` as the start and the world's current batch as the end.
+/// See [`relationship_volatility`] for the definition and the note on when this
+/// returns `0.0` (auto-emerged relationships without subscriptions).
+pub fn relationship_volatility_all(world: &World, rel: RelationshipId) -> f32 {
+    relationship_volatility(world, rel, BatchId(0), world.current_batch())
 }
 
 // ─── Ancestor queries ─────────────────────────────────────────────────────────
@@ -265,7 +431,9 @@ mod tests {
                 change_count: 1,
                 kinds_observed: vec![rk],
             },
+            created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
+            metadata: None,
         });
         (w, rel_id)
     }
@@ -312,7 +480,9 @@ mod tests {
                 change_count: 1,
                 kinds_observed: vec![rk],
             },
+            created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
+            metadata: None,
         });
 
         let roots = root_stimuli_for_relationship(&w, rel_id);
@@ -343,7 +513,9 @@ mod tests {
                 change_count: activity_values.len() as u64,
                 kinds_observed: vec![rk],
             },
+            created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
+            metadata: None,
         });
 
         for (batch, &act) in activity_values.iter().enumerate() {
@@ -381,5 +553,114 @@ mod tests {
         let (w, rel_id) = world_with_rel_changes(&[0.1, 0.9, 0.1, 0.9]);
         let v = relationship_volatility(&w, rel_id, BatchId(0), BatchId(10));
         assert!(v > 0.3, "alternating activity should have high volatility, got {v}");
+    }
+
+    // ── loci_changed_in_batch / relationships_changed_in_batch ──────────────
+
+    fn push_rel_change(world: &mut World, id: u64, rel: u64, batch: u64) {
+        use graph_core::RelationshipId;
+        let cid = ChangeId(id);
+        world.log_mut().append(Change {
+            id: cid,
+            subject: ChangeSubject::Relationship(RelationshipId(rel)),
+            kind: InfluenceKindId(1),
+            predecessors: vec![],
+            before: StateVector::zeros(2),
+            after: StateVector::from_slice(&[0.5, 0.0]),
+            batch: BatchId(batch),
+            wall_time: None,
+            metadata: None,
+        });
+    }
+
+    #[test]
+    fn loci_changed_in_batch_returns_unique_loci() {
+        let mut w = World::new();
+        // Batch 1: locus 0 twice, locus 1 once
+        push_change(&mut w, 0, 0, vec![], 1);
+        push_change(&mut w, 1, 0, vec![], 1);
+        push_change(&mut w, 2, 1, vec![], 1);
+        // Batch 2: locus 2
+        push_change(&mut w, 3, 2, vec![], 2);
+
+        let mut batch1 = loci_changed_in_batch(&w, BatchId(1));
+        batch1.sort();
+        assert_eq!(batch1, vec![LocusId(0), LocusId(1)]);
+
+        let batch2 = loci_changed_in_batch(&w, BatchId(2));
+        assert_eq!(batch2, vec![LocusId(2)]);
+
+        let empty = loci_changed_in_batch(&w, BatchId(99));
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn relationships_changed_in_batch_excludes_locus_changes() {
+        let mut w = World::new();
+        push_change(&mut w, 0, 0, vec![], 1);        // locus change — should be excluded
+        push_rel_change(&mut w, 1, 10, 1);             // rel 10 in batch 1
+        push_rel_change(&mut w, 2, 10, 1);             // rel 10 again — deduplicated
+        push_rel_change(&mut w, 3, 20, 1);             // rel 20 in batch 1
+
+        use graph_core::RelationshipId;
+        let mut rels = relationships_changed_in_batch(&w, BatchId(1));
+        rels.sort();
+        assert_eq!(rels, vec![RelationshipId(10), RelationshipId(20)]);
+    }
+
+    // ── common_ancestors ────────────────────────────────────────────────────
+
+    #[test]
+    fn common_ancestors_finds_shared_root() {
+        // Diamond: c0 → c1 → c3
+        //          c0 → c2 → c3
+        let mut w = World::new();
+        push_change(&mut w, 0, 0, vec![], 0);       // root
+        push_change(&mut w, 1, 1, vec![0], 1);
+        push_change(&mut w, 2, 2, vec![0], 1);
+        push_change(&mut w, 3, 3, vec![1, 2], 2);
+
+        let mut common = common_ancestors(&w, ChangeId(1), ChangeId(2));
+        common.sort();
+        assert_eq!(common, vec![ChangeId(0)]);
+    }
+
+    #[test]
+    fn common_ancestors_empty_for_disjoint_chains() {
+        let mut w = World::new();
+        push_change(&mut w, 0, 0, vec![], 0); // chain A root
+        push_change(&mut w, 1, 1, vec![0], 1);
+        push_change(&mut w, 2, 2, vec![], 0); // chain B root (independent)
+        push_change(&mut w, 3, 3, vec![2], 1);
+
+        let common = common_ancestors(&w, ChangeId(1), ChangeId(3));
+        assert!(common.is_empty());
+    }
+
+    // ── causal_depth ────────────────────────────────────────────────────────
+
+    #[test]
+    fn causal_depth_of_root_is_zero() {
+        let w = chain_world();
+        assert_eq!(causal_depth(&w, ChangeId(0)), 0);
+    }
+
+    #[test]
+    fn causal_depth_follows_longest_chain() {
+        // c0 (root) → c1 → c2, so depth(c2) = 2
+        let w = chain_world();
+        assert_eq!(causal_depth(&w, ChangeId(1)), 1);
+        assert_eq!(causal_depth(&w, ChangeId(2)), 2);
+    }
+
+    #[test]
+    fn causal_depth_on_diamond_takes_longer_branch() {
+        // c0 → c1 → c3 (depth 2) and c0 → c2 → c3 (also depth 2)
+        let mut w = World::new();
+        push_change(&mut w, 0, 0, vec![], 0);       // depth 0
+        push_change(&mut w, 1, 1, vec![0], 1);      // depth 1
+        push_change(&mut w, 2, 2, vec![0], 1);      // depth 1
+        push_change(&mut w, 3, 3, vec![1, 2], 2);   // depth 2
+        assert_eq!(causal_depth(&w, ChangeId(3)), 2);
     }
 }

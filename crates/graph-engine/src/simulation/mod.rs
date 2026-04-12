@@ -91,6 +91,13 @@ pub struct Simulation {
     /// Most recent storage write error (cleared on next successful write).
     #[cfg(feature = "storage")]
     pub(crate) last_storage_error: Option<graph_storage::StorageError>,
+    /// The last batch committed to storage. Used by `flush()` to know
+    /// which batches still need to be written.
+    #[cfg(feature = "storage")]
+    last_flushed_batch: BatchId,
+    /// Whether `step()` commits to storage automatically.
+    #[cfg(feature = "storage")]
+    auto_commit: bool,
     /// Auto-trim change log retention window (in batches). `None` = no trim.
     change_retention_batches: Option<u64>,
     /// Activity threshold below which a relationship is considered cold.
@@ -161,6 +168,9 @@ impl Simulation {
         let prev_batch = world.current_batch();
 
         #[cfg(feature = "storage")]
+        let auto_commit = config.auto_commit;
+
+        #[cfg(feature = "storage")]
         let (storage, initial_error) = match config.storage_path {
             Some(ref path) => match Storage::open(path) {
                 Ok(s) => (Some(s), None),
@@ -183,6 +193,10 @@ impl Simulation {
             storage,
             #[cfg(feature = "storage")]
             last_storage_error: initial_error,
+            #[cfg(feature = "storage")]
+            last_flushed_batch: prev_batch,
+            #[cfg(feature = "storage")]
+            auto_commit,
             change_retention_batches: config.change_retention_batches,
             cold_relationship_threshold: config.cold_relationship_threshold,
             cold_relationship_min_idle_batches: config.cold_relationship_min_idle_batches,
@@ -255,19 +269,25 @@ impl Simulation {
             self.prev_regime = regime;
         }
 
-        // Persist committed batches to redb storage.
+        // Persist committed batches to redb storage (only when auto-commit is enabled).
+        // When auto_commit is false, batches accumulate until flush() is called.
         #[cfg(feature = "storage")]
-        if let Some(ref storage) = self.storage {
-            let mut had_error = false;
-            for batch_idx in prev_batch.0..current_batch.0 {
-                if let Err(e) = storage.commit_batch(&self.world, BatchId(batch_idx)) {
-                    self.last_storage_error = Some(e);
-                    had_error = true;
-                    break;
+        if self.auto_commit {
+            if let Some(ref storage) = self.storage {
+                let mut had_error = false;
+                for batch_idx in self.last_flushed_batch.0..current_batch.0 {
+                    if let Err(e) = storage.commit_batch(&self.world, BatchId(batch_idx)) {
+                        self.last_storage_error = Some(e);
+                        had_error = true;
+                        break;
+                    }
                 }
-            }
-            if !had_error && self.last_storage_error.is_some() {
-                self.last_storage_error = None;
+                if !had_error {
+                    self.last_flushed_batch = current_batch;
+                    if self.last_storage_error.is_some() {
+                        self.last_storage_error = None;
+                    }
+                }
             }
         }
 

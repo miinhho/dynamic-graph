@@ -15,7 +15,7 @@
 //! an unregistered kind — use `get()` for lenient lookups that tolerate
 //! missing registrations.
 
-use graph_core::{Encoder, InfluenceKindId, LocusKindId, LocusProgram, RelationshipSlotDef, StabilizationConfig, StateVector};
+use graph_core::{Encoder, InfluenceKindId, LocusKindId, LocusProgram, RelationshipSlotDef, StabilizationConfig, StateSlotDef, StateVector};
 use rustc_hash::FxHashMap;
 
 /// Type alias for the slot-definitions map passed into `BatchContext`.
@@ -100,6 +100,21 @@ pub struct InfluenceKindConfig {
     /// per-batch by their individual `decay` rate (if any), and ignored
     /// by the Hebbian plasticity rule.
     pub extra_slots: Vec<RelationshipSlotDef>,
+    /// Signed contribution to relationship activity on each touch.
+    ///
+    /// Added to `state[0]` (the activity slot) every time the engine
+    /// observes this influence kind flowing through a relationship.
+    ///
+    /// - `+1.0` (default) — excitatory: activity grows with each touch.
+    /// - `-1.0` — inhibitory: activity decreases with each touch (e.g.,
+    ///   an antagonistic or suppressive influence).
+    /// - `0.0` — neutral: `change_count` is still incremented but the
+    ///   activity level is unaffected.
+    ///
+    /// The initial activity of a newly auto-emerged relationship is set to
+    /// this value (the first touch), so inhibitory relationships start
+    /// negative immediately.
+    pub activity_contribution: f32,
     /// When `true`, auto-emerged relationships for this kind use
     /// `Endpoints::Symmetric` instead of `Endpoints::Directed`.
     ///
@@ -107,6 +122,13 @@ pub struct InfluenceKindConfig {
     /// conflict, shared resonance) where A→B and B→A represent the same
     /// coupling. Default: `false` (directed).
     pub symmetric: bool,
+    /// Optional type-level constraint: which `(source_kind, target_kind)` pairs
+    /// are valid for relationships of this influence kind.
+    ///
+    /// When non-empty, the engine emits a `WorldEvent::SchemaViolation` (soft
+    /// warning, non-blocking) whenever a relationship auto-emerges between loci
+    /// whose kinds are not listed here. Empty = no constraint (default).
+    pub applies_between: Vec<(LocusKindId, LocusKindId)>,
 }
 
 impl InfluenceKindConfig {
@@ -118,7 +140,9 @@ impl InfluenceKindConfig {
             plasticity: PlasticityConfig::default(),
             prune_activity_threshold: 0.0,
             extra_slots: Vec::new(),
+            activity_contribution: 1.0,
             symmetric: false,
+            applies_between: Vec::new(),
         }
     }
 
@@ -137,8 +161,31 @@ impl InfluenceKindConfig {
         self
     }
 
+    /// Enable Hebbian plasticity with a simple learning rate.
+    ///
+    /// Shorthand for `with_plasticity(PlasticityConfig { learning_rate: rate,
+    /// weight_decay: 0.99, max_weight: 1.0 })`. Use `with_plasticity` directly
+    /// when you need non-default `weight_decay` or `max_weight`.
+    pub fn with_learning_rate(mut self, rate: f32) -> Self {
+        self.plasticity = PlasticityConfig {
+            learning_rate: rate,
+            weight_decay: 0.99,
+            max_weight: 1.0,
+        };
+        self
+    }
+
     pub fn with_prune_threshold(mut self, threshold: f32) -> Self {
         self.prune_activity_threshold = threshold;
+        self
+    }
+
+    /// Set the signed activity contribution per touch.
+    ///
+    /// Positive = excitatory (+1.0 default), negative = inhibitory,
+    /// zero = neutral. Must be finite (not NaN or ±inf).
+    pub fn with_activity_contribution(mut self, contribution: f32) -> Self {
+        self.activity_contribution = contribution;
         self
     }
 
@@ -155,12 +202,38 @@ impl InfluenceKindConfig {
         self
     }
 
+    /// Restrict this kind to a specific `(source_kind, target_kind)` pair.
+    ///
+    /// May be called multiple times to allow multiple valid endpoint-kind
+    /// combinations. When any `applies_between` entries are present, the
+    /// engine emits a `WorldEvent::SchemaViolation` for edges that fall
+    /// outside the declared pairs (non-blocking).
+    pub fn with_applies_between(mut self, from_kind: LocusKindId, to_kind: LocusKindId) -> Self {
+        self.applies_between.push((from_kind, to_kind));
+        self
+    }
+
+    /// Check whether a `(from_kind, to_kind)` pair satisfies this kind's
+    /// `applies_between` constraint.
+    ///
+    /// Returns `true` when `applies_between` is empty (no constraint) or
+    /// when the pair appears in the list. Returns `false` only when at
+    /// least one constraint is declared and the pair is not listed.
+    pub fn allows_endpoint_kinds(&self, from_kind: LocusKindId, to_kind: LocusKindId) -> bool {
+        if self.applies_between.is_empty() {
+            return true;
+        }
+        self.applies_between.contains(&(from_kind, to_kind))
+    }
+
     /// Build the initial `StateVector` for a new relationship of this kind.
     ///
-    /// Activity starts at 1.0 (one touch), weight at 0.0, then the
-    /// default values for each extra slot in declaration order.
+    /// Activity starts at `activity_contribution` (one touch), weight at
+    /// 0.0, then the default values for each extra slot in declaration
+    /// order. For inhibitory kinds (`activity_contribution < 0`) the
+    /// relationship's activity is negative from birth.
     pub fn initial_relationship_state(&self) -> StateVector {
-        let mut values = vec![1.0f32, 0.0f32];
+        let mut values = vec![self.activity_contribution, 0.0f32];
         for slot in &self.extra_slots {
             values.push(slot.default);
         }
@@ -191,6 +264,16 @@ impl InfluenceKindConfig {
 
 /// Per-locus-kind configuration: program + optional refractory period + optional encoder.
 pub struct LocusKindConfig {
+    /// Human-readable label for this locus kind (e.g. `"Person"`, `"Organization"`).
+    ///
+    /// Used by name-based kind lookups (`Simulation::locus_kind_by_name`) and
+    /// diagnostic output. `None` when registered via `insert()` without a name.
+    pub name: Option<String>,
+    /// Metadata describing each slot in the locus `StateVector`.
+    ///
+    /// Slot `i` in `state_slots` corresponds to slot `i` in the `StateVector`.
+    /// Empty by default — the engine does not require slot definitions to operate.
+    pub state_slots: Vec<StateSlotDef>,
     pub program: Box<dyn LocusProgram>,
     /// Minimum number of batches a locus must wait after firing before
     /// its program is dispatched again. `0` = no refractory period.
@@ -224,6 +307,23 @@ impl LocusKindRegistry {
     /// Register a program for a locus kind with no refractory period.
     pub fn insert(&mut self, kind: LocusKindId, program: Box<dyn LocusProgram>) {
         self.insert_with_config(kind, LocusKindConfig {
+            name: None,
+            state_slots: Vec::new(),
+            program,
+            refractory_batches: 0,
+            encoder: None,
+            max_proposals_per_dispatch: None,
+        });
+    }
+
+    /// Register a program for a locus kind with a human-readable name.
+    ///
+    /// The name is used by `Simulation::locus_kind_by_name` for string-based
+    /// kind lookups and in diagnostic output. Must be unique within the registry.
+    pub fn insert_named(&mut self, kind: LocusKindId, name: impl Into<String>, program: Box<dyn LocusProgram>) {
+        self.insert_with_config(kind, LocusKindConfig {
+            name: Some(name.into()),
+            state_slots: Vec::new(),
             program,
             refractory_batches: 0,
             encoder: None,
@@ -261,6 +361,23 @@ impl LocusKindRegistry {
         let found = self.get(kind);
         assert!(found.is_some(), "unregistered LocusKindId: {kind:?}");
         found
+    }
+
+    /// Look up a `LocusKindId` by its registered name.
+    ///
+    /// Returns `None` if no kind with that name was registered via
+    /// `insert_named()` or `insert_with_config()` with `name: Some(...)`.
+    pub fn kind_by_name(&self, name: &str) -> Option<LocusKindId> {
+        self.configs
+            .iter()
+            .find(|(_, cfg)| cfg.name.as_deref() == Some(name))
+            .map(|(&id, _)| id)
+    }
+
+    /// Return all registered kinds with their names (only named kinds appear).
+    pub fn named_kinds(&self) -> impl Iterator<Item = (LocusKindId, &str)> {
+        self.configs.iter()
+            .filter_map(|(&id, cfg)| cfg.name.as_deref().map(|n| (id, n)))
     }
 
     pub fn len(&self) -> usize {
@@ -327,6 +444,11 @@ impl InfluenceKindRegistry {
             "InfluenceKindConfig '{}': prune_activity_threshold must be >= 0, got {}",
             config.name, config.prune_activity_threshold
         );
+        assert!(
+            config.activity_contribution.is_finite(),
+            "InfluenceKindConfig '{}': activity_contribution must be finite, got {}",
+            config.name, config.activity_contribution
+        );
         if self.configs.insert(kind, config).is_some() {
             panic!("InfluenceKindRegistry: duplicate registration for {kind:?}");
         }
@@ -385,6 +507,22 @@ impl InfluenceKindRegistry {
 
     pub fn kinds(&self) -> impl Iterator<Item = InfluenceKindId> + '_ {
         self.configs.keys().copied()
+    }
+
+    /// Return the `StateVector` index of a named extra slot for `kind`, or
+    /// `None` if the kind is not registered or the slot name is not declared.
+    ///
+    /// Built-in slot 0 = activity, slot 1 = weight. Extra slots start at 2.
+    pub fn slot_index(&self, kind: InfluenceKindId, name: &str) -> Option<usize> {
+        self.get(kind)?.slot_index(name)
+    }
+
+    /// Read a named slot value from `rel`'s `StateVector` for `rel.kind`.
+    ///
+    /// Returns `None` if the kind is not registered, the slot name is unknown,
+    /// or the state vector is too short.
+    pub fn read_slot(&self, kind: InfluenceKindId, rel: &graph_core::Relationship, name: &str) -> Option<f32> {
+        self.get(kind)?.read_slot(&rel.state, name)
     }
 
     pub fn len(&self) -> usize {
@@ -545,5 +683,18 @@ mod tests {
             InfluenceKindId(1),
             InfluenceKindConfig::new("bad").with_prune_threshold(-0.1),
         );
+    }
+
+    #[test]
+    fn with_learning_rate_sets_plasticity_defaults() {
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(
+            InfluenceKindId(1),
+            InfluenceKindConfig::new("ok").with_learning_rate(0.05),
+        );
+        let cfg = reg.require(InfluenceKindId(1)).unwrap();
+        assert!((cfg.plasticity.learning_rate - 0.05).abs() < 1e-7);
+        assert!((cfg.plasticity.weight_decay - 0.99).abs() < 1e-7);
+        assert!((cfg.plasticity.max_weight - 1.0).abs() < 1e-7);
     }
 }

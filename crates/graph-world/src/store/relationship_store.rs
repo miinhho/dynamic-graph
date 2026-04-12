@@ -20,6 +20,7 @@ pub struct RelationshipStore {
     /// All relationship ids that involve a given locus (any endpoint position).
     by_locus: FxHashMap<LocusId, Vec<RelationshipId>>,
     next_id: u64,
+    generation: u64,
 }
 
 impl RelationshipStore {
@@ -66,6 +67,7 @@ impl RelationshipStore {
             panic!("RelationshipStore: duplicate id {id:?}");
         }
         self.by_key.insert(key, id);
+        self.generation += 1;
     }
 
     pub fn get(&self, id: RelationshipId) -> Option<&Relationship> {
@@ -73,6 +75,9 @@ impl RelationshipStore {
     }
 
     pub fn get_mut(&mut self, id: RelationshipId) -> Option<&mut Relationship> {
+        if self.by_id.contains_key(&id) {
+            self.generation += 1;
+        }
         self.by_id.get_mut(&id)
     }
 
@@ -98,7 +103,15 @@ impl RelationshipStore {
                 v.retain(|&rid| rid != id);
             }
         });
+        self.generation += 1;
         Some(rel)
+    }
+
+    /// Monotonic generation counter — incremented on every mutation
+    /// (insert, remove, or `get_mut` path). Used by `Storage::commit_batch`
+    /// to skip the relationship table write when nothing changed.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Relationship> {
@@ -106,6 +119,7 @@ impl RelationshipStore {
     }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Relationship> {
+        self.generation += 1;
         self.by_id.values_mut()
     }
 
@@ -215,7 +229,9 @@ mod tests {
                 change_count: 0,
                 kinds_observed: vec![InfluenceKindId(kind)],
             },
+            created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
+            metadata: None,
         }
     }
 

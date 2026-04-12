@@ -95,6 +95,8 @@ impl SimulationBuilder {
         self.next_locus_kind += 1;
         let built = configure(LocusKindBuilder::default());
         self.loci_registry.insert_with_config(id, LocusKindConfig {
+            name: Some(name.clone()),
+            state_slots: built.state_slots,
             program: Box::new(program),
             refractory_batches: built.refractory_batches,
             encoder: built.encoder,
@@ -220,6 +222,7 @@ pub struct LocusKindBuilder {
     refractory_batches: u32,
     encoder: Option<Box<dyn Encoder>>,
     max_proposals_per_dispatch: Option<usize>,
+    state_slots: Vec<graph_core::StateSlotDef>,
 }
 
 impl LocusKindBuilder {
@@ -239,6 +242,16 @@ impl LocusKindBuilder {
     /// Use this to bound cascades from high-fanout programs.
     pub fn max_proposals(mut self, n: usize) -> Self {
         self.max_proposals_per_dispatch = Some(n);
+        self
+    }
+
+    /// Declare the named state slots for loci of this kind.
+    ///
+    /// Slot `i` in `slots` corresponds to slot index `i` in the `StateVector`.
+    /// These are advisory — the engine does not enforce clamping or validate
+    /// state updates against these definitions.
+    pub fn state_slots(mut self, slots: Vec<graph_core::StateSlotDef>) -> Self {
+        self.state_slots = slots;
         self
     }
 }

@@ -43,7 +43,6 @@
 //! redb handles crash safety, page management, and compaction internally.
 
 mod error;
-mod migration;
 mod tables;
 
 pub use error::StorageError;
@@ -60,8 +59,14 @@ use redb::{Database, ReadableMultimapTable, ReadableTable, ReadableTableMetadata
 
 use tables::*;
 
-/// Increment this whenever a serialized type gains or loses fields.
+/// Schema version stamped into every new database.
 /// `open()` rejects databases written under a different version.
+///
+/// Version history:
+/// - v1: initial schema (loci, relationships, entities, changes, etc.)
+/// - v2: `Relationship` gained `metadata: Option<Properties>` field —
+///   postcard layout changed, old databases are not forward-compatible.
+///   Use `open_or_reset()` during development to drop and recreate.
 pub(crate) const CURRENT_SCHEMA_VERSION: u64 = 2;
 
 /// redb-backed persistent storage for a `World`.
@@ -73,14 +78,20 @@ pub struct Storage {
     /// the clear-and-rewrite when nothing changed. `u64::MAX` means "not
     /// yet initialised" and forces a write on the first `commit_batch()`.
     last_subscription_gen: Cell<u64>,
+    /// Generation of the relationship store at the last persist. `u64::MAX`
+    /// forces a write on the first `commit_batch()`.
+    last_relationship_gen: Cell<u64>,
+    /// Generation of the entity store at the last persist. `u64::MAX`
+    /// forces a write on the first `commit_batch()`.
+    last_entity_gen: Cell<u64>,
 }
 
 impl Storage {
     /// Open or create a database at `path`.
     ///
     /// Returns `Err(StorageError::SchemaMismatch)` when the database was
-    /// created by a different `CURRENT_SCHEMA_VERSION`. Delete (or migrate)
-    /// the file before re-opening with a new build.
+    /// created by a different `CURRENT_SCHEMA_VERSION`. Delete the file and
+    /// re-open to start fresh.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
         let db = Database::create(path.as_ref())?;
 
@@ -96,6 +107,7 @@ impl Storage {
             let _ = txn.open_table(NAMES)?;
             let _ = txn.open_table(ALIASES)?;
             let _ = txn.open_multimap_table(SUBSCRIPTIONS)?;
+            let _ = txn.open_multimap_table(REL_BY_LOCUS)?;
             let mut meta = txn.open_table(META)?;
             let stored_version = meta.get(META_SCHEMA_VERSION)?.map(|v| v.value());
             match stored_version {
@@ -114,50 +126,33 @@ impl Storage {
         }
         txn.commit()?;
 
-        Ok(Self { db, last_subscription_gen: Cell::new(u64::MAX) })
+        Ok(Self {
+            db,
+            last_subscription_gen: Cell::new(u64::MAX),
+            last_relationship_gen: Cell::new(u64::MAX),
+            last_entity_gen: Cell::new(u64::MAX),
+        })
     }
 
-    /// Open a database **bypassing** the schema version check.
-    ///
-    /// Intended for migration tools that need to read the raw bytes before
-    /// re-serializing them under the current schema. Use with caution: if the
-    /// stored bytes were written by an incompatible schema, postcard
-    /// deserialization will return `Err(StorageError::Serde(...))` at read
-    /// time.
-    ///
-    /// After migrating, call [`reset_schema_version`] to stamp the current
-    /// version so subsequent `open()` calls succeed.
-    pub fn open_force(path: impl AsRef<Path>) -> Result<Self, StorageError> {
-        let db = Database::create(path.as_ref())?;
-        let txn = db.begin_write()?;
-        {
-            let _ = txn.open_table(LOCI)?;
-            let _ = txn.open_table(RELATIONSHIPS)?;
-            let _ = txn.open_table(ENTITIES)?;
-            let _ = txn.open_table(CHANGES)?;
-            let _ = txn.open_multimap_table(CHANGES_BY_BATCH)?;
-            let _ = txn.open_table(PROPERTIES)?;
-            let _ = txn.open_table(NAMES)?;
-            let _ = txn.open_table(ALIASES)?;
-            let _ = txn.open_multimap_table(SUBSCRIPTIONS)?;
-            let _ = txn.open_table(META)?;
-        }
-        txn.commit()?;
-        Ok(Self { db, last_subscription_gen: Cell::new(u64::MAX) })
-    }
 
-    /// Stamp the current `CURRENT_SCHEMA_VERSION` into the META table.
+    /// Open or create a database, dropping and recreating it on schema mismatch.
     ///
-    /// Call this after a successful migration to make `open()` accept the
-    /// database again.
-    pub fn reset_schema_version(&self) -> Result<(), StorageError> {
-        let txn = self.db.begin_write()?;
-        {
-            let mut meta = txn.open_table(META)?;
-            meta.insert(META_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION)?;
+    /// Use this during development: schema changes are frequent and migration
+    /// functions are not written until the v1 release. On `SchemaMismatch`,
+    /// this deletes the database file and opens a fresh one rather than
+    /// returning an error.
+    ///
+    /// **Do not use in production** — all existing data is silently destroyed
+    /// on version mismatch.
+    pub fn open_or_reset(path: impl AsRef<Path>) -> Result<Self, StorageError> {
+        match Self::open(path.as_ref()) {
+            Ok(s) => Ok(s),
+            Err(StorageError::SchemaMismatch { .. }) => {
+                std::fs::remove_file(path.as_ref()).ok();
+                Self::open(path.as_ref())
+            }
+            Err(e) => Err(e),
         }
-        txn.commit()?;
-        Ok(())
     }
 
     /// Drop all domain data and re-stamp the schema version.
@@ -182,6 +177,11 @@ impl Storage {
             { let mut t = txn.open_table(ALIASES)?; while let Some(g) = t.pop_last()? { drop(g); } }
             {
                 let mut t = txn.open_multimap_table(SUBSCRIPTIONS)?;
+                let keys: Vec<u64> = { let mut k = Vec::new(); let mut it = t.iter()?; while let Some(e) = it.next() { k.push(e?.0.value()); } k };
+                for key in keys { t.remove_all(key)?; }
+            }
+            {
+                let mut t = txn.open_multimap_table(REL_BY_LOCUS)?;
                 let keys: Vec<u64> = { let mut k = Vec::new(); let mut it = t.iter()?; while let Some(e) = it.next() { k.push(e?.0.value()); } k };
                 for key in keys { t.remove_all(key)?; }
             }
@@ -269,6 +269,21 @@ impl Storage {
                     t.remove_all(key)?;
                 }
             }
+            {
+                let mut t = txn.open_multimap_table(REL_BY_LOCUS)?;
+                let keys: Vec<u64> = {
+                    let mut keys = Vec::new();
+                    let mut iter = t.iter()?;
+                    while let Some(entry) = iter.next() {
+                        let (key, _) = entry?;
+                        keys.push(key.value());
+                    }
+                    keys
+                };
+                for key in keys {
+                    t.remove_all(key)?;
+                }
+            }
 
             // Write loci.
             {
@@ -279,13 +294,16 @@ impl Storage {
                 }
             }
 
-            // Write relationships.
+            // Write relationships + secondary locus index.
             {
                 let mut t = txn.open_table(RELATIONSHIPS)?;
+                let mut idx = txn.open_multimap_table(REL_BY_LOCUS)?;
                 for rel in world.relationships().iter() {
                     let bytes = postcard::to_allocvec(rel)?;
                     t.insert(rel.id.0, bytes.as_slice())?;
+                    insert_rel_by_locus(&mut idx, rel)?;
                 }
+                self.last_relationship_gen.set(world.relationships().generation());
             }
 
             // Write entities.
@@ -295,6 +313,7 @@ impl Storage {
                     let bytes = postcard::to_allocvec(entity)?;
                     t.insert(entity.id.0, bytes.as_slice())?;
                 }
+                self.last_entity_gen.set(world.entities().generation());
             }
 
             // Write changes + batch index.
@@ -467,9 +486,11 @@ impl Storage {
             }
         }
 
-        // Sync generation so the first commit_batch() after load doesn't
-        // redundantly rewrite the SUBSCRIPTIONS table.
+        // Sync generations so the first commit_batch() after load skips
+        // tables that haven't changed.
         self.last_subscription_gen.set(world.subscriptions().generation());
+        self.last_relationship_gen.set(world.relationships().generation());
+        self.last_entity_gen.set(world.entities().generation());
 
         Ok(world)
     }
@@ -526,29 +547,41 @@ impl Storage {
                 }
             }
 
-            // Upsert touched relationships.
+            // Upsert touched relationships — skip entirely if the store is
+            // unchanged since the last persist (no new or updated relationships).
             {
-                let mut t = txn.open_table(RELATIONSHIPS)?;
-                for rel in world.relationships().iter() {
-                    let dominated_by_this_batch = rel.lineage.created_by
-                        .or(rel.lineage.last_touched_by)
-                        .and_then(|cid| world.log().get(cid))
-                        .is_some_and(|c| c.batch == committed_batch);
-                    if dominated_by_this_batch {
-                        let bytes = postcard::to_allocvec(rel)?;
-                        t.insert(rel.id.0, bytes.as_slice())?;
+                let current_rel_gen = world.relationships().generation();
+                if current_rel_gen != self.last_relationship_gen.get() {
+                    let mut t = txn.open_table(RELATIONSHIPS)?;
+                    let mut idx = txn.open_multimap_table(REL_BY_LOCUS)?;
+                    for rel in world.relationships().iter() {
+                        let dominated_by_this_batch = rel.lineage.created_by
+                            .or(rel.lineage.last_touched_by)
+                            .and_then(|cid| world.log().get(cid))
+                            .is_some_and(|c| c.batch == committed_batch);
+                        if dominated_by_this_batch {
+                            let bytes = postcard::to_allocvec(rel)?;
+                            t.insert(rel.id.0, bytes.as_slice())?;
+                            insert_rel_by_locus(&mut idx, rel)?;
+                        }
                     }
+                    self.last_relationship_gen.set(current_rel_gen);
                 }
             }
 
-            // Upsert touched entities.
+            // Upsert touched entities — skip entirely when entity store
+            // generation is unchanged (no entity recognition ran this batch).
             {
-                let mut t = txn.open_table(ENTITIES)?;
-                for entity in world.entities().iter() {
-                    if entity.layers.last().is_some_and(|l| l.batch == committed_batch) {
-                        let bytes = postcard::to_allocvec(entity)?;
-                        t.insert(entity.id.0, bytes.as_slice())?;
+                let current_entity_gen = world.entities().generation();
+                if current_entity_gen != self.last_entity_gen.get() {
+                    let mut t = txn.open_table(ENTITIES)?;
+                    for entity in world.entities().iter() {
+                        if entity.layers.last().is_some_and(|l| l.batch == committed_batch) {
+                            let bytes = postcard::to_allocvec(entity)?;
+                            t.insert(entity.id.0, bytes.as_slice())?;
+                        }
                     }
+                    self.last_entity_gen.set(current_entity_gen);
                 }
             }
 
@@ -652,22 +685,21 @@ impl Storage {
 
     /// Read all stored relationships that have `locus_id` as an endpoint.
     ///
-    /// Scans the full RELATIONSHIPS table — O(total stored relationships).
-    /// Use this when promoting evicted relationships back into hot memory
-    /// for a specific locus. If the dataset is large, consider batching
-    /// promotion only to the loci that are actually active.
+    /// Uses the `REL_BY_LOCUS` secondary index — O(k) where k is the number
+    /// of relationships touching this locus. Used for cold→hot promotion.
     pub fn relationships_for_locus(
         &self,
         locus_id: LocusId,
     ) -> Result<Vec<Relationship>, StorageError> {
         let txn = self.db.begin_read()?;
-        let t = txn.open_table(RELATIONSHIPS)?;
+        let idx = txn.open_multimap_table(REL_BY_LOCUS)?;
+        let rels_t = txn.open_table(RELATIONSHIPS)?;
         let mut result = Vec::new();
-        let mut iter = t.iter()?;
+        let mut iter = idx.get(locus_id.0)?;
         while let Some(entry) = iter.next() {
-            let (_, val) = entry?;
-            let rel: Relationship = postcard::from_bytes(val.value())?;
-            if rel.endpoints.involves(locus_id) {
+            let rel_id = entry?.value();
+            if let Some(val) = rels_t.get(rel_id)? {
+                let rel: Relationship = postcard::from_bytes(val.value())?;
                 result.push(rel);
             }
         }
@@ -743,6 +775,30 @@ impl Storage {
             aliases: txn.open_table(ALIASES)?.len()?,
         })
     }
+}
+
+/// Insert both endpoints of `rel` into the `REL_BY_LOCUS` multimap index.
+///
+/// For directed edges: inserts `(from, rel_id)` and `(to, rel_id)`.
+/// For symmetric edges: inserts `(a, rel_id)` and `(b, rel_id)`.
+/// Inserting a duplicate `(locus, rel_id)` pair is idempotent in redb
+/// multimap tables — duplicate values under the same key are deduplicated.
+fn insert_rel_by_locus(
+    idx: &mut redb::MultimapTable<u64, u64>,
+    rel: &Relationship,
+) -> Result<(), StorageError> {
+    use graph_core::Endpoints;
+    match &rel.endpoints {
+        Endpoints::Directed { from, to } => {
+            idx.insert(from.0, rel.id.0)?;
+            idx.insert(to.0, rel.id.0)?;
+        }
+        Endpoints::Symmetric { a, b } => {
+            idx.insert(a.0, rel.id.0)?;
+            idx.insert(b.0, rel.id.0)?;
+        }
+    }
+    Ok(())
 }
 
 /// Record counts per table.
@@ -987,37 +1043,5 @@ mod tests {
         let storage2 = Storage::open(_f.path()).unwrap();
         assert_eq!(storage2.table_counts().unwrap().loci, 0);
         assert!(matches!(storage2.load_world(), Err(StorageError::Empty)));
-    }
-
-    #[test]
-    fn open_force_bypasses_version_check_and_reset_stamps_version() {
-        let f = NamedTempFile::new().unwrap();
-
-        // Simulate a "wrong version" by writing an old version number directly.
-        {
-            let storage = Storage::open(f.path()).unwrap();
-            // Stamp a fake old version to trigger SchemaMismatch on next open().
-            let txn = storage.db.begin_write().unwrap();
-            {
-                let mut meta = txn.open_table(META).unwrap();
-                meta.insert(META_SCHEMA_VERSION, 1u64).unwrap();
-            }
-            txn.commit().unwrap();
-        }
-
-        // Normal open must reject it.
-        assert!(matches!(
-            Storage::open(f.path()),
-            Err(StorageError::SchemaMismatch { found: 1, expected: _ })
-        ));
-
-        // open_force bypasses the check.
-        let storage = Storage::open_force(f.path()).unwrap();
-        // Stamp the correct version.
-        storage.reset_schema_version().unwrap();
-        drop(storage);
-
-        // Now normal open succeeds.
-        drop(Storage::open(f.path()).unwrap());
     }
 }

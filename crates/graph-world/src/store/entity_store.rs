@@ -15,6 +15,7 @@ use rustc_hash::FxHashMap;
 pub struct EntityStore {
     by_id: FxHashMap<EntityId, Entity>,
     next_id: u64,
+    generation: u64,
 }
 
 impl EntityStore {
@@ -44,6 +45,7 @@ impl EntityStore {
         if self.by_id.insert(id, entity).is_some() {
             panic!("EntityStore: duplicate id {id:?}");
         }
+        self.generation += 1;
     }
 
     pub fn get(&self, id: EntityId) -> Option<&Entity> {
@@ -51,7 +53,17 @@ impl EntityStore {
     }
 
     pub fn get_mut(&mut self, id: EntityId) -> Option<&mut Entity> {
+        if self.by_id.contains_key(&id) {
+            self.generation += 1;
+        }
         self.by_id.get_mut(&id)
+    }
+
+    /// Monotonic generation counter — incremented on every mutation.
+    /// Used by `Storage::commit_batch` to skip entity table writes when
+    /// no entity changed.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Iterate all entities (active and dormant).
@@ -61,6 +73,7 @@ impl EntityStore {
 
     /// Mutable iterator over all entities. Used by the weathering pass.
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Entity> {
+        self.generation += 1;
         self.by_id.values_mut()
     }
 
