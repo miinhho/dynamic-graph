@@ -21,6 +21,34 @@ use crate::ids::{BatchId, ChangeId, InfluenceKindId, LocusId, RelationshipKindId
 use crate::property::Properties;
 use crate::state::StateVector;
 
+/// The net effect when two influence kinds co-occur on the same pair of loci.
+///
+/// Used by `InfluenceKindRegistry::register_interaction` to declare how
+/// cross-kind relationships should be interpreted at query time. The engine
+/// never consults this during the batch loop — semantics are resolved
+/// entirely in `graph-query`.
+///
+/// # Examples
+///
+/// ```ignore
+/// // Excitatory + inhibitory cancel out → Antagonistic
+/// registry.register_interaction(EXCITE, INHIBIT, InteractionEffect::Antagonistic { dampen: 0.5 });
+///
+/// // Two excitatory kinds reinforce → Synergistic
+/// registry.register_interaction(FIRE, DOPAMINE, InteractionEffect::Synergistic { boost: 1.3 });
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub enum InteractionEffect {
+    /// The two kinds amplify each other; multiply the combined activity by `boost`.
+    /// Typical range: `boost > 1.0`. Values <= 0 are accepted but unusual.
+    Synergistic { boost: f32 },
+    /// The two kinds oppose each other; multiply the combined activity by `dampen`.
+    /// Typical range: `0.0 < dampen < 1.0`.
+    Antagonistic { dampen: f32 },
+    /// No special interaction; activities are summed without adjustment.
+    Neutral,
+}
+
 /// Definition of one user-defined extra slot in a relationship's `StateVector`.
 ///
 /// By default, relationships carry exactly two built-in slots:

@@ -53,6 +53,7 @@ pub use filter::{
     active_entities, entities_matching, entities_with_coherence, entities_with_member,
     entity_member_loci, locus_entities, top_entity_members,
     incoming_activity_sum, outgoing_activity_sum, net_influence_balance,
+    net_influence_between,
     loci_matching, loci_of_kind, loci_top_n_by_state, loci_with_f64_property,
     loci_with_state, loci_with_str_property,
     locus_degree, locus_in_degree, locus_out_degree,
@@ -65,7 +66,7 @@ pub use filter::{
     relationships_between, relationships_between_of_kind,
     relationships_from, relationships_from_of_kind,
     relationships_to, relationships_to_of_kind,
-    relationships_matching, relationships_of_kind,
+    relationships_matching, relationships_of_kind, relationships_of_kinds,
     relationships_with_activity, relationships_with_slot, relationships_with_weight,
     relationships_with_str_property, relationships_with_f64_property,
 };

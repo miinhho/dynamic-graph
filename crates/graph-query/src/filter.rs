@@ -5,7 +5,7 @@
 //! no builder pattern, no lazy iterators — just composable free functions
 //! that can be chained by the caller.
 
-use graph_core::{BatchId, Entity, InfluenceKindId, Locus, LocusId, LocusKindId, Relationship, RelationshipId};
+use graph_core::{BatchId, Entity, InfluenceKindId, InteractionEffect, Locus, LocusId, LocusKindId, Relationship, RelationshipId};
 use graph_world::World;
 
 // ─── ID-to-ref lookup helpers ─────────────────────────────────────────────────
@@ -185,6 +185,25 @@ pub fn relationships_of_kind(world: &World, kind: InfluenceKindId) -> Vec<&Relat
         .collect()
 }
 
+/// All relationships whose kind appears in `kinds`.
+///
+/// Designed to be paired with `InfluenceKindRegistry::kind_and_descendants`:
+///
+/// ```ignore
+/// let kinds = registry.kind_and_descendants(THERMAL);
+/// let rels  = graph_query::relationships_of_kinds(&world, &kinds);
+/// ```
+pub fn relationships_of_kinds<'w>(world: &'w World, kinds: &[InfluenceKindId]) -> Vec<&'w Relationship> {
+    if kinds.is_empty() {
+        return Vec::new();
+    }
+    world
+        .relationships()
+        .iter()
+        .filter(|r| kinds.contains(&r.kind))
+        .collect()
+}
+
 /// All relationships whose activity (`state[0]`) satisfies `pred`.
 pub fn relationships_with_activity<F>(world: &World, pred: F) -> Vec<&Relationship>
 where
@@ -341,6 +360,99 @@ pub fn outgoing_activity_sum(world: &World, locus: LocusId) -> f32 {
 /// Zero → balanced or isolated.
 pub fn net_influence_balance(world: &World, locus: LocusId) -> f32 {
     outgoing_activity_sum(world, locus) - incoming_activity_sum(world, locus)
+}
+
+/// Compute the net influence between two loci, accounting for cross-kind
+/// interaction effects registered in the calling code.
+///
+/// Sums the activity of all relationships between `a` and `b` (both directions),
+/// then applies any declared cross-kind `InteractionEffect` via the caller-supplied
+/// `interaction_fn`. This is a **query-time** operation — the engine batch loop
+/// is not involved.
+///
+/// # Parameters
+///
+/// - `world` — the world to query.
+/// - `a`, `b` — the two loci of interest.
+/// - `interaction_fn` — maps `(kind_a, kind_b)` to an optional `InteractionEffect`.
+///   Pass a closure that delegates to `InfluenceKindRegistry::interaction_between`:
+///   ```ignore
+///   let net = net_influence_between(&world, a, b, |ka, kb| registry.interaction_between(ka, kb));
+///   ```
+///
+/// # Algorithm
+///
+/// 1. Find all relationships between `a` and `b` (either direction).
+/// 2. For each unique `(kind_a, kind_b)` pair that co-occurs, look up an
+///    `InteractionEffect`.
+/// 3. Apply the effect to the **sum** of the two kinds' activities:
+///    - `Synergistic { boost }` — multiply combined activity by `boost`.
+///    - `Antagonistic { dampen }` — multiply combined activity by `dampen`.
+///    - `Neutral` (or no entry) — sum unchanged.
+/// 4. Return the total across all kind-pairs.
+pub fn net_influence_between<F>(
+    world: &World,
+    a: LocusId,
+    b: LocusId,
+    interaction_fn: F,
+) -> f32
+where
+    F: Fn(InfluenceKindId, InfluenceKindId) -> Option<InteractionEffect>,
+{
+    use rustc_hash::FxHashMap;
+
+    // Collect all relationships between a and b, grouped by kind.
+    let mut by_kind: FxHashMap<InfluenceKindId, f32> = FxHashMap::default();
+    for rel in world.relationships().iter() {
+        let touches = match rel.endpoints {
+            graph_core::Endpoints::Directed { from, to } => {
+                (from == a && to == b) || (from == b && to == a)
+            }
+            graph_core::Endpoints::Symmetric { a: ra, b: rb } => {
+                (ra == a && rb == b) || (ra == b && rb == a)
+            }
+        };
+        if touches {
+            *by_kind.entry(rel.kind).or_insert(0.0) += rel.activity();
+        }
+    }
+
+    if by_kind.is_empty() {
+        return 0.0;
+    }
+
+    // For pairs of co-occurring kinds, apply the declared interaction effect.
+    // Track which kinds have already been merged into a pair to avoid double-counting.
+    let kinds: Vec<InfluenceKindId> = by_kind.keys().copied().collect();
+    let mut merged: rustc_hash::FxHashSet<InfluenceKindId> = rustc_hash::FxHashSet::default();
+    let mut total = 0.0f32;
+
+    for i in 0..kinds.len() {
+        for j in (i + 1)..kinds.len() {
+            let ka = kinds[i];
+            let kb = kinds[j];
+            if let Some(effect) = interaction_fn(ka, kb) {
+                let combined = by_kind[&ka] + by_kind[&kb];
+                let adjusted = match effect {
+                    InteractionEffect::Synergistic { boost } => combined * boost,
+                    InteractionEffect::Antagonistic { dampen } => combined * dampen,
+                    InteractionEffect::Neutral => combined,
+                };
+                total += adjusted;
+                merged.insert(ka);
+                merged.insert(kb);
+            }
+        }
+    }
+
+    // Add activities for kinds not merged into any pair.
+    for (kind, activity) in &by_kind {
+        if !merged.contains(kind) {
+            total += activity;
+        }
+    }
+
+    total
 }
 
 // ─── Change-count / velocity filters ─────────────────────────────────────────
@@ -1057,5 +1169,90 @@ mod tests {
         // Only relationships with the "type" key present are returned
         let typed = relationships_with_str_property(&w, "type", |_| true);
         assert_eq!(typed.len(), 2); // A→C has no metadata
+    }
+
+    // ─── relationships_of_kinds ───────────────────────────────────────────────
+
+    #[test]
+    fn relationships_of_kinds_empty_set_returns_empty() {
+        use graph_core::{Endpoints, InfluenceKindId, StateVector};
+        let mut w = World::new();
+        w.add_relationship(Endpoints::directed(LocusId(0), LocusId(1)), InfluenceKindId(1), StateVector::from_slice(&[1.0, 0.0]));
+        assert!(relationships_of_kinds(&w, &[]).is_empty());
+    }
+
+    #[test]
+    fn relationships_of_kinds_matches_multiple() {
+        use graph_core::{Endpoints, InfluenceKindId, StateVector};
+        let mut w = World::new();
+        let k1 = InfluenceKindId(1);
+        let k2 = InfluenceKindId(2);
+        let k3 = InfluenceKindId(3);
+        w.add_relationship(Endpoints::directed(LocusId(0), LocusId(1)), k1, StateVector::from_slice(&[1.0, 0.0]));
+        w.add_relationship(Endpoints::directed(LocusId(1), LocusId(2)), k2, StateVector::from_slice(&[1.0, 0.0]));
+        w.add_relationship(Endpoints::directed(LocusId(2), LocusId(3)), k3, StateVector::from_slice(&[1.0, 0.0]));
+
+        let rels = relationships_of_kinds(&w, &[k1, k2]);
+        assert_eq!(rels.len(), 2);
+        assert!(rels.iter().all(|r| r.kind == k1 || r.kind == k2));
+    }
+
+    // ─── net_influence_between ────────────────────────────────────────────────
+
+    #[test]
+    fn net_influence_between_no_relationship_is_zero() {
+        let w = World::new();
+        let net = net_influence_between(&w, LocusId(0), LocusId(1), |_, _| None);
+        assert_eq!(net, 0.0);
+    }
+
+    #[test]
+    fn net_influence_between_single_kind_sums_activity() {
+        use graph_core::{Endpoints, InfluenceKindId, StateVector};
+        let mut w = World::new();
+        let k = InfluenceKindId(1);
+        // Two relationships: A→B (activity 2.0) and B→A (activity 1.5)
+        w.add_relationship(Endpoints::directed(LocusId(0), LocusId(1)), k, StateVector::from_slice(&[2.0, 0.0]));
+        w.add_relationship(Endpoints::directed(LocusId(1), LocusId(0)), k, StateVector::from_slice(&[1.5, 0.0]));
+
+        // Same kind, no cross-kind interaction: sum = 3.5
+        let net = net_influence_between(&w, LocusId(0), LocusId(1), |_, _| None);
+        assert!((net - 3.5).abs() < 1e-5, "expected 3.5, got {net}");
+    }
+
+    #[test]
+    fn net_influence_between_synergistic_interaction_applies_boost() {
+        use graph_core::{Endpoints, InfluenceKindId, StateVector};
+        let mut w = World::new();
+        let excite = InfluenceKindId(1);
+        let dopamine = InfluenceKindId(2);
+        w.add_relationship(Endpoints::directed(LocusId(0), LocusId(1)), excite, StateVector::from_slice(&[1.0, 0.0]));
+        w.add_relationship(Endpoints::directed(LocusId(0), LocusId(1)), dopamine, StateVector::from_slice(&[1.0, 0.0]));
+
+        // Combined activity = 2.0, boost = 1.5 → 3.0
+        let net = net_influence_between(&w, LocusId(0), LocusId(1), |ka, kb| {
+            if (ka == excite && kb == dopamine) || (ka == dopamine && kb == excite) {
+                Some(InteractionEffect::Synergistic { boost: 1.5 })
+            } else {
+                None
+            }
+        });
+        assert!((net - 3.0).abs() < 1e-5, "expected 3.0, got {net}");
+    }
+
+    #[test]
+    fn net_influence_between_antagonistic_interaction_dampens() {
+        use graph_core::{Endpoints, InfluenceKindId, StateVector};
+        let mut w = World::new();
+        let excite = InfluenceKindId(1);
+        let inhibit = InfluenceKindId(2);
+        w.add_relationship(Endpoints::directed(LocusId(0), LocusId(1)), excite, StateVector::from_slice(&[1.0, 0.0]));
+        w.add_relationship(Endpoints::directed(LocusId(0), LocusId(1)), inhibit, StateVector::from_slice(&[1.0, 0.0]));
+
+        // Combined activity = 2.0, dampen = 0.5 → 1.0
+        let net = net_influence_between(&w, LocusId(0), LocusId(1), |_, _| {
+            Some(InteractionEffect::Antagonistic { dampen: 0.5 })
+        });
+        assert!((net - 1.0).abs() < 1e-5, "expected 1.0, got {net}");
     }
 }

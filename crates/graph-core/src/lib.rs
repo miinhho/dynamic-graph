@@ -38,7 +38,8 @@ pub use entity::{
 pub use perspective::EmergenceProposal;
 pub use stabilization::{SaturationMode, StabilizationConfig};
 pub use relationship::{
-    EndpointKey, Endpoints, Relationship, RelationshipId, RelationshipLineage, RelationshipSlotDef,
+    EndpointKey, Endpoints, InteractionEffect, Relationship, RelationshipId, RelationshipLineage,
+    RelationshipSlotDef,
 };
 pub use state::{StateSlotDef, StateVector};
 pub use event::WorldEvent;

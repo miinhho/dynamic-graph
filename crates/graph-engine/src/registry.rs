@@ -15,7 +15,7 @@
 //! an unregistered kind — use `get()` for lenient lookups that tolerate
 //! missing registrations.
 
-use graph_core::{Encoder, InfluenceKindId, LocusKindId, LocusProgram, RelationshipSlotDef, StabilizationConfig, StateSlotDef, StateVector};
+use graph_core::{Encoder, InfluenceKindId, InteractionEffect, LocusKindId, LocusProgram, RelationshipSlotDef, StabilizationConfig, StateSlotDef, StateVector};
 use rustc_hash::FxHashMap;
 
 /// Type alias for the slot-definitions map passed into `BatchContext`.
@@ -115,6 +115,16 @@ pub struct InfluenceKindConfig {
     /// this value (the first touch), so inhibitory relationships start
     /// negative immediately.
     pub activity_contribution: f32,
+    /// Optional parent kind in the influence-kind hierarchy.
+    ///
+    /// When set, this kind is treated as a specialisation of the parent.
+    /// `InfluenceKindRegistry::ancestors_of(kind)` walks the parent chain;
+    /// `is_subkind_of(child, ancestor)` tests membership.
+    ///
+    /// The parent **must already be registered** at the time `insert()` is
+    /// called. This constraint makes cycles structurally impossible:
+    /// the new kind cannot yet appear in any ancestor chain.
+    pub parent: Option<InfluenceKindId>,
     /// When `true`, auto-emerged relationships for this kind use
     /// `Endpoints::Symmetric` instead of `Endpoints::Directed`.
     ///
@@ -141,6 +151,7 @@ impl InfluenceKindConfig {
             prune_activity_threshold: 0.0,
             extra_slots: Vec::new(),
             activity_contribution: 1.0,
+            parent: None,
             symmetric: false,
             applies_between: Vec::new(),
         }
@@ -186,6 +197,16 @@ impl InfluenceKindConfig {
     /// zero = neutral. Must be finite (not NaN or ±inf).
     pub fn with_activity_contribution(mut self, contribution: f32) -> Self {
         self.activity_contribution = contribution;
+        self
+    }
+
+    /// Declare this kind as a child of `parent` in the influence-kind hierarchy.
+    ///
+    /// The parent must already be registered before calling `InfluenceKindRegistry::insert`.
+    /// Cycles are impossible by construction: the new kind is not yet in the registry
+    /// when `insert` validates the parent link.
+    pub fn with_parent(mut self, parent: InfluenceKindId) -> Self {
+        self.parent = Some(parent);
         self
     }
 
@@ -398,6 +419,10 @@ pub struct InfluenceKindRegistry {
     /// kind is inserted. Accessed by the engine to borrow into BatchContext
     /// without per-batch allocation.
     slot_defs: SlotDefsMap,
+    /// Cross-kind interaction effects registered via `register_interaction`.
+    /// Keyed by `(kind_a, kind_b)` in canonical (min, max) order so lookup
+    /// is symmetric: `interaction_between(A, B)` == `interaction_between(B, A)`.
+    interactions: FxHashMap<(InfluenceKindId, InfluenceKindId), InteractionEffect>,
 }
 
 impl InfluenceKindRegistry {
@@ -449,10 +474,88 @@ impl InfluenceKindRegistry {
             "InfluenceKindConfig '{}': activity_contribution must be finite, got {}",
             config.name, config.activity_contribution
         );
+        if let Some(parent) = config.parent {
+            assert!(
+                self.configs.contains_key(&parent),
+                "InfluenceKindConfig '{}': parent {parent:?} must be registered before inserting child",
+                config.name
+            );
+        }
         if self.configs.insert(kind, config).is_some() {
             panic!("InfluenceKindRegistry: duplicate registration for {kind:?}");
         }
         self.rebuild_slot_defs();
+    }
+
+    // ─── Kind hierarchy ────────────────────────────────────────────────────────
+
+    /// Walk the parent chain of `kind` and return every ancestor, nearest first.
+    ///
+    /// Returns an empty `Vec` when `kind` is a root (has no parent) or is
+    /// not registered. Does not include `kind` itself.
+    pub fn ancestors_of(&self, kind: InfluenceKindId) -> Vec<InfluenceKindId> {
+        let mut result = Vec::new();
+        let mut current = kind;
+        while let Some(cfg) = self.configs.get(&current) {
+            if let Some(parent) = cfg.parent {
+                result.push(parent);
+                current = parent;
+            } else {
+                break;
+            }
+        }
+        result
+    }
+
+    /// Return `true` when `child` has `ancestor` anywhere in its parent chain.
+    ///
+    /// Returns `false` for unregistered kinds and when `child == ancestor`.
+    pub fn is_subkind_of(&self, child: InfluenceKindId, ancestor: InfluenceKindId) -> bool {
+        self.ancestors_of(child).contains(&ancestor)
+    }
+
+    /// Return `kind` plus all kinds that have `kind` anywhere in their ancestor chain.
+    ///
+    /// Scans all registered configs — O(n × depth). Fast for typical registry sizes.
+    pub fn kind_and_descendants(&self, kind: InfluenceKindId) -> Vec<InfluenceKindId> {
+        let mut result = vec![kind];
+        for (&id, _) in &self.configs {
+            if id != kind && self.is_subkind_of(id, kind) {
+                result.push(id);
+            }
+        }
+        result
+    }
+
+    // ─── Kind interaction rules ────────────────────────────────────────────────
+
+    /// Declare the interaction effect between two influence kinds.
+    ///
+    /// The pair `(kind_a, kind_b)` is stored in canonical order so
+    /// `interaction_between(a, b)` and `interaction_between(b, a)` return
+    /// the same result. Registering a pair a second time overwrites the
+    /// previous effect.
+    pub fn register_interaction(
+        &mut self,
+        kind_a: InfluenceKindId,
+        kind_b: InfluenceKindId,
+        effect: InteractionEffect,
+    ) {
+        let key = canonical_pair(kind_a, kind_b);
+        self.interactions.insert(key, effect);
+    }
+
+    /// Return the declared interaction effect for `(kind_a, kind_b)`, or `None`
+    /// if no interaction has been registered for this pair.
+    ///
+    /// Lookup is symmetric: `interaction_between(a, b)` == `interaction_between(b, a)`.
+    pub fn interaction_between(
+        &self,
+        kind_a: InfluenceKindId,
+        kind_b: InfluenceKindId,
+    ) -> Option<&InteractionEffect> {
+        let key = canonical_pair(kind_a, kind_b);
+        self.interactions.get(&key)
     }
 
     fn rebuild_slot_defs(&mut self) {
@@ -532,6 +635,12 @@ impl InfluenceKindRegistry {
     pub fn is_empty(&self) -> bool {
         self.configs.is_empty()
     }
+}
+
+/// Return a canonical (min, max) pair so interaction lookups are symmetric.
+#[inline]
+fn canonical_pair(a: InfluenceKindId, b: InfluenceKindId) -> (InfluenceKindId, InfluenceKindId) {
+    if a <= b { (a, b) } else { (b, a) }
 }
 
 #[cfg(test)]
@@ -696,5 +805,131 @@ mod tests {
         assert!((cfg.plasticity.learning_rate - 0.05).abs() < 1e-7);
         assert!((cfg.plasticity.weight_decay - 0.99).abs() < 1e-7);
         assert!((cfg.plasticity.max_weight - 1.0).abs() < 1e-7);
+    }
+
+    // ─── Kind hierarchy ────────────────────────────────────────────────────────
+
+    fn three_level_registry() -> InfluenceKindRegistry {
+        // root → mid → leaf hierarchy
+        // root(1), mid(2, parent=1), leaf(3, parent=2)
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(InfluenceKindId(1), InfluenceKindConfig::new("root"));
+        reg.insert(
+            InfluenceKindId(2),
+            InfluenceKindConfig::new("mid").with_parent(InfluenceKindId(1)),
+        );
+        reg.insert(
+            InfluenceKindId(3),
+            InfluenceKindConfig::new("leaf").with_parent(InfluenceKindId(2)),
+        );
+        reg
+    }
+
+    #[test]
+    fn ancestors_of_root_is_empty() {
+        let reg = three_level_registry();
+        assert!(reg.ancestors_of(InfluenceKindId(1)).is_empty());
+    }
+
+    #[test]
+    fn ancestors_of_mid_contains_root() {
+        let reg = three_level_registry();
+        let ancestors = reg.ancestors_of(InfluenceKindId(2));
+        assert_eq!(ancestors, vec![InfluenceKindId(1)]);
+    }
+
+    #[test]
+    fn ancestors_of_leaf_is_root_and_mid() {
+        let reg = three_level_registry();
+        let ancestors = reg.ancestors_of(InfluenceKindId(3));
+        assert_eq!(ancestors, vec![InfluenceKindId(2), InfluenceKindId(1)]);
+    }
+
+    #[test]
+    fn is_subkind_of_transitive() {
+        let reg = three_level_registry();
+        assert!(reg.is_subkind_of(InfluenceKindId(3), InfluenceKindId(1))); // leaf is sub of root
+        assert!(reg.is_subkind_of(InfluenceKindId(3), InfluenceKindId(2))); // leaf is sub of mid
+        assert!(reg.is_subkind_of(InfluenceKindId(2), InfluenceKindId(1))); // mid is sub of root
+        assert!(!reg.is_subkind_of(InfluenceKindId(1), InfluenceKindId(3))); // root is NOT sub of leaf
+        assert!(!reg.is_subkind_of(InfluenceKindId(3), InfluenceKindId(3))); // not sub of itself
+    }
+
+    #[test]
+    fn kind_and_descendants_includes_all_children() {
+        let reg = three_level_registry();
+        let mut desc = reg.kind_and_descendants(InfluenceKindId(1));
+        desc.sort();
+        assert_eq!(desc, vec![InfluenceKindId(1), InfluenceKindId(2), InfluenceKindId(3)]);
+
+        let mut mid_desc = reg.kind_and_descendants(InfluenceKindId(2));
+        mid_desc.sort();
+        assert_eq!(mid_desc, vec![InfluenceKindId(2), InfluenceKindId(3)]);
+
+        let leaf_desc = reg.kind_and_descendants(InfluenceKindId(3));
+        assert_eq!(leaf_desc, vec![InfluenceKindId(3)]);
+    }
+
+    #[test]
+    #[should_panic(expected = "parent")]
+    fn insert_with_unregistered_parent_panics() {
+        let mut reg = InfluenceKindRegistry::new();
+        // parent(99) is not registered
+        reg.insert(
+            InfluenceKindId(1),
+            InfluenceKindConfig::new("orphan").with_parent(InfluenceKindId(99)),
+        );
+    }
+
+    // ─── Kind interaction rules ────────────────────────────────────────────────
+
+    #[test]
+    fn interaction_between_is_symmetric() {
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(InfluenceKindId(1), InfluenceKindConfig::new("excite"));
+        reg.insert(InfluenceKindId(2), InfluenceKindConfig::new("inhibit"));
+        reg.register_interaction(
+            InfluenceKindId(1),
+            InfluenceKindId(2),
+            InteractionEffect::Antagonistic { dampen: 0.5 },
+        );
+        // Both orderings return the same result
+        assert_eq!(
+            reg.interaction_between(InfluenceKindId(1), InfluenceKindId(2)),
+            reg.interaction_between(InfluenceKindId(2), InfluenceKindId(1)),
+        );
+        assert!(matches!(
+            reg.interaction_between(InfluenceKindId(1), InfluenceKindId(2)),
+            Some(InteractionEffect::Antagonistic { dampen }) if (*dampen - 0.5).abs() < 1e-6
+        ));
+    }
+
+    #[test]
+    fn interaction_between_unregistered_pair_is_none() {
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(InfluenceKindId(1), InfluenceKindConfig::new("a"));
+        reg.insert(InfluenceKindId(2), InfluenceKindConfig::new("b"));
+        assert!(reg.interaction_between(InfluenceKindId(1), InfluenceKindId(2)).is_none());
+    }
+
+    #[test]
+    fn register_interaction_overwrite() {
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(InfluenceKindId(1), InfluenceKindConfig::new("a"));
+        reg.insert(InfluenceKindId(2), InfluenceKindConfig::new("b"));
+        reg.register_interaction(
+            InfluenceKindId(1),
+            InfluenceKindId(2),
+            InteractionEffect::Synergistic { boost: 1.5 },
+        );
+        reg.register_interaction(
+            InfluenceKindId(1),
+            InfluenceKindId(2),
+            InteractionEffect::Neutral,
+        );
+        assert_eq!(
+            reg.interaction_between(InfluenceKindId(1), InfluenceKindId(2)),
+            Some(&InteractionEffect::Neutral),
+        );
     }
 }
