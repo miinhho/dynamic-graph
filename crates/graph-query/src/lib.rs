@@ -39,6 +39,7 @@
 
 mod causality;
 mod filter;
+mod profile;
 mod query;
 mod traversal;
 
@@ -47,6 +48,7 @@ pub use causality::{
     changes_to_relationship_in_range, common_ancestors, committed_batches,
     is_ancestor_of, last_change_to_locus, last_change_to_relationship,
     loci_changed_in_batch, relationship_volatility, relationship_volatility_all,
+    relationship_activity_trend, relationship_activity_trend_with_threshold, Trend,
     relationships_changed_in_batch, root_stimuli, root_stimuli_for_relationship,
 };
 pub use filter::{
@@ -59,7 +61,7 @@ pub use filter::{
     locus_degree, locus_in_degree, locus_out_degree,
     lookup_loci, lookup_relationships,
     most_connected_loci, most_connected_loci_with_degree,
-    most_changed_relationships, relationships_by_change_count,
+    most_changed_relationships, most_similar_relationships, relationships_by_change_count,
     relationships_above_strength, relationships_top_n_by_strength,
     relationships_created_in, relationships_idle_for, relationships_older_than,
     relationship_touch_rate,
@@ -70,6 +72,7 @@ pub use filter::{
     relationships_with_activity, relationships_with_slot, relationships_with_weight,
     relationships_with_str_property, relationships_with_f64_property,
 };
+pub use profile::{relationship_profile, RelationshipBundle};
 pub use query::{
     loci, loci_from_ids, LociQuery,
     relationships, relationships_from_ids, RelationshipsQuery,
@@ -78,11 +81,12 @@ pub use traversal::{
     connected_components, connected_components_of_kind,
     directed_path, directed_path_of_kind,
     downstream_of, downstream_of_kind,
-    hub_loci, isolated_loci,
+    hub_loci, infer_transitive, isolated_loci,
     neighbors_of, neighbors_of_kind,
     path_between, path_between_of_kind,
     reachable_from, reachable_from_of_kind, reachable_matching,
     reciprocal_of, reciprocal_pairs,
     strongest_path,
     upstream_of, upstream_of_kind,
+    TransitiveRule,
 };

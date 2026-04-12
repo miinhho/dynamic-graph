@@ -134,6 +134,48 @@ impl StateVector {
     pub fn l2_norm(&self) -> f32 {
         self.slots.iter().map(|v| v * v).sum::<f32>().sqrt()
     }
+
+    /// Dot product with another `StateVector`.
+    ///
+    /// Shorter vectors are treated as zero-padded. Returns 0.0 for empty vectors.
+    pub fn dot(&self, other: &StateVector) -> f32 {
+        let len = self.slots.len().min(other.slots.len());
+        self.slots[..len]
+            .iter()
+            .zip(&other.slots[..len])
+            .map(|(a, b)| a * b)
+            .sum()
+    }
+
+    /// Cosine similarity with another `StateVector` — the angular similarity
+    /// between the two vectors, in `[-1.0, 1.0]`.
+    ///
+    /// Returns `0.0` when either vector is all-zero (undefined by convention).
+    /// Only the shared prefix (length = `min(self.dim, other.dim)`) is used
+    /// when the vectors have different dimensions.
+    pub fn cosine_similarity(&self, other: &StateVector) -> f32 {
+        let norm_a = self.l2_norm();
+        let norm_b = other.l2_norm();
+        if norm_a < 1e-12 || norm_b < 1e-12 {
+            return 0.0;
+        }
+        (self.dot(other) / (norm_a * norm_b)).clamp(-1.0, 1.0)
+    }
+
+    /// Euclidean distance between two `StateVector`s.
+    ///
+    /// Shorter vectors are treated as zero-padded.
+    pub fn euclidean_distance(&self, other: &StateVector) -> f32 {
+        let len = self.slots.len().max(other.slots.len());
+        (0..len)
+            .map(|i| {
+                let a = self.slots.get(i).copied().unwrap_or(0.0);
+                let b = other.slots.get(i).copied().unwrap_or(0.0);
+                (a - b) * (a - b)
+            })
+            .sum::<f32>()
+            .sqrt()
+    }
 }
 
 #[cfg(test)]
@@ -173,5 +215,52 @@ mod tests {
         let v = StateVector::from_slice(&[5.0, 3.0]);
         let v2 = v.with_slot_delta(0, -2.0);
         assert_eq!(v2.as_slice(), &[3.0, 3.0]);
+    }
+
+    #[test]
+    fn dot_product_is_correct() {
+        let a = StateVector::from_slice(&[1.0, 2.0, 3.0]);
+        let b = StateVector::from_slice(&[4.0, 5.0, 6.0]);
+        assert!((a.dot(&b) - 32.0).abs() < 1e-6); // 1*4 + 2*5 + 3*6 = 32
+    }
+
+    #[test]
+    fn dot_truncates_to_shorter_vector() {
+        let a = StateVector::from_slice(&[1.0, 2.0, 3.0]);
+        let b = StateVector::from_slice(&[4.0, 5.0]);
+        assert!((a.dot(&b) - 14.0).abs() < 1e-6); // 1*4 + 2*5 = 14 (slot 2 ignored)
+    }
+
+    #[test]
+    fn cosine_similarity_identical_vectors_is_one() {
+        let v = StateVector::from_slice(&[1.0, 2.0, 3.0]);
+        assert!((v.cosine_similarity(&v) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cosine_similarity_orthogonal_is_zero() {
+        let a = StateVector::from_slice(&[1.0, 0.0]);
+        let b = StateVector::from_slice(&[0.0, 1.0]);
+        assert!(a.cosine_similarity(&b).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cosine_similarity_zero_vector_is_zero() {
+        let a = StateVector::from_slice(&[1.0, 2.0]);
+        let z = StateVector::zeros(2);
+        assert_eq!(a.cosine_similarity(&z), 0.0);
+    }
+
+    #[test]
+    fn euclidean_distance_same_vector_is_zero() {
+        let v = StateVector::from_slice(&[1.0, 2.0, 3.0]);
+        assert!(v.euclidean_distance(&v).abs() < 1e-6);
+    }
+
+    #[test]
+    fn euclidean_distance_known_value() {
+        let a = StateVector::from_slice(&[0.0, 0.0]);
+        let b = StateVector::from_slice(&[3.0, 4.0]);
+        assert!((a.euclidean_distance(&b) - 5.0).abs() < 1e-6);
     }
 }

@@ -566,6 +566,98 @@ fn bfs_components(
     components
 }
 
+// ─── Transitive inference ─────────────────────────────────────────────────────
+
+/// Rule for composing relationship activities along a directed path.
+///
+/// Used by [`infer_transitive`] to combine edge activities when walking
+/// from `from` to `to` through intermediate loci.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TransitiveRule {
+    /// Multiply activities along the path: `a₁ × a₂ × … × aₙ`.
+    ///
+    /// Strength weakens with each hop — models trust or reliability chains
+    /// where every intermediate link is a bottleneck (0.9 × 0.9 = 0.81).
+    Product,
+    /// Take the minimum activity along the path.
+    ///
+    /// The weakest link dominates — conservative estimate of throughput.
+    Min,
+    /// Arithmetic mean of edge activities.
+    ///
+    /// All links are treated as equally important. Useful when the chain
+    /// length varies and you want scale-invariant comparison.
+    Mean,
+}
+
+/// Infer the transitive influence of `kind` from `from` to `to` by composing
+/// activities along the shortest directed path of that kind.
+///
+/// Returns `None` when:
+/// - No directed path of `kind` exists from `from` to `to`.
+/// - `from == to` (trivially connected; no edges to compose).
+/// - Any edge on the path has no relationship in the world (should not
+///   happen for a valid path, but guards against stale IDs).
+///
+/// # Example
+///
+/// ```ignore
+/// // A→B TRUST(0.8), B→C TRUST(0.7)
+/// let implied = infer_transitive(&world, a, c, TRUST, TransitiveRule::Product);
+/// assert!((implied.unwrap() - 0.56).abs() < 1e-5);
+/// ```
+pub fn infer_transitive(
+    world: &World,
+    from: LocusId,
+    to: LocusId,
+    kind: graph_core::InfluenceKindId,
+    rule: TransitiveRule,
+) -> Option<f32> {
+    if from == to {
+        return None;
+    }
+    let path = directed_path_of_kind(world, from, to, kind)?;
+    if path.len() < 2 {
+        return None;
+    }
+
+    // Collect edge activities along consecutive locus pairs in the path.
+    let activities: Vec<f32> = path
+        .windows(2)
+        .map(|w| {
+            let (a, b) = (w[0], w[1]);
+            world
+                .relationships()
+                .iter()
+                .find(|r| {
+                    r.kind == kind
+                        && matches!(
+                            r.endpoints,
+                            graph_core::Endpoints::Directed { from: fa, to: tb }
+                            if fa == a && tb == b
+                        )
+                })
+                .map(|r| r.activity())
+                .unwrap_or(0.0)
+        })
+        .collect();
+
+    if activities.is_empty() {
+        return None;
+    }
+
+    let result = match rule {
+        TransitiveRule::Product => activities.iter().product(),
+        TransitiveRule::Min => activities
+            .iter()
+            .cloned()
+            .fold(f32::INFINITY, f32::min),
+        TransitiveRule::Mean => activities.iter().sum::<f32>() / activities.len() as f32,
+    };
+
+    Some(result)
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1090,5 +1182,80 @@ mod tests {
         // No kind-3 neighbors
         let rk3: RelationshipKindId = InfluenceKindId(3);
         assert!(neighbors_of_kind(&w, LocusId(0), rk3).is_empty());
+    }
+
+    // ─── infer_transitive ────────────────────────────────────────────────────
+
+    fn trust_chain_world() -> World {
+        // A→B TRUST(0.8), B→C TRUST(0.7)
+        use graph_core::{Endpoints, InfluenceKindId, LocusKindId, Relationship, RelationshipKindId, RelationshipLineage, StateVector};
+        let lk = LocusKindId(1);
+        let trust: RelationshipKindId = InfluenceKindId(10);
+        let mut w = World::new();
+        for i in 0u64..3 {
+            w.insert_locus(Locus::new(LocusId(i), lk, StateVector::zeros(1)));
+        }
+        let id1 = w.relationships_mut().mint_id();
+        w.relationships_mut().insert(Relationship {
+            id: id1, kind: trust,
+            endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(1) },
+            state: StateVector::from_slice(&[0.8, 0.0]),
+            lineage: RelationshipLineage { created_by: None, last_touched_by: None, change_count: 1, kinds_observed: vec![trust] },
+            created_batch: graph_core::BatchId(0), last_decayed_batch: 0, metadata: None,
+        });
+        let id2 = w.relationships_mut().mint_id();
+        w.relationships_mut().insert(Relationship {
+            id: id2, kind: trust,
+            endpoints: Endpoints::Directed { from: LocusId(1), to: LocusId(2) },
+            state: StateVector::from_slice(&[0.7, 0.0]),
+            lineage: RelationshipLineage { created_by: None, last_touched_by: None, change_count: 1, kinds_observed: vec![trust] },
+            created_batch: graph_core::BatchId(0), last_decayed_batch: 0, metadata: None,
+        });
+        w
+    }
+
+    #[test]
+    fn infer_transitive_product_weakens_with_hops() {
+        use graph_core::InfluenceKindId;
+        let w = trust_chain_world();
+        let trust: graph_core::RelationshipKindId = InfluenceKindId(10);
+        let result = infer_transitive(&w, LocusId(0), LocusId(2), trust, TransitiveRule::Product);
+        assert!(result.is_some());
+        assert!((result.unwrap() - 0.8 * 0.7).abs() < 1e-5);
+    }
+
+    #[test]
+    fn infer_transitive_min_is_weakest_link() {
+        use graph_core::InfluenceKindId;
+        let w = trust_chain_world();
+        let trust: graph_core::RelationshipKindId = InfluenceKindId(10);
+        let result = infer_transitive(&w, LocusId(0), LocusId(2), trust, TransitiveRule::Min);
+        assert!((result.unwrap() - 0.7).abs() < 1e-5);
+    }
+
+    #[test]
+    fn infer_transitive_mean_averages_edges() {
+        use graph_core::InfluenceKindId;
+        let w = trust_chain_world();
+        let trust: graph_core::RelationshipKindId = InfluenceKindId(10);
+        let result = infer_transitive(&w, LocusId(0), LocusId(2), trust, TransitiveRule::Mean);
+        assert!((result.unwrap() - 0.75).abs() < 1e-5);
+    }
+
+    #[test]
+    fn infer_transitive_no_path_returns_none() {
+        use graph_core::InfluenceKindId;
+        let w = trust_chain_world();
+        // Reverse direction: no C→A path
+        let trust: graph_core::RelationshipKindId = InfluenceKindId(10);
+        assert!(infer_transitive(&w, LocusId(2), LocusId(0), trust, TransitiveRule::Product).is_none());
+    }
+
+    #[test]
+    fn infer_transitive_same_locus_returns_none() {
+        use graph_core::InfluenceKindId;
+        let w = trust_chain_world();
+        let trust: graph_core::RelationshipKindId = InfluenceKindId(10);
+        assert!(infer_transitive(&w, LocusId(0), LocusId(0), trust, TransitiveRule::Product).is_none());
     }
 }

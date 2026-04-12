@@ -240,6 +240,98 @@ pub fn relationship_volatility_all(world: &World, rel: RelationshipId) -> f32 {
     relationship_volatility(world, rel, BatchId(0), world.current_batch())
 }
 
+// ─── Activity trend ───────────────────────────────────────────────────────────
+
+/// Directional trend of a relationship's activity over explicit change history.
+///
+/// Computed via ordinary least-squares linear regression on the sequence of
+/// `after[0]` (activity slot) values recorded in `ChangeSubject::Relationship`
+/// log entries within `[from_batch, to_batch]`.
+///
+/// # Variants
+///
+/// - `Rising { slope }` — activity is increasing. `slope > 0`.
+/// - `Falling { slope }` — activity is decreasing. `slope < 0`.
+/// - `Stable` — slope is within `±threshold` (default `0.05`).
+///
+/// # Limitation
+///
+/// Like `relationship_volatility`, this query relies on the `ChangeLog`.
+/// Auto-emerged relationships that are never the subject of an explicit
+/// program-proposed change have **no** log entries and will return `None`.
+/// For those, use `relationship_touch_rate` or examine the current activity
+/// directly via `world.relationships().get(rel_id)?.activity()`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Trend {
+    /// Activity is growing over the window. `slope` is the regression
+    /// coefficient in activity-units-per-batch-index (always positive).
+    Rising { slope: f32 },
+    /// Activity is shrinking over the window. `slope` is always negative.
+    Falling { slope: f32 },
+    /// No statistically meaningful direction within `±threshold`.
+    Stable,
+}
+
+/// Compute the activity trend of `rel` over `[from_batch, to_batch]`.
+///
+/// Returns `None` when there are fewer than two change-log entries in the
+/// range (insufficient data for regression). See [`Trend`] for the definition
+/// of each variant and the note on auto-emerged relationships.
+pub fn relationship_activity_trend(
+    world: &World,
+    rel: RelationshipId,
+    from_batch: BatchId,
+    to_batch: BatchId,
+) -> Option<Trend> {
+    relationship_activity_trend_with_threshold(world, rel, from_batch, to_batch, 0.05)
+}
+
+/// Like [`relationship_activity_trend`] but with an explicit `stable_threshold`.
+///
+/// A slope whose absolute value is ≤ `stable_threshold` is classified as
+/// `Trend::Stable`. Default in the non-threshold variant is `0.05`.
+pub fn relationship_activity_trend_with_threshold(
+    world: &World,
+    rel: RelationshipId,
+    from_batch: BatchId,
+    to_batch: BatchId,
+    stable_threshold: f32,
+) -> Option<Trend> {
+    let changes = changes_to_relationship_in_range(world, rel, from_batch, to_batch);
+    let n = changes.len();
+    if n < 2 {
+        return None;
+    }
+
+    // OLS: slope = (n·Σxy - Σx·Σy) / (n·Σx² - (Σx)²)
+    // x = change index (0..n-1), y = activity value
+    let nf = n as f32;
+    let activity = |c: &&Change| c.after.as_slice().first().copied().unwrap_or(0.0);
+
+    let sum_x = nf * (nf - 1.0) / 2.0;        // 0+1+…+(n-1)
+    let sum_x2 = nf * (nf - 1.0) * (2.0 * nf - 1.0) / 6.0;
+    let sum_y: f32 = changes.iter().map(activity).sum();
+    let sum_xy: f32 = changes
+        .iter()
+        .enumerate()
+        .map(|(i, c)| i as f32 * activity(c))
+        .sum();
+
+    let denom = nf * sum_x2 - sum_x * sum_x;
+    if denom.abs() < 1e-12 {
+        return Some(Trend::Stable);
+    }
+    let slope = (nf * sum_xy - sum_x * sum_y) / denom;
+
+    Some(if slope > stable_threshold {
+        Trend::Rising { slope }
+    } else if slope < -stable_threshold {
+        Trend::Falling { slope }
+    } else {
+        Trend::Stable
+    })
+}
+
 // ─── Ancestor queries ─────────────────────────────────────────────────────────
 
 /// All causal ancestor `ChangeId`s of `target`, via BFS in the predecessor

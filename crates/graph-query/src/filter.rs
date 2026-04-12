@@ -248,6 +248,43 @@ where
         .collect()
 }
 
+/// The `n` relationships most similar to `rel_id` by cosine similarity of
+/// their `StateVector`s, sorted descending (most similar first).
+///
+/// Excludes `rel_id` itself from the results. Returns fewer than `n` entries
+/// when fewer than `n` other relationships exist. Returns an empty `Vec` when
+/// `rel_id` is not in the world or `n == 0`.
+///
+/// Similarity is computed on the full `StateVector` (activity, weight, and any
+/// extra slots). For kind-homogeneous comparisons this directly reflects
+/// semantic proximity; for cross-kind comparisons the slot semantics differ, so
+/// restrict with `relationships_of_kind` before calling if needed.
+pub fn most_similar_relationships(
+    world: &World,
+    rel_id: RelationshipId,
+    n: usize,
+) -> Vec<(RelationshipId, f32)> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let anchor = match world.relationships().get(rel_id) {
+        Some(r) => r,
+        None => return Vec::new(),
+    };
+    let anchor_state = anchor.state.clone();
+
+    let mut scored: Vec<(RelationshipId, f32)> = world
+        .relationships()
+        .iter()
+        .filter(|r| r.id != rel_id)
+        .map(|r| (r.id, anchor_state.cosine_similarity(&r.state)))
+        .collect();
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(n);
+    scored
+}
+
 /// All relationships matching a custom predicate.
 pub fn relationships_matching<F>(world: &World, pred: F) -> Vec<&Relationship>
 where
