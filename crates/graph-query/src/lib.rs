@@ -73,6 +73,8 @@ pub use filter::{
     relationships_with_str_property, relationships_with_f64_property,
 };
 pub use profile::{relationship_profile, RelationshipBundle};
+// `net_influence_between` is also re-exported via filter; callers that prefer
+// the bundle-first style should use `relationship_profile(...).net_activity_with_interactions(...)`.
 pub use query::{
     loci, loci_from_ids, LociQuery,
     relationships, relationships_from_ids, RelationshipsQuery,

@@ -21,7 +21,7 @@
 //! let sim = profile_ab.state_similarity(&profile_ac);
 //! ```
 
-use graph_core::{InfluenceKindId, LocusId, Relationship};
+use graph_core::{InfluenceKindId, InteractionEffect, LocusId, Relationship};
 use graph_world::World;
 
 /// All relationships between a specific pair of loci, across every kind.
@@ -103,6 +103,65 @@ impl<'w> RelationshipBundle<'w> {
         self.net_activity() < 0.0
     }
 
+    /// All relationships in the bundle of a specific influence kind.
+    pub fn of_kind(&self, kind: InfluenceKindId) -> Vec<&Relationship> {
+        self.relationships.iter().copied().filter(|r| r.kind == kind).collect()
+    }
+
+    /// Net activity after applying declared cross-kind interaction effects.
+    ///
+    /// Works identically to [`crate::net_influence_between`] but uses the
+    /// already-collected `relationships`, avoiding a second world scan.
+    ///
+    /// `interaction_fn(ka, kb)` returns `None` for no declared interaction
+    /// (kinds are summed additively). Return `Some(InteractionEffect::Neutral)`
+    /// to explicitly mark a pair as additive.
+    pub fn net_activity_with_interactions<F>(&self, interaction_fn: F) -> f32
+    where
+        F: Fn(InfluenceKindId, InfluenceKindId) -> Option<InteractionEffect>,
+    {
+        use rustc_hash::{FxHashMap, FxHashSet};
+
+        let mut by_kind: FxHashMap<InfluenceKindId, f32> = FxHashMap::default();
+        for rel in &self.relationships {
+            *by_kind.entry(rel.kind).or_insert(0.0) += rel.activity();
+        }
+
+        if by_kind.is_empty() {
+            return 0.0;
+        }
+
+        let kinds: Vec<InfluenceKindId> = by_kind.keys().copied().collect();
+        let mut merged: FxHashSet<InfluenceKindId> = FxHashSet::default();
+        let mut total = 0.0f32;
+
+        for i in 0..kinds.len() {
+            for j in (i + 1)..kinds.len() {
+                let ka = kinds[i];
+                let kb = kinds[j];
+                if let Some(effect) = interaction_fn(ka, kb) {
+                    let combined = by_kind[&ka] + by_kind[&kb];
+                    let adjusted = match effect {
+                        InteractionEffect::Synergistic { boost } => combined * boost,
+                        InteractionEffect::Antagonistic { dampen } => combined * dampen,
+                        InteractionEffect::Neutral => combined,
+                    };
+                    total += adjusted;
+                    merged.insert(ka);
+                    merged.insert(kb);
+                }
+            }
+        }
+
+        for (kind, activity) in &by_kind {
+            if !merged.contains(kind) {
+                total += activity;
+            }
+        }
+
+        total
+    }
+
     /// Cosine similarity between this bundle and another, computed on a
     /// kind-indexed activity vector.
     ///
@@ -154,11 +213,7 @@ impl<'w> RelationshipBundle<'w> {
 /// }
 /// ```
 pub fn relationship_profile<'w>(world: &'w World, a: LocusId, b: LocusId) -> RelationshipBundle<'w> {
-    let relationships = world
-        .relationships()
-        .iter()
-        .filter(|r| r.endpoints.involves(a) && r.endpoints.involves(b))
-        .collect();
+    let relationships = world.relationships_between(a, b).collect();
     RelationshipBundle { a, b, relationships }
 }
 

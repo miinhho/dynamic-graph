@@ -41,6 +41,7 @@ use graph_engine::{
     InfluenceKindRegistry, LocusKindConfig, LocusKindRegistry, PlasticityConfig, Simulation,
     SimulationConfig,
 };
+use graph_query as Q;
 use graph_world::World;
 use rustc_hash::FxHashMap;
 
@@ -316,9 +317,14 @@ fn build_world(topo: Arc<NetworkTopology>) -> (World, LocusKindRegistry, Influen
     );
     influences.insert(
         INF_INH,
+        // activity_contribution = -1.0: each touch reduces the activity slot,
+        // making inhibitory relationships show negative net_activity in bundles.
+        // No prune_threshold: the default 0.0 means the prune guard
+        // (`threshold > 0.0`) never fires, so negative-activity relationships
+        // are not incorrectly pruned.
         InfluenceKindConfig::new("inhibitory")
             .with_decay(0.90)
-            .with_prune_threshold(0.001),
+            .with_activity_contribution(-1.0),
     );
 
     (world, loci, influences)
@@ -661,14 +667,59 @@ fn main() {
     // ── Relationship stats ───────────────────────────────────────────────
 
     let rels: Vec<_> = sim.world.relationships().iter().collect();
+    let exc_rels = rels.iter().filter(|r| r.kind == INF_EXC).count();
+    let inh_rels = rels.iter().filter(|r| r.kind == INF_INH).count();
     let active_rels = rels.iter().filter(|r| r.activity() > 0.01).count();
     let max_w = rels.iter().map(|r| r.weight()).fold(0.0f32, f32::max);
     let mean_w = if rels.is_empty() { 0.0 } else {
         rels.iter().map(|r| r.weight()).sum::<f32>() / rels.len() as f32
     };
     println!("--- Relationships ---");
-    println!("  total: {}  active(>0.01): {}", rels.len(), active_rels);
+    println!("  total: {}  excitatory: {}  inhibitory: {}", rels.len(), exc_rels, inh_rels);
+    println!("  active(activity>0.01): {}", active_rels);
     println!("  max weight: {:.4}  mean weight: {:.6}", max_w, mean_w);
+    println!();
+
+    // ── Relationship bundle: multi-dimensional coupling view ─────────────
+    //
+    // Show a sample RelationshipBundle for a pair of excitatory neurons.
+    // Note: in this topology, excitatory neurons only target other excitatory
+    // neurons (range [inh_count, POP_SIZE)), so INF_INH relationships don't
+    // emerge — inhibitory neurons receive no input. The bundle API still
+    // demonstrates the pattern; a multi-kind result requires a topology where
+    // the same pair receives both excitatory and inhibitory projections.
+
+    println!("--- Relationship bundle analysis (sample) ---");
+    let inh_count = (POP_SIZE as f64 * INHIBITORY_FRAC) as u64;
+    // Two excitatory neurons from Pop A
+    let sample_a = LocusId(inh_count);     // first excitatory in Pop A
+    let sample_b = LocusId(inh_count + 1); // second excitatory in Pop A
+
+    let bundle = Q::relationship_profile(&sim.world, sample_a, sample_b);
+    if bundle.is_empty() {
+        println!(
+            "  L{} ↔ L{}: no relationships (sparse random topology — try other pairs)",
+            sample_a.0, sample_b.0
+        );
+    } else {
+        println!(
+            "  L{} ↔ L{}: {} edges  net_activity={:.3}  {}",
+            sample_a.0, sample_b.0,
+            bundle.len(),
+            bundle.net_activity(),
+            if bundle.is_inhibitory() { "net-inhibitory" } else { "net-excitatory" },
+        );
+        for (kind, act) in bundle.activity_by_kind() {
+            let kind_name = if kind == INF_EXC { "excitatory" } else { "inhibitory" };
+            println!("    kind={kind_name}  activity={act:.3}");
+        }
+    }
+
+    // Show aggregate excitatory vs inhibitory net activity across all relationships
+    let total_exc_act: f32 = rels.iter().filter(|r| r.kind == INF_EXC).map(|r| r.activity()).sum();
+    let total_inh_act: f32 = rels.iter().filter(|r| r.kind == INF_INH).map(|r| r.activity()).sum();
+    println!("  network-wide: total_exc_activity={:.1}  total_inh_activity={:.1}  balance={:.1}",
+        total_exc_act, total_inh_act, total_exc_act + total_inh_act);
     println!();
 
     // ── Performance summary ──────────────────────────────────────────────

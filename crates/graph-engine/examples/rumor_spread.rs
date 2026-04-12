@@ -565,5 +565,60 @@ fn main() {
         .collect();
     println!("  'belief' applies_between: {:?}", constraints);
 
+    // ── Transitive influence: how strong is the INFLUENCER_A→SKEPTIC_1 chain? ──
+    //
+    // The direct path is INFLUENCER_A → REG_1 → REG_3 → SKEPTIC_1 (3 hops).
+    // `infer_transitive` composes intermediate edge activities using Product rule:
+    //   composed = edge1_activity × edge2_activity × edge3_activity
+    // A low value means the signal attenuates strongly over the chain.
+
+    println!("\n--- Transitive influence (INFLUENCER_A → SKEPTIC_1, 3 hops) ---");
+    let transitive_product = Q::infer_transitive(
+        &world, INFLUENCER_A, SKEPTIC_1, BELIEF_KIND, Q::TransitiveRule::Product,
+    );
+    let transitive_min = Q::infer_transitive(
+        &world, INFLUENCER_A, SKEPTIC_1, BELIEF_KIND, Q::TransitiveRule::Min,
+    );
+    match transitive_product {
+        Some(v) => println!("  Product rule (weakens with distance): {v:.4}"),
+        None    => println!("  Product rule: no directed BELIEF_KIND path found"),
+    }
+    match transitive_min {
+        Some(v) => println!("  Min rule    (bottleneck):             {v:.4}"),
+        None    => println!("  Min rule: no directed BELIEF_KIND path found"),
+    }
+
+    // Also check INFLUENCER_B → SKEPTIC_2 path (INFLUENCER_B → REG_2 → REG_4 → SKEPTIC_2)
+    let b_to_s2 = Q::infer_transitive(
+        &world, INFLUENCER_B, SKEPTIC_2, BELIEF_KIND, Q::TransitiveRule::Product,
+    );
+    match b_to_s2 {
+        Some(v) => println!("  INFLUENCER_B → SKEPTIC_2 (Product): {v:.4}"),
+        None    => println!("  INFLUENCER_B → SKEPTIC_2: no path"),
+    }
+
+    // ── Relationship bundle: INFLUENCER_A ↔ REG_1 pair ────────────────────────
+    //
+    // Shows the full multi-dimensional view of the coupling between two loci.
+    // With a single BELIEF_KIND, net_activity == excitatory_activity, and
+    // profile_similarity with another single-kind pair will be 1.0 (same dimension).
+
+    println!("\n--- Relationship profile: INFLUENCER_A ↔ REG_1 ---");
+    let bundle_a1 = Q::relationship_profile(&world, INFLUENCER_A, REG_1);
+    println!(
+        "  edges: {}  net_activity={:.3}  is_excitatory={}",
+        bundle_a1.len(), bundle_a1.net_activity(), bundle_a1.is_excitatory(),
+    );
+    if let Some(dom) = bundle_a1.dominant_kind() {
+        println!("  dominant_kind={dom:?}");
+    }
+
+    // Compare with INFLUENCER_A ↔ REG_2 profile
+    let bundle_a2 = Q::relationship_profile(&world, INFLUENCER_A, REG_2);
+    let sim = bundle_a1.profile_similarity(&bundle_a2);
+    println!("\n--- Profile similarity: (A↔REG_1) vs (A↔REG_2) ---");
+    println!("  profile_similarity={sim:.3}  (1.0 = identical coupling profile)");
+    println!("  (with single-kind topology all profiles are collinear — add multi-kind for richer signal)");
+
     println!("\nDone.");
 }

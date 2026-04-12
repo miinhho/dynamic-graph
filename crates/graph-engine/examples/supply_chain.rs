@@ -48,6 +48,7 @@ use graph_engine::{
     DefaultCoherePerspective, DefaultEmergencePerspective, Engine, EngineConfig,
     InfluenceKindConfig, InfluenceKindRegistry, LocusKindConfig, LocusKindRegistry,
 };
+use graph_query as Q;
 use graph_world::World;
 
 // ── Kind constants ────────────────────────────────────────────────────────────
@@ -527,6 +528,47 @@ fn main() {
     println!();
     println!("  {sup_a_rel:?} = SUPPLIER_A→FACTORY  (surviving edge)");
     println!("  {sup_b_rel:?} = SUPPLIER_B→FACTORY  (deleted in tick 2)");
+
+    // ── Relationship profile: SUPPLIER_A→FACTORY coupling ─────────────────────
+    //
+    // Shows the multi-dimensional view of the SUPPLIER_A↔FACTORY pair.
+    // With only SUPPLY_KIND here, dominant_kind == SUPPLY_KIND and
+    // profile_similarity with itself is 1.0 — meaningful with multi-kind topologies.
+
+    println!("--- Relationship profile: SUPPLIER_A ↔ FACTORY ---");
+    let bundle = Q::relationship_profile(&world, SUPPLIER_A, FACTORY);
+    println!(
+        "  edges: {}  net_activity={:.3}  dominant_kind={:?}",
+        bundle.len(),
+        bundle.net_activity(),
+        bundle.dominant_kind(),
+    );
+    for (kind, act) in bundle.activity_by_kind() {
+        println!("    kind={kind:?}  cumulative_activity={act:.3}");
+    }
+    println!();
+
+    // ── Activity trend: is the supply edge strengthening or weakening? ─────────
+    //
+    // `relationship_activity_trend` runs OLS regression on all ChangeSubject::Relationship
+    // log entries for the surviving SUPPLIER_A→FACTORY edge. We get trend data because
+    // the analyst subscriptions caused the factory to emit relationship-subject changes
+    // (reliability slot bumps) logged against sup_a_rel.
+
+    println!("--- Activity trend for SUPPLIER_A→FACTORY ---");
+    let from_batch = graph_core::BatchId(0);
+    let to_batch   = world.current_batch();
+    match Q::relationship_activity_trend(&world, sup_a_rel, from_batch, to_batch) {
+        Some(Q::Trend::Rising { slope }) =>
+            println!("  trend=Rising  slope={slope:+.4}/batch  (supply edge strengthening)"),
+        Some(Q::Trend::Falling { slope }) =>
+            println!("  trend=Falling slope={slope:+.4}/batch  (supply edge weakening)"),
+        Some(Q::Trend::Stable) =>
+            println!("  trend=Stable  (activity steady across batches)"),
+        None =>
+            println!("  trend=None    (insufficient relationship log entries — need ≥2 touches)"),
+    }
+    println!();
 
     println!("\nDone.");
 }

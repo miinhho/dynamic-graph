@@ -436,60 +436,7 @@ pub fn net_influence_between<F>(
 where
     F: Fn(InfluenceKindId, InfluenceKindId) -> Option<InteractionEffect>,
 {
-    use rustc_hash::FxHashMap;
-
-    // Collect all relationships between a and b, grouped by kind.
-    let mut by_kind: FxHashMap<InfluenceKindId, f32> = FxHashMap::default();
-    for rel in world.relationships().iter() {
-        let touches = match rel.endpoints {
-            graph_core::Endpoints::Directed { from, to } => {
-                (from == a && to == b) || (from == b && to == a)
-            }
-            graph_core::Endpoints::Symmetric { a: ra, b: rb } => {
-                (ra == a && rb == b) || (ra == b && rb == a)
-            }
-        };
-        if touches {
-            *by_kind.entry(rel.kind).or_insert(0.0) += rel.activity();
-        }
-    }
-
-    if by_kind.is_empty() {
-        return 0.0;
-    }
-
-    // For pairs of co-occurring kinds, apply the declared interaction effect.
-    // Track which kinds have already been merged into a pair to avoid double-counting.
-    let kinds: Vec<InfluenceKindId> = by_kind.keys().copied().collect();
-    let mut merged: rustc_hash::FxHashSet<InfluenceKindId> = rustc_hash::FxHashSet::default();
-    let mut total = 0.0f32;
-
-    for i in 0..kinds.len() {
-        for j in (i + 1)..kinds.len() {
-            let ka = kinds[i];
-            let kb = kinds[j];
-            if let Some(effect) = interaction_fn(ka, kb) {
-                let combined = by_kind[&ka] + by_kind[&kb];
-                let adjusted = match effect {
-                    InteractionEffect::Synergistic { boost } => combined * boost,
-                    InteractionEffect::Antagonistic { dampen } => combined * dampen,
-                    InteractionEffect::Neutral => combined,
-                };
-                total += adjusted;
-                merged.insert(ka);
-                merged.insert(kb);
-            }
-        }
-    }
-
-    // Add activities for kinds not merged into any pair.
-    for (kind, activity) in &by_kind {
-        if !merged.contains(kind) {
-            total += activity;
-        }
-    }
-
-    total
+    crate::relationship_profile(world, a, b).net_activity_with_interactions(interaction_fn)
 }
 
 // ─── Change-count / velocity filters ─────────────────────────────────────────
@@ -606,8 +553,10 @@ pub fn relationships_to_of_kind(world: &World, locus: LocusId, kind: InfluenceKi
 
 /// All relationships whose endpoints include both `a` and `b`,
 /// across all kinds and directions. O(k_a).
+///
+/// Equivalent to `relationship_profile(world, a, b).relationships`.
 pub fn relationships_between(world: &World, a: LocusId, b: LocusId) -> Vec<&Relationship> {
-    world.relationships_between(a, b).collect()
+    crate::relationship_profile(world, a, b).relationships
 }
 
 /// All relationships between `a` and `b` of a specific influence kind.
