@@ -664,8 +664,8 @@ pub fn infer_transitive(
 mod tests {
     use super::*;
     use graph_core::{
-        Endpoints, InfluenceKindId, Locus, LocusKindId, Relationship, RelationshipKindId,
-        RelationshipLineage, StateVector,
+        Endpoints, InfluenceKindId, KindObservation, Locus, LocusKindId, Relationship,
+        RelationshipKindId, RelationshipLineage, StateVector,
     };
 
     fn chain_world(n: u64) -> World {
@@ -686,7 +686,7 @@ mod tests {
                     created_by: None,
                     last_touched_by: None,
                     change_count: 1,
-                    kinds_observed: vec![rk],
+                    kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
                 },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
@@ -714,7 +714,7 @@ mod tests {
                     created_by: None,
                     last_touched_by: None,
                     change_count: 1,
-                    kinds_observed: vec![rk],
+                    kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
                 },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
@@ -791,7 +791,7 @@ mod tests {
                     created_by: None,
                     last_touched_by: None,
                     change_count: 1,
-                    kinds_observed: vec![rk],
+                    kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
                 },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
@@ -860,7 +860,7 @@ mod tests {
                     created_by: None,
                     last_touched_by: None,
                     change_count: 1,
-                    kinds_observed: vec![kind],
+                    kinds_observed: smallvec::smallvec![KindObservation::synthetic(kind)],
                 },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
@@ -899,7 +899,7 @@ mod tests {
                 state: StateVector::from_slice(&[1.0, 0.0]),
                 lineage: RelationshipLineage {
                     created_by: None, last_touched_by: None,
-                    change_count: 1, kinds_observed: vec![rk],
+                    change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
                 },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
@@ -977,7 +977,7 @@ mod tests {
                 state: StateVector::from_slice(&[1.0, 0.0]),
                 lineage: RelationshipLineage {
                     created_by: None, last_touched_by: None,
-                    change_count: 1, kinds_observed: vec![rk],
+                    change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
                 },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
@@ -1029,7 +1029,7 @@ mod tests {
             state: StateVector::from_slice(&[1.0, 0.0]),
             lineage: RelationshipLineage {
                 created_by: None, last_touched_by: None,
-                change_count: 1, kinds_observed: vec![rk],
+                change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
             },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
@@ -1084,7 +1084,7 @@ mod tests {
             state: StateVector::from_slice(&[1.0, 0.0]),
             lineage: RelationshipLineage {
                 created_by: None, last_touched_by: None,
-                change_count: 1, kinds_observed: vec![rk],
+                change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
             },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
@@ -1116,7 +1116,7 @@ mod tests {
                 state: StateVector::from_slice(&[1.0, 0.0]),
                 lineage: RelationshipLineage {
                     created_by: None, last_touched_by: None,
-                    change_count: 1, kinds_observed: vec![rk],
+                    change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
                 },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
@@ -1162,7 +1162,7 @@ mod tests {
             id: id1, kind: rk1,
             endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(1) },
             state: StateVector::from_slice(&[1.0, 0.0]),
-            lineage: RelationshipLineage { created_by: None, last_touched_by: None, change_count: 1, kinds_observed: vec![rk1] },
+            lineage: RelationshipLineage { created_by: None, last_touched_by: None, change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk1)] },
             created_batch: graph_core::BatchId(0), last_decayed_batch: 0,
             metadata: None,
         });
@@ -1171,7 +1171,7 @@ mod tests {
             id: id2, kind: rk2,
             endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(2) },
             state: StateVector::from_slice(&[1.0, 0.0]),
-            lineage: RelationshipLineage { created_by: None, last_touched_by: None, change_count: 1, kinds_observed: vec![rk2] },
+            lineage: RelationshipLineage { created_by: None, last_touched_by: None, change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk2)] },
             created_batch: graph_core::BatchId(0), last_decayed_batch: 0,
             metadata: None,
         });
@@ -1200,7 +1200,7 @@ mod tests {
             id: id1, kind: trust,
             endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(1) },
             state: StateVector::from_slice(&[0.8, 0.0]),
-            lineage: RelationshipLineage { created_by: None, last_touched_by: None, change_count: 1, kinds_observed: vec![trust] },
+            lineage: RelationshipLineage { created_by: None, last_touched_by: None, change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(trust)] },
             created_batch: graph_core::BatchId(0), last_decayed_batch: 0, metadata: None,
         });
         let id2 = w.relationships_mut().mint_id();
@@ -1208,7 +1208,7 @@ mod tests {
             id: id2, kind: trust,
             endpoints: Endpoints::Directed { from: LocusId(1), to: LocusId(2) },
             state: StateVector::from_slice(&[0.7, 0.0]),
-            lineage: RelationshipLineage { created_by: None, last_touched_by: None, change_count: 1, kinds_observed: vec![trust] },
+            lineage: RelationshipLineage { created_by: None, last_touched_by: None, change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(trust)] },
             created_batch: graph_core::BatchId(0), last_decayed_batch: 0, metadata: None,
         });
         w

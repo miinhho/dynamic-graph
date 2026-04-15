@@ -61,6 +61,70 @@ impl ChangeLog {
         id
     }
 
+    /// Pre-allocate capacity for `additional` more changes.
+    ///
+    /// Calling this before a batch of `append`s avoids repeated Vec
+    /// reallocations when the number of incoming changes is known upfront.
+    pub fn reserve(&mut self, additional: usize) {
+        self.changes.reserve(additional);
+    }
+
+    /// Bulk-append multiple changes from the same batch in a single pass.
+    ///
+    /// All changes must share the same `batch` field — the engine guarantees
+    /// this by calling once per batch loop iteration.  IDs must be dense and
+    /// monotone (the ChangeId density invariant); the BUILD phase pre-assigns
+    /// them before this is called.
+    ///
+    /// Reverse indices (`by_locus`, `by_relationship`, `by_batch`) are built
+    /// with a grouping pass over `changes` rather than one HashMap operation
+    /// per change.  For large fan-in batches with few unique destination loci
+    /// this reduces index HashMap ops from O(3n) to O(n_unique_subjects + 1).
+    pub fn extend_batch(&mut self, changes: Vec<Change>) {
+        if changes.is_empty() {
+            return;
+        }
+        let batch = changes[0].batch;
+
+        // Pass 1: group by subject into local HashMaps (smaller → hotter cache).
+        // IDs are dense and sequential, so all belong to the same batch entry.
+        let mut locus_groups: FxHashMap<LocusId, Vec<ChangeId>> =
+            FxHashMap::with_capacity_and_hasher(16, Default::default());
+        let mut rel_groups: FxHashMap<RelationshipId, Vec<ChangeId>> =
+            FxHashMap::with_capacity_and_hasher(4, Default::default());
+
+        for change in &changes {
+            match change.subject {
+                ChangeSubject::Locus(id) => {
+                    locus_groups.entry(id).or_default().push(change.id);
+                }
+                ChangeSubject::Relationship(id) => {
+                    rel_groups.entry(id).or_default().push(change.id);
+                }
+            }
+        }
+
+        // Pass 2: update by_batch with a single entry lookup, pushing IDs
+        // directly to avoid an intermediate allocation.
+        {
+            let batch_vec = self.by_batch.entry(batch).or_insert_with(Vec::new);
+            batch_vec.reserve(changes.len());
+            for change in &changes {
+                batch_vec.push(change.id);
+            }
+        }
+
+        // Merge grouped ids into the persistent reverse indices.
+        for (locus_id, ids) in locus_groups {
+            self.by_locus.entry(locus_id).or_default().extend(ids);
+        }
+        for (rel_id, ids) in rel_groups {
+            self.by_relationship.entry(rel_id).or_default().extend(ids);
+        }
+
+        self.changes.extend(changes);
+    }
+
     pub fn len(&self) -> usize {
         self.changes.len()
     }

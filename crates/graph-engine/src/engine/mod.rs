@@ -15,11 +15,13 @@
 pub(crate) mod batch;
 pub(crate) mod world_ops;
 
+use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use graph_core::{
-    Change, ChangeId, ChangeSubject, LocusId, ProposedChange, Relationship, RelationshipId,
-    StructuralProposal, WorldEvent,
+    Change, ChangeId, InfluenceKindId, InteractionEffect,
+    LocusId, ProposedChange, Relationship, RelationshipId, StateVector, StructuralProposal,
+    WorldEvent,
 };
 use graph_world::World;
 
@@ -27,7 +29,10 @@ use crate::cohere::CoherePerspective;
 use crate::emergence::EmergencePerspective;
 use crate::registry::{InfluenceKindRegistry, LocusKindRegistry};
 
-use batch::{DispatchInput, DispatchResult, PendingChange};
+use batch::{
+    build_computed_change, compute_pending_change, BuiltChange, ComputedChange, DispatchInput,
+    DispatchResult, PendingChange,
+};
 
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -115,9 +120,21 @@ impl Engine {
         let mut affected_loci_set: FxHashSet<LocusId> = FxHashSet::default();
         let mut plasticity_obs: Vec<(graph_core::RelationshipId, graph_core::InfluenceKindId, f32, f32)> = Vec::new();
         let mut structural_proposals: Vec<StructuralProposal> = Vec::new();
+        // Per-batch kind-touch tracking for cross-kind interaction effects.
+        // Keyed by endpoint pair (EndpointKey) rather than RelationshipId because
+        // each relationship is bound to a single kind — only endpoint-level grouping
+        // can accumulate 2+ distinct kinds.
+        // Value: (set of kinds that touched this endpoint pair, rel_ids affected).
+        // When 2+ kinds co-occur the registered InteractionEffect (if any) is
+        // applied to ALL relationship activities for that endpoint pair after the
+        // Hebbian plasticity phase.
+        let mut batch_kind_touches: FxHashMap<graph_core::EndpointKey, (FxHashSet<InfluenceKindId>, FxHashSet<RelationshipId>)> = FxHashMap::default();
         // Relationship changes that have subscribers: collected during commit,
         // resolved to subscriber loci after the commit loop.
-        let mut pending_rel_notifications: Vec<(RelationshipId, ChangeId)> = Vec::new();
+        // Tuple: (rel_id, change_id, kind, from_locus, to_locus) — endpoints and
+        // kind are captured at commit time so kind-level subscriber resolution can
+        // use them without a second world lookup.
+        let mut pending_rel_notifications: Vec<(RelationshipId, ChangeId, InfluenceKindId, LocusId, LocusId)> = Vec::new();
 
         while !pending.is_empty() {
             if result.batches_committed >= self.config.max_batches_per_tick {
@@ -132,197 +149,193 @@ impl Engine {
             plasticity_obs.clear();
             structural_proposals.clear();
             pending_rel_notifications.clear();
+            batch_kind_touches.clear();
 
-            for pending_change in pending.drain(..) {
-                let PendingChange { proposed, derived_predecessors } = pending_change;
-                let mut predecessors = derived_predecessors;
-                predecessors.extend(proposed.extra_predecessors.iter().copied());
-                let kind = proposed.kind;
+            // ── COMPUTE PHASE (parallel) ────────────────────────────────
+            // Read the pre-batch world snapshot for every pending change and
+            // produce a `ComputedChange` describing the required mutations.
+            // No IDs are minted; no world state is modified here.
+            let pending_batch: Vec<PendingChange> = pending.drain(..).collect();
+            let computed: Vec<ComputedChange> = pending_batch
+                .into_par_iter()
+                .map(|pc| compute_pending_change(pc, world, influence_registry))
+                .collect();
 
-                match proposed.subject {
-                    ChangeSubject::Locus(locus_id) => {
-                        debug_assert!(
-                            proposed.slot_patches.is_none(),
-                            "slot_patches is only valid for ChangeSubject::Relationship changes; \
-                             for locus changes, apply deltas to a StateVector directly and pass via ProposedChange::new"
-                        );
-                        // Drop changes targeting non-existent loci.
-                        if world.locus(locus_id).is_none() {
-                            continue;
+            // ── BUILD PHASE (parallel) ──────────────────────────────────
+            // Assign pre-reserved ChangeIds and construct Change structs in
+            // parallel.  No world state is read or written here — all
+            // inputs come from the ComputedChange values produced above.
+            //
+            // Elided changes are filtered out first so that the reserved ID
+            // block is dense and contains only real commits.
+
+            // Collect non-Elided changes preserving their enumeration order
+            // (order determines which ID each change receives).
+            let non_elided: Vec<(usize, ComputedChange)> = {
+                let mut idx = 0usize;
+                computed
+                    .into_iter()
+                    .filter_map(|c| {
+                        if matches!(c, ComputedChange::Elided) {
+                            None
+                        } else {
+                            let i = idx;
+                            idx += 1;
+                            Some((i, c))
                         }
-                        let before = world
-                            .locus(locus_id)
-                            .map(|l| l.state.clone())
-                            .unwrap_or_default();
-                        let cross_locus_preds: Vec<(LocusId, f32)> = predecessors
-                            .iter()
-                            .filter_map(|pid| world.log().get(*pid))
-                            .filter_map(|pred| match pred.subject {
-                                // Only include predecessors from loci that still exist.
-                                // A locus deleted by a DeleteLocus structural proposal in
-                                // the previous batch would still appear in the ChangeLog,
-                                // but auto-emerging a relationship from it would create a
-                                // dangling edge pointing at a non-existent locus.
-                                ChangeSubject::Locus(pl)
-                                    if pl != locus_id && world.locus(pl).is_some() =>
-                                {
-                                    let pre = pred.after.as_slice().first().copied().unwrap_or(0.0);
-                                    Some((pl, pre))
-                                }
-                                _ => None,
-                            })
-                            .collect();
-                        let kind_cfg = influence_registry.get(kind);
-                        let stabilized_after = match kind_cfg {
-                            Some(cfg) => cfg.stabilization.stabilize(&before, proposed.after),
-                            None => proposed.after,
-                        };
-                        // Elide program-generated follow-up changes that
-                        // produce no effect: state unchanged, no cross-locus
-                        // causal flow (no auto-emerge needed), no metadata,
-                        // and no property patch to record.
-                        // Root stimuli (predecessors empty) are always
-                        // committed so programs fire and co-occurrence
-                        // relationships auto-emerge correctly.
-                        // ChangeId is not minted for elided changes, preserving
-                        // the dense sequence invariant.
-                        if !predecessors.is_empty()
-                            && cross_locus_preds.is_empty()
-                            && stabilized_after == before
-                            && proposed.metadata.is_none()
-                            && proposed.property_patch.is_none()
-                        {
-                            continue;
-                        }
-                        let id = world.mint_change_id();
-                        let post_signal = stabilized_after.as_slice().first().copied().unwrap_or(0.0);
-                        let change = Change {
-                            id,
-                            subject: ChangeSubject::Locus(locus_id),
-                            kind,
-                            predecessors,
-                            before,
-                            after: stabilized_after.clone(),
-                            batch,
-                            wall_time: proposed.wall_time,
-                            metadata: proposed.metadata,
-                        };
-                        if let Some(locus) = world.locus_mut(locus_id) {
-                            locus.state = stabilized_after;
-                        }
-                        world.append_change(change);
-                        if let Some(patch) = proposed.property_patch {
-                            if let Some(props) = world.properties_mut().get_mut(locus_id) {
-                                props.extend(&patch);
-                            } else {
-                                world.properties_mut().insert(locus_id, patch);
-                            }
-                        }
-                        let plasticity_active = kind_cfg
-                            .map(|cfg| cfg.plasticity.is_active())
-                            .unwrap_or(false);
-                        for (from_locus, pre_signal) in cross_locus_preds {
-                            // Schema violation check: if applies_between is non-empty,
-                            // verify the endpoint kinds are in the declared set.
-                            if let Some(cfg) = kind_cfg
-                                && !cfg.applies_between.is_empty()
-                            {
-                                let from_kind = world.locus(from_locus).map(|l| l.kind);
-                                let to_kind = world.locus(locus_id).map(|l| l.kind);
-                                if let (Some(fk), Some(tk)) = (from_kind, to_kind) {
-                                    if !cfg.allows_endpoint_kinds(fk, tk) {
-                                        // Emit soft violation — still create the relationship.
-                                        // rel_id is not yet known; we emit after emerge below.
-                                        result.events.push(WorldEvent::SchemaViolation {
-                                            relationship: graph_core::RelationshipId(u64::MAX), // placeholder, fixed below
-                                            kind,
-                                            from_locus_kind: fk,
-                                            to_locus_kind: tk,
-                                        });
-                                    }
-                                }
-                            }
-                            let (rel_id, is_new) = batch::auto_emerge_relationship(
-                                world, from_locus, locus_id, kind, id, batch.0, kind_cfg,
-                            );
-                            // Fix placeholder rel_id in SchemaViolation if we just emitted one.
-                            if let Some(WorldEvent::SchemaViolation { relationship, .. }) = result.events.last_mut() {
-                                if *relationship == graph_core::RelationshipId(u64::MAX) {
-                                    *relationship = rel_id;
-                                }
-                            }
-                            if is_new {
-                                result.events.push(WorldEvent::RelationshipEmerged {
-                                    relationship: rel_id,
-                                    from: from_locus,
-                                    to: locus_id,
-                                    kind,
-                                });
-                            }
-                            if plasticity_active {
-                                plasticity_obs.push((rel_id, kind, pre_signal, post_signal));
-                            }
-                        }
-                        committed_ids_by_locus.entry(locus_id).or_default().push(id);
-                        if affected_loci_set.insert(locus_id) {
-                            affected_loci.push(locus_id);
-                        }
-                    }
-                    ChangeSubject::Relationship(rel_id) => {
-                        let id = world.mint_change_id();
-                        let before = world
-                            .relationships()
-                            .get(rel_id)
-                            .map(|r| r.state.clone())
-                            .unwrap_or_default();
-                        // When slot_patches are provided, compute `after` by
-                        // applying additive deltas to the current live state.
-                        // This preserves untouched slots (e.g. Hebbian weight)
-                        // and avoids the program/Hebbian overwrite conflict.
-                        // When absent, use `proposed.after` as a full replacement.
-                        let raw_after = match proposed.slot_patches {
-                            Some(patches) => patches
-                                .into_iter()
-                                .fold(before.clone(), |s, (idx, delta)| s.with_slot_delta(idx, delta)),
-                            None => proposed.after,
-                        };
-                        let stabilized_after = match influence_registry.get(kind) {
-                            Some(cfg) => cfg.stabilization.stabilize(&before, raw_after),
-                            None => raw_after,
-                        };
-                        let change = Change {
-                            id,
-                            subject: ChangeSubject::Relationship(rel_id),
-                            kind,
-                            predecessors,
-                            before,
-                            after: stabilized_after.clone(),
-                            batch,
-                            wall_time: proposed.wall_time,
-                            metadata: proposed.metadata,
-                        };
-                        if let Some(rel) = world.relationships_mut().get_mut(rel_id) {
-                            rel.state = stabilized_after;
-                            rel.lineage.last_touched_by = Some(id);
-                            rel.lineage.change_count += 1;
-                        }
-                        world.append_change(change);
-                        // Queue subscriber notification if anyone is watching
-                        // this relationship. Resolved after the commit loop.
-                        if world.subscriptions().has_subscribers(rel_id) {
-                            pending_rel_notifications.push((rel_id, id));
-                        }
+                    })
+                    .collect()
+            };
+
+            let n = non_elided.len();
+            if n > 0 {
+                // Single reservation — no per-change mint_change_id calls.
+                let base_id = world.reserve_change_ids(n);
+                // Pre-allocate the log's inner Vec to avoid reallocations.
+                world.log_mut().reserve(n);
+
+                // Only dispatch to rayon for large batches; for small ones
+                // the thread-dispatch overhead exceeds the parallel gain.
+                const PAR_BUILD_THRESHOLD: usize = 512;
+                let built: Vec<BuiltChange> = if n >= PAR_BUILD_THRESHOLD {
+                    non_elided
+                        .into_par_iter()
+                        .map(|(i, c)| build_computed_change(i, base_id, c, batch))
+                        .collect()
+                } else {
+                    non_elided
+                        .into_iter()
+                        .map(|(i, c)| build_computed_change(i, base_id, c, batch))
+                        .collect()
+                };
+
+                // ── APPLY PHASE A: locus state dedup + pre-alloc ──────
+                // Multiple changes may target the same locus in one batch;
+                // the last write wins.  Pre-applying the final state here
+                // eliminates N − n_unique_loci redundant HashMap writes.
+                // Also count cross-locus preds so we can pre-allocate the
+                // relationship store before bulk emergence.
+                let mut final_locus_states: FxHashMap<LocusId, &StateVector> =
+                    FxHashMap::default();
+                let mut n_potential_new_rels: usize = 0;
+                for bc in &built {
+                    if let BuiltChange::Locus(c) = bc {
+                        final_locus_states.insert(c.locus_id, &c.after);
+                        n_potential_new_rels += c.cross_locus_preds.len();
                     }
                 }
-                result.changes_committed += 1;
+                for (locus_id, state) in final_locus_states {
+                    if let Some(locus) = world.locus_mut(locus_id) {
+                        locus.state = state.clone();
+                    }
+                }
+                // Pre-allocate relationship store to avoid rehashing during
+                // bulk auto-emergence (worst case: all preds create new rels).
+                if n_potential_new_rels > 0 {
+                    world.relationships_mut().reserve(n_potential_new_rels);
+                }
+
+                // ── APPLY PHASE B: collect then bulk-commit ────────────
+                // Pass B1: iterate `built` sequentially, collecting bookkeeping
+                // data and queueing Change records.  No ChangeLog mutations yet.
+                // Pass B2: single `extend_batch` call replaces N individual
+                // `append_change` calls, reducing ChangeLog HashMap ops from
+                // O(3N) to O(n_unique_subjects + 1).
+                let mut batch_changes: Vec<Change> = Vec::with_capacity(n);
+
+                for bc in built {
+                    match bc {
+                        BuiltChange::Locus(c) => {
+                            let id = c.change.id;
+                            batch_changes.push(c.change);
+                            if let Some(patch) = c.property_patch {
+                                if let Some(props) = world.properties_mut().get_mut(c.locus_id) {
+                                    props.extend(&patch);
+                                } else {
+                                    world.properties_mut().insert(c.locus_id, patch);
+                                }
+                            }
+                            let kind_cfg = influence_registry.get(c.kind);
+                            for pred in c.cross_locus_preds {
+                                if let Some((fk, tk)) = pred.schema_violation {
+                                    result.events.push(WorldEvent::SchemaViolation {
+                                        relationship: graph_core::RelationshipId(u64::MAX),
+                                        kind: c.kind,
+                                        from_locus_kind: fk,
+                                        to_locus_kind: tk,
+                                    });
+                                }
+                                let (rel_id, is_new) = batch::auto_emerge_relationship(
+                                    world, pred.from_locus, c.locus_id, c.kind, id, batch.0,
+                                    kind_cfg, &c.resolved_slots,
+                                );
+                                // Back-fill rel_id into the SchemaViolation placeholder.
+                                if let Some(WorldEvent::SchemaViolation { relationship, .. }) =
+                                    result.events.last_mut()
+                                {
+                                    if *relationship == graph_core::RelationshipId(u64::MAX) {
+                                        *relationship = rel_id;
+                                    }
+                                }
+                                if is_new {
+                                    result.events.push(WorldEvent::RelationshipEmerged {
+                                        relationship: rel_id,
+                                        from: pred.from_locus,
+                                        to: c.locus_id,
+                                        kind: c.kind,
+                                        trigger_change_id: id,
+                                    });
+                                }
+                                if c.plasticity_active {
+                                    plasticity_obs.push((
+                                        rel_id, c.kind, pred.pre_signal, c.post_signal,
+                                    ));
+                                }
+                                if let Some(ep_key) =
+                                    world.relationships().get(rel_id).map(|r| r.endpoints.key())
+                                {
+                                    let entry = batch_kind_touches.entry(ep_key).or_default();
+                                    entry.0.insert(c.kind);
+                                    entry.1.insert(rel_id);
+                                }
+                            }
+                            committed_ids_by_locus.entry(c.locus_id).or_default().push(id);
+                            if affected_loci_set.insert(c.locus_id) {
+                                affected_loci.push(c.locus_id);
+                            }
+                        }
+                        BuiltChange::Relationship(c) => {
+                            let id = c.change.id;
+                            if let Some(rel) = world.relationships_mut().get_mut(c.rel_id) {
+                                rel.state = c.after;
+                                rel.lineage.last_touched_by = Some(id);
+                                rel.lineage.change_count += 1;
+                            }
+                            batch_changes.push(c.change);
+                            if c.has_subscribers {
+                                pending_rel_notifications.push((
+                                    c.rel_id, id, c.kind, c.from, c.to,
+                                ));
+                            }
+                        }
+                    }
+                    result.changes_committed += 1;
+                }
+
+                // Pass B2: bulk ChangeLog append — one grouping pass instead
+                // of N individual HashMap inserts.
+                world.extend_batch_changes(batch_changes);
             }
 
             // Resolve relationship-change notifications to subscriber loci.
             // Each subscriber receives the relationship's committed Change
             // in its inbox, triggering program dispatch in the same batch.
-            for (rel_id, change_id) in pending_rel_notifications.drain(..) {
-                let subscribers: Vec<LocusId> =
-                    world.subscriptions().subscribers(rel_id).collect();
+            // All three scopes (Specific, AllOfKind, TouchingLocus) are
+            // resolved and deduplicated by `collect_subscribers`.
+            for (rel_id, change_id, kind, from, to) in pending_rel_notifications.drain(..) {
+                let subscribers = world
+                    .subscriptions()
+                    .collect_subscribers(rel_id, kind, from, to);
                 for subscriber in subscribers {
                     committed_ids_by_locus.entry(subscriber).or_default().push(change_id);
                     if affected_loci_set.insert(subscriber) {
@@ -370,7 +383,7 @@ impl Engine {
             );
 
             let dispatch_results: Vec<DispatchResult> = dispatch_inputs
-                .iter()
+                .par_iter()
                 .map(|inp| {
                     let state = inp.program.process(inp.locus, &inp.inbox, &batch_ctx);
                     let structural = inp.program.structural_proposals(inp.locus, &inp.inbox, &batch_ctx);
@@ -397,11 +410,15 @@ impl Engine {
             }
 
             // Apply structural proposals at end-of-batch.
-            batch::apply_structural_proposals(
+            // Tombstone proposals (for deleted relationships with Specific
+            // subscribers) are injected into `pending` for the next batch
+            // so subscribers fire once more with a deletion signal in inbox.
+            let tombstones = batch::apply_structural_proposals(
                 world,
                 std::mem::take(&mut structural_proposals),
                 influence_registry,
             );
+            pending.extend(tombstones);
 
             // End-of-batch: apply Hebbian plasticity updates. Each
             // observation (rel_id, kind, pre, post) contributes
@@ -413,6 +430,41 @@ impl Engine {
                 {
                     *w = (*w + cfg.plasticity.learning_rate * pre * post)
                         .clamp(0.0, cfg.plasticity.max_weight);
+                }
+            }
+
+            // Apply cross-kind interaction effects for endpoint pairs touched
+            // by 2+ distinct influence kinds this batch. Pairs of kinds are
+            // enumerated; if a registered InteractionEffect exists for the
+            // pair, its multiplier is accumulated. All pair multipliers are
+            // composed multiplicatively into a single factor applied once to
+            // the activity slot of ALL relationships between those endpoints,
+            // making the result order-independent and kind-agnostic.
+            for (_ep_key, (touched_kinds, rel_ids)) in &batch_kind_touches {
+                if touched_kinds.len() < 2 {
+                    continue;
+                }
+                let kinds: Vec<InfluenceKindId> = touched_kinds.iter().copied().collect();
+                let mut multiplier = 1.0f32;
+                for i in 0..kinds.len() {
+                    for j in (i + 1)..kinds.len() {
+                        if let Some(effect) = influence_registry.interaction_between(kinds[i], kinds[j]) {
+                            multiplier *= match effect {
+                                InteractionEffect::Synergistic { boost } => *boost,
+                                InteractionEffect::Antagonistic { dampen } => *dampen,
+                                InteractionEffect::Neutral => 1.0,
+                            };
+                        }
+                    }
+                }
+                if (multiplier - 1.0).abs() > f32::EPSILON {
+                    for rel_id in rel_ids {
+                        if let Some(rel) = world.relationships_mut().get_mut(*rel_id) {
+                            if let Some(a) = rel.state.as_mut_slice().get_mut(Relationship::ACTIVITY_SLOT) {
+                                *a *= multiplier;
+                            }
+                        }
+                    }
                 }
             }
 

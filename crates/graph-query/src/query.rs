@@ -80,6 +80,11 @@ pub fn loci_from_ids<'w>(world: &'w World, ids: &[LocusId]) -> LociQuery<'w> {
 }
 
 impl<'w> LociQuery<'w> {
+    /// Create a query from a pre-built candidate list (used by cross-layer navigation).
+    pub(crate) fn from_candidates(world: &'w World, candidates: Vec<&'w Locus>) -> Self {
+        Self { world, loci: candidates }
+    }
+
     // ── Filters ───────────────────────────────────────────────────────────────
 
     /// Keep only loci of the given kind.
@@ -234,9 +239,118 @@ impl<'w> LociQuery<'w> {
     pub fn is_empty(&self) -> bool {
         self.loci.is_empty()
     }
+
+    // ── Aggregation terminals ─────────────────────────────────────────────────
+
+    /// Sum of `state[slot]` across all matching loci.
+    ///
+    /// Loci whose state vector is shorter than `slot + 1` contribute `0.0`.
+    pub fn sum_state_slot(self, slot: usize) -> f32 {
+        self.loci
+            .iter()
+            .map(|l| l.state.as_slice().get(slot).copied().unwrap_or(0.0))
+            .sum()
+    }
+
+    /// Mean of `state[slot]` across all matching loci that have the slot,
+    /// or `None` when no loci have that slot (or the set is empty).
+    pub fn mean_state_slot(self, slot: usize) -> Option<f32> {
+        let values: Vec<f32> = self
+            .loci
+            .iter()
+            .filter_map(|l| l.state.as_slice().get(slot).copied())
+            .collect();
+        let n = values.len();
+        if n == 0 {
+            return None;
+        }
+        Some(values.iter().sum::<f32>() / n as f32)
+    }
+
+    /// Maximum of `state[slot]` across all matching loci that have the slot,
+    /// or `None` when no loci have that slot (or the set is empty).
+    pub fn max_state_slot(self, slot: usize) -> Option<f32> {
+        self.loci
+            .iter()
+            .filter_map(|l| l.state.as_slice().get(slot).copied())
+            .reduce(f32::max)
+    }
+
+    // ── Cross-builder navigation ──────────────────────────────────────────────
+
+    /// Pivot to a [`RelationshipsQuery`] containing all directed relationships
+    /// **originating** from any locus in the current set.
+    ///
+    /// Symmetric edges are excluded (they have no single source).
+    pub fn outgoing_relationships(self) -> RelationshipsQuery<'w> {
+        let ids: FxHashSet<LocusId> = self.loci.iter().map(|l| l.id).collect();
+        RelationshipsQuery {
+            world: self.world,
+            rels: self
+                .world
+                .relationships()
+                .iter()
+                .filter(|r| {
+                    matches!(r.endpoints, Endpoints::Directed { from, .. } if ids.contains(&from))
+                })
+                .collect(),
+        }
+    }
+
+    /// Pivot to a [`RelationshipsQuery`] containing all directed relationships
+    /// **terminating** at any locus in the current set.
+    ///
+    /// Symmetric edges are excluded.
+    pub fn incoming_relationships(self) -> RelationshipsQuery<'w> {
+        let ids: FxHashSet<LocusId> = self.loci.iter().map(|l| l.id).collect();
+        RelationshipsQuery {
+            world: self.world,
+            rels: self
+                .world
+                .relationships()
+                .iter()
+                .filter(|r| {
+                    matches!(r.endpoints, Endpoints::Directed { to, .. } if ids.contains(&to))
+                })
+                .collect(),
+        }
+    }
+
+    /// Pivot to a [`RelationshipsQuery`] containing all relationships that
+    /// touch any locus in the current set at either endpoint (directed or
+    /// symmetric).
+    pub fn touching_relationships(self) -> RelationshipsQuery<'w> {
+        let ids: FxHashSet<LocusId> = self.loci.iter().map(|l| l.id).collect();
+        RelationshipsQuery {
+            world: self.world,
+            rels: self
+                .world
+                .relationships()
+                .iter()
+                .filter(|r| ids.iter().any(|&id| r.endpoints.involves(id)))
+                .collect(),
+        }
+    }
 }
 
 // ─── RelationshipsQuery ───────────────────────────────────────────────────────
+
+/// Aggregate statistics for the activity slot across a `RelationshipsQuery` result set.
+///
+/// Produced by [`RelationshipsQuery::activity_stats`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActivityStats {
+    /// Number of relationships in the set.
+    pub count: usize,
+    /// Sum of `activity()` values.
+    pub sum: f32,
+    /// Mean activity (`sum / count`).
+    pub mean: f32,
+    /// Minimum activity value in the set.
+    pub min: f32,
+    /// Maximum activity value in the set.
+    pub max: f32,
+}
 
 /// A composable query over relationships.
 ///
@@ -250,7 +364,6 @@ impl<'w> LociQuery<'w> {
 ///     .collect()
 /// ```
 pub struct RelationshipsQuery<'w> {
-    #[allow(dead_code)]
     world: &'w World,
     rels: Vec<&'w Relationship>,
 }
@@ -280,6 +393,11 @@ pub fn relationships_from_ids<'w>(
 }
 
 impl<'w> RelationshipsQuery<'w> {
+    /// Create a query from a pre-built candidate list (used by cross-layer navigation).
+    pub(crate) fn from_candidates(world: &'w World, candidates: Vec<&'w Relationship>) -> Self {
+        Self { world, rels: candidates }
+    }
+
     // ── Filters ───────────────────────────────────────────────────────────────
 
     /// Keep only relationships of the given influence kind.
@@ -347,6 +465,37 @@ impl<'w> RelationshipsQuery<'w> {
     /// Keep only relationships matching a custom predicate.
     pub fn matching(mut self, pred: impl Fn(&Relationship) -> bool) -> Self {
         self.rels.retain(|r| pred(r));
+        self
+    }
+
+    /// Keep only directed relationships whose source is any of `loci`.
+    ///
+    /// Symmetric edges are excluded.
+    pub fn from_any(mut self, loci: &[LocusId]) -> Self {
+        let set: FxHashSet<LocusId> = loci.iter().copied().collect();
+        self.rels.retain(|r| {
+            matches!(r.endpoints, Endpoints::Directed { from, .. } if set.contains(&from))
+        });
+        self
+    }
+
+    /// Keep only directed relationships whose target is any of `loci`.
+    ///
+    /// Symmetric edges are excluded.
+    pub fn to_any(mut self, loci: &[LocusId]) -> Self {
+        let set: FxHashSet<LocusId> = loci.iter().copied().collect();
+        self.rels.retain(|r| {
+            matches!(r.endpoints, Endpoints::Directed { to, .. } if set.contains(&to))
+        });
+        self
+    }
+
+    /// Keep only relationships that involve any of `loci` at either endpoint
+    /// (directed or symmetric).
+    pub fn touching_any(mut self, loci: &[LocusId]) -> Self {
+        let set: FxHashSet<LocusId> = loci.iter().copied().collect();
+        self.rels
+            .retain(|r| set.iter().any(|&id| r.endpoints.involves(id)));
         self
     }
 
@@ -430,6 +579,102 @@ impl<'w> RelationshipsQuery<'w> {
     pub fn is_empty(&self) -> bool {
         self.rels.is_empty()
     }
+
+    // ── Aggregation terminals ─────────────────────────────────────────────────
+
+    /// Sum of `activity()` across all matching relationships.
+    pub fn sum_activity(self) -> f32 {
+        self.rels.iter().map(|r| r.activity()).sum()
+    }
+
+    /// Mean `activity()` across all matching relationships, or `None` if the
+    /// set is empty.
+    pub fn mean_activity(self) -> Option<f32> {
+        let n = self.rels.len();
+        if n == 0 {
+            return None;
+        }
+        Some(self.rels.iter().map(|r| r.activity()).sum::<f32>() / n as f32)
+    }
+
+    /// Aggregate activity statistics for the current result set, or `None` if
+    /// the set is empty.
+    pub fn activity_stats(self) -> Option<ActivityStats> {
+        let n = self.rels.len();
+        if n == 0 {
+            return None;
+        }
+        let activities: Vec<f32> = self.rels.iter().map(|r| r.activity()).collect();
+        let sum: f32 = activities.iter().sum();
+        let min = activities.iter().copied().fold(f32::INFINITY, f32::min);
+        let max = activities.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        Some(ActivityStats {
+            count: n,
+            sum,
+            mean: sum / n as f32,
+            min,
+            max,
+        })
+    }
+
+    // ── Cross-builder navigation ──────────────────────────────────────────────
+
+    /// Pivot to a [`LociQuery`] over the **source** loci of all directed
+    /// relationships in the current set.
+    ///
+    /// Symmetric edges have no source and are skipped. Duplicate loci are
+    /// deduplicated; loci no longer present in the world are silently omitted.
+    pub fn source_loci(self) -> LociQuery<'w> {
+        let mut seen = FxHashSet::default();
+        let loci: Vec<&'w Locus> = self
+            .rels
+            .iter()
+            .filter_map(|r| r.endpoints.source())
+            .filter(|&id| seen.insert(id))
+            .filter_map(|id| self.world.locus(id))
+            .collect();
+        LociQuery { world: self.world, loci }
+    }
+
+    /// Pivot to a [`LociQuery`] over the **target** loci of all directed
+    /// relationships in the current set.
+    ///
+    /// Symmetric edges have no target and are skipped. Duplicates deduplicated.
+    pub fn target_loci(self) -> LociQuery<'w> {
+        let mut seen = FxHashSet::default();
+        let loci: Vec<&'w Locus> = self
+            .rels
+            .iter()
+            .filter_map(|r| r.endpoints.target())
+            .filter(|&id| seen.insert(id))
+            .filter_map(|id| self.world.locus(id))
+            .collect();
+        LociQuery { world: self.world, loci }
+    }
+
+    /// Pivot to a [`LociQuery`] over **all** endpoint loci of the current
+    /// relationship set (both directed endpoints and symmetric peers).
+    ///
+    /// Duplicates are deduplicated; loci no longer in the world are omitted.
+    pub fn endpoint_loci(self) -> LociQuery<'w> {
+        let mut seen = FxHashSet::default();
+        let ids: Vec<LocusId> = self
+            .rels
+            .iter()
+            .flat_map(|r| match r.endpoints {
+                Endpoints::Directed { from, to } => [from, to],
+                Endpoints::Symmetric { a, b } => [a, b],
+            })
+            .filter(|&id| seen.insert(id))
+            .collect();
+        LociQuery {
+            world: self.world,
+            loci: ids
+                .into_iter()
+                .filter_map(|id| self.world.locus(id))
+                .collect(),
+        }
+    }
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -438,7 +683,7 @@ impl<'w> RelationshipsQuery<'w> {
 mod tests {
     use super::*;
     use graph_core::{
-        Endpoints, InfluenceKindId, Locus, LocusKindId, Relationship,
+        Endpoints, InfluenceKindId, KindObservation, Locus, LocusKindId, Relationship,
         RelationshipLineage, StateVector,
     };
     use graph_world::World;
@@ -469,7 +714,7 @@ mod tests {
                     created_by: None,
                     last_touched_by: None,
                     change_count: 4,
-                    kinds_observed: vec![rk],
+                    kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
                 },
                 created_batch: graph_core::BatchId(0),
                 last_decayed_batch: 0,

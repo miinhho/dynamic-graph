@@ -23,6 +23,7 @@
 //!   need their own deterministic sequences.
 
 pub mod assertions;
+pub mod fixture;
 pub mod fixtures;
 pub mod generators;
 pub mod programs;

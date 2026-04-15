@@ -203,8 +203,8 @@ fn connected_components_stats(world: &crate::world::World) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use graph_core::{Endpoints, InfluenceKindId, Locus, LocusId, LocusKindId, Relationship,
-                     RelationshipLineage, StateVector};
+    use graph_core::{Endpoints, InfluenceKindId, KindObservation, Locus, LocusId, LocusKindId,
+                     Relationship, RelationshipLineage, StateVector};
     use crate::world::World;
 
     fn make_world_with_star(arms: u64) -> World {
@@ -226,7 +226,7 @@ mod tests {
                     created_by: None,
                     last_touched_by: None,
                     change_count: 1,
-                    kinds_observed: vec![rel_kind],
+                    kinds_observed: smallvec::smallvec![KindObservation::synthetic(rel_kind)],
                 },
                 created_batch: graph_core::BatchId(0),
                 last_decayed_batch: 0,

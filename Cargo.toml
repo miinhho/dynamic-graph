@@ -23,6 +23,7 @@ graph-testkit = { path = "crates/graph-testkit" }
 graph-storage = { path = "crates/graph-storage" }
 redb = "2"
 rustc-hash = "2.1.1"
+smallvec = { version = "1", features = ["union", "serde"] }
 criterion = { version = "0.6", features = ["html_reports"] }
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }

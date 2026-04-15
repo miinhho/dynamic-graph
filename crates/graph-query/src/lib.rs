@@ -38,13 +38,18 @@
 //! ```
 
 mod causality;
+mod debug;
+mod entity_query;
+mod export;
 mod filter;
 mod profile;
 mod query;
+mod temporal;
 mod traversal;
 
 pub use causality::{
-    causal_ancestors, causal_depth, changes_to_locus_in_range,
+    causal_ancestors, causal_depth, causal_descendants,
+    changes_to_locus_in_range,
     changes_to_relationship_in_range, common_ancestors, committed_batches,
     is_ancestor_of, last_change_to_locus, last_change_to_relationship,
     loci_changed_in_batch, relationship_volatility, relationship_volatility_all,
@@ -68,9 +73,11 @@ pub use filter::{
     relationships_between, relationships_between_of_kind,
     relationships_from, relationships_from_of_kind,
     relationships_to, relationships_to_of_kind,
-    relationships_matching, relationships_of_kind, relationships_of_kinds,
+    relationships_matching, relationships_matching_slots,
+    relationships_of_kind, relationships_of_kinds,
     relationships_with_activity, relationships_with_slot, relationships_with_weight,
     relationships_with_str_property, relationships_with_f64_property,
+    dominant_flow_kind, kind_flow_diversity, kind_transition_rate,
 };
 pub use profile::{relationship_profile, RelationshipBundle};
 // `net_influence_between` is also re-exported via filter; callers that prefer
@@ -78,7 +85,20 @@ pub use profile::{relationship_profile, RelationshipBundle};
 pub use query::{
     loci, loci_from_ids, LociQuery,
     relationships, relationships_from_ids, RelationshipsQuery,
+    ActivityStats,
 };
+pub use entity_query::{
+    all_coheres, coheres, entities,
+    CohereQuery, EntitiesQuery,
+};
+pub use temporal::{
+    batch_stats, changed_since,
+    last_n_changes_to_locus, last_n_changes_to_relationship,
+    loci_by_change_frequency, relationships_by_change_frequency,
+    BatchStats,
+};
+pub use debug::{causal_trace, CausalStep, CausalTrace};
+pub use export::{to_dot, to_dot_filtered};
 pub use traversal::{
     connected_components, connected_components_of_kind,
     directed_path, directed_path_of_kind,

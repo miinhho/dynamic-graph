@@ -1663,3 +1663,163 @@ fn relationship_slot_patch_single_slot_convenience() {
     let slot2 = world.relationships().get(rel_id).unwrap().state.as_slice()[2];
     assert!((slot2 - 0.8).abs() < 1e-5, "expected 0.5 + 0.3 = 0.8, got {slot2}");
 }
+
+// ─── Task 1: Cross-kind interaction rules in the batch loop ──────────────────
+
+/// Forwards each incoming root-stimulus change to `downstream`, preserving the
+/// original influence kind. This lets tests produce multi-kind flows through a
+/// single edge in one tick — something `ForwarderProgram` (which always emits
+/// kind 1) cannot do.
+struct KindPreservingForwarder {
+    downstream: LocusId,
+}
+impl LocusProgram for KindPreservingForwarder {
+    fn process(&self, _: &Locus, incoming: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+        incoming
+            .iter()
+            .filter(|c| c.predecessors.is_empty()) // root stimuli only
+            .map(|c| ProposedChange::new(ChangeSubject::Locus(self.downstream), c.kind, c.after.clone()))
+            .collect()
+    }
+}
+
+/// Helper: two-locus world with a kind-preserving forwarder at locus 1.
+///
+/// Both kinds must be pre-registered; the helper registers no interactions —
+/// callers do that after receiving the registry.
+fn interaction_world(
+    kind_a: InfluenceKindId,
+    kind_b: InfluenceKindId,
+) -> (World, LocusKindRegistry, graph_engine::InfluenceKindRegistry) {
+    use graph_engine::InfluenceKindRegistry;
+    let mut world = World::new();
+    world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+    world.insert_locus(Locus::new(LocusId(2), LocusKindId(2), StateVector::zeros(1)));
+    let mut loci = LocusKindRegistry::new();
+    loci.insert(LocusKindId(1), Box::new(KindPreservingForwarder { downstream: LocusId(2) }));
+    loci.insert(LocusKindId(2), Box::new(SinkProgram));
+    let mut influences = InfluenceKindRegistry::new();
+    influences.insert(kind_a, InfluenceKindConfig::new("kind_a"));
+    influences.insert(kind_b, InfluenceKindConfig::new("kind_b"));
+    (world, loci, influences)
+}
+
+/// Fire both kinds as root stimuli in the same tick, returning the activity of
+/// the kind_a relationship between locus 1 and locus 2 after the tick.
+fn fire_two_kinds(
+    world: &mut World,
+    loci: &LocusKindRegistry,
+    influences: &graph_engine::InfluenceKindRegistry,
+    kind_a: InfluenceKindId,
+    kind_b: InfluenceKindId,
+) -> f32 {
+    Engine::default().tick(
+        world,
+        loci,
+        influences,
+        vec![
+            ProposedChange::new(ChangeSubject::Locus(LocusId(1)), kind_a, StateVector::from_slice(&[1.0])),
+            ProposedChange::new(ChangeSubject::Locus(LocusId(1)), kind_b, StateVector::from_slice(&[1.0])),
+        ],
+    );
+    // Both kind_a and kind_b create separate relationships between locus1 and locus2.
+    // The interaction multiplier is applied to both; we return the kind_a one.
+    world
+        .relationships()
+        .iter()
+        .find(|r| r.kind == kind_a && r.involves(LocusId(1)) && r.involves(LocusId(2)))
+        .map(|r| r.activity())
+        .expect("kind_a relationship must have auto-emerged")
+}
+
+/// Two kinds with a Synergistic{boost:2.0} interaction.
+///
+/// Flow: locus1 receives [stimulus_k1, stimulus_k2] in one tick. The
+/// KindPreservingForwarder emits one forwarded change per kind to locus2.
+/// Each forwarded change carries both inbox changes (A, B) as derived
+/// predecessors, so each forwarded change produces 2 cross-locus auto-emerges.
+/// Total touches per kind: 2 (→ activity = 2.0 per kind-relationship).
+/// Both relationships share the same endpoint pair → interaction fires.
+/// With Synergistic{boost:2.0}: both relationships' activity × 2.0 → 4.0.
+#[test]
+fn synergistic_interaction_boosts_activity() {
+    use graph_core::InteractionEffect;
+    let (kind_a, kind_b) = (InfluenceKindId(1), InfluenceKindId(2));
+    let (mut world, loci, mut influences) = interaction_world(kind_a, kind_b);
+    influences.register_interaction(kind_a, kind_b, InteractionEffect::Synergistic { boost: 2.0 });
+
+    let activity = fire_two_kinds(&mut world, &loci, &influences, kind_a, kind_b);
+    // 2 touches per kind → activity = 2.0 per relationship; × boost 2.0 = 4.0
+    assert!(
+        (activity - 4.0).abs() < 1e-4,
+        "expected activity ≈ 4.0 (synergistic boost), got {activity}"
+    );
+}
+
+/// Two kinds with an Antagonistic{dampen:0.5} interaction.
+///
+/// 2 touches per kind → activity = 2.0, dampened × 0.5 = 1.0.
+#[test]
+fn antagonistic_interaction_dampens_activity() {
+    use graph_core::InteractionEffect;
+    let (kind_a, kind_b) = (InfluenceKindId(1), InfluenceKindId(2));
+    let (mut world, loci, mut influences) = interaction_world(kind_a, kind_b);
+    influences.register_interaction(kind_a, kind_b, InteractionEffect::Antagonistic { dampen: 0.5 });
+
+    let activity = fire_two_kinds(&mut world, &loci, &influences, kind_a, kind_b);
+    // 2 touches per kind → activity = 2.0; × dampen 0.5 = 1.0
+    assert!(
+        (activity - 1.0).abs() < 1e-4,
+        "expected activity ≈ 1.0 (antagonistic dampen), got {activity}"
+    );
+}
+
+/// Only one kind touches the edge — no interaction should be applied.
+///
+/// Even though a Synergistic{boost:10.0} rule exists for the pair, it must
+/// not fire when only one kind touches the edge in a single batch.
+#[test]
+fn single_kind_no_interaction_applied() {
+    use graph_core::InteractionEffect;
+    use graph_engine::InfluenceKindRegistry;
+
+    let mut world = World::new();
+    world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+    world.insert_locus(Locus::new(LocusId(2), LocusKindId(2), StateVector::zeros(1)));
+
+    let mut loci = LocusKindRegistry::new();
+    loci.insert(LocusKindId(1), Box::new(KindPreservingForwarder { downstream: LocusId(2) }));
+    loci.insert(LocusKindId(2), Box::new(SinkProgram));
+
+    let mut influences = InfluenceKindRegistry::new();
+    influences.insert(InfluenceKindId(1), InfluenceKindConfig::new("only_kind"));
+    influences.insert(InfluenceKindId(2), InfluenceKindConfig::new("other"));
+    // Rule exists, but kind 2 never fires.
+    influences.register_interaction(
+        InfluenceKindId(1),
+        InfluenceKindId(2),
+        InteractionEffect::Synergistic { boost: 10.0 },
+    );
+
+    Engine::default().tick(
+        &mut world,
+        &loci,
+        &influences,
+        vec![
+            ProposedChange::new(ChangeSubject::Locus(LocusId(1)), InfluenceKindId(1), StateVector::from_slice(&[1.0])),
+        ],
+    );
+
+    let rel = world
+        .relationships()
+        .iter()
+        .find(|r| r.involves(LocusId(1)) && r.involves(LocusId(2)))
+        .expect("relationship must have auto-emerged");
+
+    // Only 1 touch, no cross-kind interaction → activity = 1.0 (unmodified).
+    assert!(
+        (rel.activity() - 1.0).abs() < 1e-4,
+        "expected activity ≈ 1.0 (no interaction), got {}",
+        rel.activity()
+    );
+}

@@ -21,7 +21,7 @@
 use crate::change::{Change, ChangeSubject};
 use crate::cohere::Cohere;
 use crate::entity::{Entity, EntityId};
-use crate::ids::{ChangeId, InfluenceKindId, LocusId, RelationshipKindId};
+use crate::ids::{ChangeId, InfluenceKindId, LocusId, LocusKindId, RelationshipKindId};
 use crate::locus::Locus;
 use crate::property::Properties;
 use crate::relationship::{Endpoints, Relationship, RelationshipId, RelationshipSlotDef};
@@ -621,6 +621,40 @@ pub enum StructuralProposal {
         rel_id: RelationshipId,
     },
 
+    /// Subscribe `subscriber` to all relationships of `kind`, regardless of
+    /// endpoints. The subscriber receives a notification for every
+    /// relationship-state change of this kind — including relationships
+    /// that did not exist at subscription time.
+    ///
+    /// Idempotent.
+    SubscribeToKind {
+        subscriber: LocusId,
+        kind: InfluenceKindId,
+    },
+
+    /// Cancel an AllOfKind subscription. Idempotent.
+    UnsubscribeFromKind {
+        subscriber: LocusId,
+        kind: InfluenceKindId,
+    },
+
+    /// Subscribe `subscriber` to changes on relationships of `kind` that
+    /// touch `anchor` as either endpoint.
+    ///
+    /// Idempotent.
+    SubscribeToAnchorKind {
+        subscriber: LocusId,
+        anchor: LocusId,
+        kind: InfluenceKindId,
+    },
+
+    /// Cancel a TouchingLocus subscription. Idempotent.
+    UnsubscribeFromAnchorKind {
+        subscriber: LocusId,
+        anchor: LocusId,
+        kind: InfluenceKindId,
+    },
+
     /// Remove a locus and all its associated data from the world.
     ///
     /// Applied at end-of-batch. The engine removes all relationships
@@ -634,6 +668,27 @@ pub enum StructuralProposal {
     /// this locus in the same or subsequent batches are silently dropped
     /// by the engine's non-existent-locus guard.
     DeleteLocus { locus_id: LocusId },
+
+    /// Dynamically create a new locus at end-of-batch.
+    ///
+    /// Applied after all state changes and structural deletions so the
+    /// new locus is visible in the **next** batch. Programs can
+    /// subscribe to the new locus's relationships immediately via
+    /// `SubscribeToRelationship` in the same structural-proposals list.
+    ///
+    /// If `locus_id` is `None`, a fresh ID is auto-assigned from the
+    /// world's locus-id counter. Specifying an explicit ID is allowed
+    /// but panics in debug builds if the ID is already occupied.
+    CreateLocus {
+        /// Explicit ID, or `None` to auto-assign.
+        locus_id: Option<LocusId>,
+        kind: LocusKindId,
+        state: StateVector,
+        /// Optional canonical name to register in the `NameIndex`.
+        name: Option<String>,
+        /// Optional initial properties.
+        properties: Option<Properties>,
+    },
 }
 
 impl StructuralProposal {
@@ -729,9 +784,60 @@ impl StructuralProposal {
         StructuralProposal::UnsubscribeFromRelationship { subscriber, rel_id }
     }
 
+    /// Subscribe `subscriber` to all relationships of `kind` (AllOfKind scope).
+    pub fn subscribe_to_kind(subscriber: LocusId, kind: InfluenceKindId) -> Self {
+        StructuralProposal::SubscribeToKind { subscriber, kind }
+    }
+
+    /// Cancel an AllOfKind subscription.
+    pub fn unsubscribe_from_kind(subscriber: LocusId, kind: InfluenceKindId) -> Self {
+        StructuralProposal::UnsubscribeFromKind { subscriber, kind }
+    }
+
+    /// Subscribe `subscriber` to relationships of `kind` that touch `anchor`
+    /// (TouchingLocus scope).
+    pub fn subscribe_to_anchor_kind(
+        subscriber: LocusId,
+        anchor: LocusId,
+        kind: InfluenceKindId,
+    ) -> Self {
+        StructuralProposal::SubscribeToAnchorKind { subscriber, anchor, kind }
+    }
+
+    /// Cancel a TouchingLocus subscription.
+    pub fn unsubscribe_from_anchor_kind(
+        subscriber: LocusId,
+        anchor: LocusId,
+        kind: InfluenceKindId,
+    ) -> Self {
+        StructuralProposal::UnsubscribeFromAnchorKind { subscriber, anchor, kind }
+    }
+
     /// Remove a locus and all its associated data.
     pub fn delete_locus(locus_id: LocusId) -> Self {
         StructuralProposal::DeleteLocus { locus_id }
+    }
+
+    /// Dynamically create a new locus with an auto-assigned ID.
+    pub fn create_locus(kind: LocusKindId, state: StateVector) -> Self {
+        StructuralProposal::CreateLocus {
+            locus_id: None,
+            kind,
+            state,
+            name: None,
+            properties: None,
+        }
+    }
+
+    /// Dynamically create a new locus with an explicit ID.
+    pub fn create_locus_with_id(locus_id: LocusId, kind: LocusKindId, state: StateVector) -> Self {
+        StructuralProposal::CreateLocus {
+            locus_id: Some(locus_id),
+            kind,
+            state,
+            name: None,
+            properties: None,
+        }
     }
 }
 

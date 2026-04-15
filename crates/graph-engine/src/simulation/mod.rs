@@ -19,9 +19,12 @@ pub(crate) mod builder;
 mod config;
 mod ingest;
 mod lifecycle;
+pub mod observability;
+mod watch;
 
 pub use builder::SimulationBuilder;
 pub use config::{SimulationConfig, StepObservation};
+pub use observability::{EventHistory, TickSummary};
 
 use rustc_hash::FxHashMap;
 
@@ -107,8 +110,12 @@ pub struct Simulation {
     /// Stimuli queued by `ingest()`, drained on the next `step()` or
     /// `flush_ingested()` call.
     pub(crate) pending_stimuli: Vec<ProposedChange>,
-    /// Monotone counter of `step()` calls. Used for auto-weathering cadence.
+    /// Monotone counter of `step()` calls. Used for auto-weathering cadence
+    /// and as the `tick_id` in [`TickSummary`].
     tick_count: u64,
+    /// Rolling history of per-tick summaries. `None` when
+    /// `event_history_len == 0` (disabled).
+    event_history: Option<EventHistory>,
     /// Interval (in ticks) at which auto-weathering fires. `None` = disabled.
     auto_weather_every_ticks: Option<u32>,
     /// Policy applied by auto-weathering. `None` suppresses auto-weathering
@@ -122,6 +129,10 @@ pub struct Simulation {
     /// Default influence kind used when `ingest()` is called without
     /// specifying one.
     pub(crate) default_influence: Option<graph_core::InfluenceKindId>,
+    /// Reactive triggers: called after each step, may produce pending_stimuli.
+    pub(crate) triggers: Vec<watch::TriggerEntry>,
+    /// Reactive observers: called after each step for side-effects only.
+    pub(crate) observers: Vec<watch::ObserverEntry>,
 }
 
 impl Simulation {
@@ -172,7 +183,7 @@ impl Simulation {
 
         #[cfg(feature = "storage")]
         let (storage, initial_error) = match config.storage_path {
-            Some(ref path) => match Storage::open(path) {
+            Some(ref path) => match Storage::open_or_reset(path) {
                 Ok(s) => (Some(s), None),
                 Err(e) => (None, Some(e)),
             },
@@ -202,11 +213,18 @@ impl Simulation {
             cold_relationship_min_idle_batches: config.cold_relationship_min_idle_batches,
             pending_stimuli: Vec::new(),
             tick_count: 0,
+            event_history: if config.event_history_len > 0 {
+                Some(EventHistory::new(config.event_history_len))
+            } else {
+                None
+            },
             auto_weather_every_ticks: config.auto_weather_every_ticks,
             auto_weather_policy: None,
             locus_kind_names: FxHashMap::default(),
             influence_kind_names: FxHashMap::default(),
             default_influence: None,
+            triggers: Vec::new(),
+            observers: Vec::new(),
         }
     }
 
@@ -323,14 +341,43 @@ impl Simulation {
             self.engine.weather_entities(&mut self.world, policy);
         }
 
-        StepObservation {
+        // Compute TickSummary, push to history ring buffer if enabled.
+        let summary = TickSummary::compute(
+            self.tick_count,
+            &tick,
+            prev_batch,
+            current_batch,
+            &self.world,
+            &events,
+        );
+        if let Some(ref mut history) = self.event_history {
+            history.push(summary.clone());
+        }
+
+        let obs = StepObservation {
             tick,
             regime,
             relationships: self.world.relationships().len(),
             active_entities: self.world.entities().active_count(),
             scales,
             events,
-        }
+            summary,
+        };
+
+        // Fire reactive triggers and observers. Trigger outputs are queued into
+        // pending_stimuli for the *next* step call — not visible in this tick's obs.
+        self.fire_watches(&obs);
+
+        obs
+    }
+
+    /// The rolling [`EventHistory`] ring buffer, if enabled via
+    /// [`SimulationConfig::event_history_len`].
+    ///
+    /// Returns `None` when history was not enabled at construction time
+    /// (`event_history_len == 0`).
+    pub fn event_history(&self) -> Option<&EventHistory> {
+        self.event_history.as_ref()
     }
 
     /// Aggregate `BatchMetrics` over all batches committed between
@@ -391,6 +438,18 @@ impl Simulation {
     /// Extract cohere clusters using `perspective`.
     pub fn extract_cohere(&mut self, perspective: &dyn CoherePerspective) {
         engine::world_ops::extract_cohere(&mut self.world, &self.base_influences, perspective);
+    }
+
+    /// Apply one round of per-kind activity and weight decay to all
+    /// relationships, then remove those whose activity has dropped below
+    /// the kind's removal threshold.
+    ///
+    /// The engine calls this automatically at the end of each batch inside
+    /// `step()`. Use this explicitly to force a decay flush between ticks —
+    /// for example, to observe the fully-decayed relationship state before
+    /// entity recognition or diagnostic output, without running a full tick.
+    pub fn flush_relationship_decay(&mut self) {
+        engine::world_ops::flush_relationship_decay(&mut self.world, &self.base_influences);
     }
 
     /// Apply a weathering policy to every entity's sediment layer stack.

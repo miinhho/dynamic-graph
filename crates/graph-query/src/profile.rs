@@ -171,6 +171,11 @@ impl<'w> RelationshipBundle<'w> {
     ///
     /// This gives a direction-insensitive measure of "how similar is the
     /// multi-dimensional coupling profile between two locus pairs".
+    ///
+    /// Note: unlike [`StateVector::cosine_similarity`] (which truncates to the
+    /// shorter vector), this method always uses the **union** of both kind sets,
+    /// so missing kinds are zero-padded symmetrically.  The dimension-mismatch
+    /// caveat on `StateVector::cosine_similarity` does **not** apply here.
     pub fn profile_similarity(&self, other: &RelationshipBundle<'_>) -> f32 {
         let mut all_kinds: Vec<InfluenceKindId> = {
             let mut set = rustc_hash::FxHashSet::default();

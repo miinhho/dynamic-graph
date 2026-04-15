@@ -41,37 +41,31 @@
 
 use graph_core::{
     changes_of_kind, relationship_changes_of_kind, Change, ChangeSubject, Endpoints,
-    InfluenceKindId, Locus, LocusContext, LocusId, LocusKindId, LocusProgram, ProposedChange,
+    InfluenceKindId, Locus, LocusContext, LocusId, LocusProgram, ProposedChange,
     RelationshipId, RelationshipSlotDef, StateVector, StructuralProposal,
 };
 use graph_engine::{
-    DefaultCoherePerspective, DefaultEmergencePerspective, Engine, EngineConfig,
-    InfluenceKindConfig, InfluenceKindRegistry, LocusKindConfig, LocusKindRegistry,
+    DefaultCoherePerspective, DefaultEmergencePerspective, SimulationBuilder,
 };
 use graph_query as Q;
-use graph_world::World;
-
-// ── Kind constants ────────────────────────────────────────────────────────────
-
-const KIND_SUPPLIER:  LocusKindId = LocusKindId(1);
-const KIND_FACTORY:   LocusKindId = LocusKindId(2);
-const KIND_WAREHOUSE: LocusKindId = LocusKindId(3);
-const KIND_ANALYST:   LocusKindId = LocusKindId(4);
-
-/// External order placed with a supplier (trigger only; no decay needed).
-const ORDER_KIND:   InfluenceKindId = InfluenceKindId(1);
-/// Goods / raw materials in transit — carries a "reliability" extra slot.
-const SUPPLY_KIND:  InfluenceKindId = InfluenceKindId(2);
-/// Failure signal: instructs a supplier to remove itself from the world.
-const FAILURE_KIND: InfluenceKindId = InfluenceKindId(3);
 
 // ── Locus IDs ─────────────────────────────────────────────────────────────────
+// Fixed IDs so programs can reference their peers by constant.
 
 const SUPPLIER_A: LocusId = LocusId(1);
 const SUPPLIER_B: LocusId = LocusId(2);
 const FACTORY:    LocusId = LocusId(3);
 const WAREHOUSE:  LocusId = LocusId(4);
 const ANALYST:    LocusId = LocusId(5);
+
+// ── Influence kind IDs ────────────────────────────────────────────────────────
+// These match the builder's internal assignment order (1-indexed, registration
+// order: order → supply → failure). Programs reference them as constants so
+// `changes_of_kind` and `ProposedChange` stay concise.
+
+const ORDER_KIND:   InfluenceKindId = InfluenceKindId(1);
+const SUPPLY_KIND:  InfluenceKindId = InfluenceKindId(2);
+const FAILURE_KIND: InfluenceKindId = InfluenceKindId(3);
 
 /// Index of the user-defined "reliability" slot in a SUPPLY_KIND relationship.
 /// Built-in slots occupy indices 0 (activity) and 1 (weight); extras start at 2.
@@ -263,43 +257,38 @@ impl LocusProgram for AnalystProgram {
     }
 }
 
-// ── World construction ────────────────────────────────────────────────────────
+// ── Simulation construction ───────────────────────────────────────────────────
 
 struct Setup {
-    world:      World,
-    loci:       LocusKindRegistry,
-    influences: InfluenceKindRegistry,
-    sup_a_rel:  RelationshipId,
-    sup_b_rel:  RelationshipId,
+    sim:       graph_engine::Simulation,
+    sup_a_rel: RelationshipId,
+    sup_b_rel: RelationshipId,
 }
 
-fn build_world() -> Setup {
-    // Build registries first so `initial_state_for` can seed relationship
-    // state from the kind config's extra-slot defaults rather than hard-coding
-    // the slot count.
-    let mut loci = LocusKindRegistry::new();
-    loci.insert(KIND_SUPPLIER, Box::new(SupplierProgram { factory: FACTORY }));
-    // Factory: max 5 proposals per dispatch caps fan-out.
-    loci.insert_with_config(KIND_FACTORY, LocusKindConfig {
-        name: None,
-        state_slots: Vec::new(),
-        program: Box::new(FactoryProgram { warehouse: WAREHOUSE, efficiency: 0.8 }),
-        refractory_batches: 0,
-        encoder: None,
-        max_proposals_per_dispatch: Some(5),
-    });
-    loci.insert(KIND_WAREHOUSE, Box::new(WarehouseProgram));
+fn build_simulation() -> Setup {
+    // ── Step 1: declare kinds and influences (IDs assigned in order) ──────────
+    //
+    // Influence IDs (builder assigns 1-indexed in registration order):
+    //   "order"   → ORDER_KIND   (1)
+    //   "supply"  → SUPPLY_KIND  (2)
+    //   "failure" → FAILURE_KIND (3)
+    //
+    // Locus kinds registered so far:
+    //   "SUPPLIER" → LocusKindId(1)
+    //   "FACTORY"  → LocusKindId(2)
+    //   "WAREHOUSE"→ LocusKindId(3)
+    //   "ANALYST"  → registered after bootstrap (needs RelationshipId).
 
-    let mut influences = InfluenceKindRegistry::new();
-    influences.insert(
-        ORDER_KIND,
-        InfluenceKindConfig::new("order").with_decay(1.0),
-    );
-    influences.insert(
-        SUPPLY_KIND,
-        InfluenceKindConfig::new("supply")
-            .with_decay(0.90)
-            .with_extra_slots(vec![
+    let mut builder = SimulationBuilder::new()
+        .locus_kind("SUPPLIER", SupplierProgram { factory: FACTORY })
+        .locus_kind_with("FACTORY", FactoryProgram { warehouse: WAREHOUSE, efficiency: 0.8 }, |c| {
+            c.max_proposals(5)
+        })
+        .locus_kind("WAREHOUSE", WarehouseProgram)
+        // "ANALYST" kind is registered below (after relationship IDs are known).
+        .influence("order",   |c| c.with_decay(1.0))
+        .influence("supply",  |c| {
+            c.with_decay(0.90).with_extra_slots(vec![
                 // "reliability" accumulates (+0.1) on each successful delivery
                 // and erodes slowly between deliveries (decay=0.995/batch).
                 // The factory updates this slot via ChangeSubject::Relationship;
@@ -309,50 +298,57 @@ fn build_world() -> Setup {
                 // weight updates added at end-of-batch. The sensor_fusion
                 // example demonstrates Hebbian separately.
                 RelationshipSlotDef::new("reliability", 0.0).with_decay(0.995),
-            ]),
-    );
-    influences.insert(
-        FAILURE_KIND,
-        InfluenceKindConfig::new("failure").with_decay(1.0),
-    );
+            ])
+        })
+        .influence("failure", |c| c.with_decay(1.0))
+        .engine(|_| graph_engine::EngineConfig { max_batches_per_tick: 16 });
 
-    let mut world = World::new();
+    // ── Step 2: bootstrap — get kind IDs, insert loci, create relationships ──
 
-    for id in [SUPPLIER_A, SUPPLIER_B] {
-        world.insert_locus(Locus::new(id, KIND_SUPPLIER, StateVector::zeros(1)));
+    let supplier_kind  = builder.locus_kind_id("SUPPLIER").unwrap();
+    let factory_kind   = builder.locus_kind_id("FACTORY").unwrap();
+    let warehouse_kind = builder.locus_kind_id("WAREHOUSE").unwrap();
+
+    {
+        let w = builder.world_mut();
+        for id in [SUPPLIER_A, SUPPLIER_B] {
+            w.insert_locus(Locus::new(id, supplier_kind, StateVector::zeros(1)));
+        }
+        w.insert_locus(Locus::new(FACTORY,   factory_kind,   StateVector::zeros(1)));
+        w.insert_locus(Locus::new(WAREHOUSE, warehouse_kind, StateVector::zeros(1)));
     }
-    world.insert_locus(Locus::new(FACTORY,   KIND_FACTORY,   StateVector::zeros(1)));
-    world.insert_locus(Locus::new(WAREHOUSE, KIND_WAREHOUSE, StateVector::zeros(1)));
-    world.insert_locus(Locus::new(ANALYST,   KIND_ANALYST,   StateVector::zeros(1)));
 
-    // Pre-create supply relationships. `initial_state_for` derives the correct
-    // slot count ([activity, weight, reliability]) from the registered config,
-    // so the state is consistent with any extra-slot additions to SUPPLY_KIND.
-    let initial_supply_state = influences.initial_state_for(SUPPLY_KIND);
-    let sup_a_rel = world.add_relationship(
+    // `initial_relationship_state` reads the registered "supply" config's
+    // extra-slot defaults so the slot count is always correct.
+    let initial_supply_state = builder.initial_relationship_state("supply");
+    let sup_a_rel = builder.world_mut().add_relationship(
         Endpoints::directed(SUPPLIER_A, FACTORY),
         SUPPLY_KIND,
         initial_supply_state.clone(),
     );
-    let sup_b_rel = world.add_relationship(
+    let sup_b_rel = builder.world_mut().add_relationship(
         Endpoints::directed(SUPPLIER_B, FACTORY),
         SUPPLY_KIND,
         initial_supply_state,
     );
 
-    // Analyst watches both supply edges from the start.
-    world.subscriptions_mut().subscribe_at(ANALYST, sup_a_rel, None);
-    world.subscriptions_mut().subscribe_at(ANALYST, sup_b_rel, None);
+    // Subscribe the analyst to both supply edges.
+    builder.world_mut().subscriptions_mut().subscribe_at(ANALYST, sup_a_rel, None);
+    builder.world_mut().subscriptions_mut().subscribe_at(ANALYST, sup_b_rel, None);
 
-    loci.insert(KIND_ANALYST, Box::new(AnalystProgram { sup_a_rel, sup_b_rel }));
+    // Now that we have the relationship IDs, register the analyst program.
+    // `add_locus_kind` returns the assigned LocusKindId so we can immediately
+    // create the analyst locus with the right kind.
+    let analyst_kind = builder.add_locus_kind("ANALYST", AnalystProgram { sup_a_rel, sup_b_rel });
+    builder.world_mut().insert_locus(Locus::new(ANALYST, analyst_kind, StateVector::zeros(1)));
 
-    Setup { world, loci, influences, sup_a_rel, sup_b_rel }
+    Setup { sim: builder.build(), sup_a_rel, sup_b_rel }
 }
 
 // ── Print helpers ─────────────────────────────────────────────────────────────
 
-fn print_relationships(world: &World) {
-    let mut rels: Vec<_> = world.relationships().iter().collect();
+fn print_relationships(sim: &graph_engine::Simulation) {
+    let mut rels: Vec<_> = sim.world.relationships().iter().collect();
     rels.sort_by_key(|r| r.id);
     for r in rels {
         let (from, to) = match r.endpoints {
@@ -381,8 +377,7 @@ fn locus_label(id: LocusId) -> &'static str {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 fn main() {
-    let Setup { mut world, loci, influences, sup_a_rel, sup_b_rel } = build_world();
-    let engine = Engine::new(EngineConfig { max_batches_per_tick: 16 });
+    let Setup { mut sim, sup_a_rel, sup_b_rel } = build_simulation();
 
     println!("=== Supply Chain Disruption Example ===\n");
     println!("  SUPPLIER_A ──supply──→ FACTORY ──output──→ WAREHOUSE");
@@ -395,23 +390,18 @@ fn main() {
     // ── Tick 1: both suppliers active ─────────────────────────────────────────
 
     println!("--- Tick 1: orders to SUPPLIER_A and SUPPLIER_B ---");
-    let r1 = engine.tick(
-        &mut world,
-        &loci,
-        &influences,
-        vec![
-            ProposedChange::stimulus(SUPPLIER_A, ORDER_KIND, &[1.0]),
-            ProposedChange::stimulus(SUPPLIER_B, ORDER_KIND, &[1.0]),
-        ],
-    );
+    let r1 = sim.step(vec![
+        ProposedChange::stimulus(SUPPLIER_A, ORDER_KIND, &[1.0]),
+        ProposedChange::stimulus(SUPPLIER_B, ORDER_KIND, &[1.0]),
+    ]);
     println!(
         "  batches={} changes={} relationships={}",
-        r1.batches_committed, r1.changes_committed, world.relationships().len()
+        r1.tick.batches_committed, r1.tick.changes_committed, sim.world.relationships().len()
     );
-    let stock = world.locus(WAREHOUSE).map(|l| l.state.as_slice()[0]).unwrap_or(0.0);
+    let stock = sim.world.locus(WAREHOUSE).map(|l| l.state.as_slice()[0]).unwrap_or(0.0);
     println!("  warehouse stock: {stock:.3}");
-    println!("  analyst subscriptions active: {}", world.subscriptions().subscription_count());
-    print_relationships(&world);
+    println!("  analyst subscriptions active: {}", sim.world.subscriptions().subscription_count());
+    print_relationships(&sim);
     println!();
 
     // ── Tick 2: SUPPLIER_B receives failure signal → self-deletes ─────────────
@@ -426,49 +416,41 @@ fn main() {
     // SUPPLIER_A still receives its normal ORDER_KIND stimulus this tick.
 
     println!("--- Tick 2: SUPPLIER_B fails — SUPPLIER_A delivers alone ---");
-    let r2 = engine.tick(
-        &mut world,
-        &loci,
-        &influences,
-        vec![
-            ProposedChange::stimulus(SUPPLIER_A, ORDER_KIND,   &[1.0]),
-            ProposedChange::stimulus(SUPPLIER_B, FAILURE_KIND, &[1.0]),
-        ],
-    );
+    let r2 = sim.step(vec![
+        ProposedChange::stimulus(SUPPLIER_A, ORDER_KIND,   &[1.0]),
+        ProposedChange::stimulus(SUPPLIER_B, FAILURE_KIND, &[1.0]),
+    ]);
     println!(
         "  batches={} changes={} relationships={}",
-        r2.batches_committed, r2.changes_committed, world.relationships().len()
+        r2.tick.batches_committed, r2.tick.changes_committed, sim.world.relationships().len()
     );
-    let stock = world.locus(WAREHOUSE).map(|l| l.state.as_slice()[0]).unwrap_or(0.0);
+    let stock = sim.world.locus(WAREHOUSE).map(|l| l.state.as_slice()[0]).unwrap_or(0.0);
     println!("  warehouse stock: {stock:.3}");
-    println!("  SUPPLIER_B exists: {}", world.locus(SUPPLIER_B).is_some());
-    println!("  analyst subscriptions active: {} (SUPPLIER_B edge cleaned up)", world.subscriptions().subscription_count());
-    print_relationships(&world);
+    println!("  SUPPLIER_B exists: {}", sim.world.locus(SUPPLIER_B).is_some());
+    println!("  analyst subscriptions active: {} (SUPPLIER_B edge cleaned up)", sim.world.subscriptions().subscription_count());
+    print_relationships(&sim);
     println!();
 
     // ── Tick 3: steady-state single supplier ──────────────────────────────────
 
     println!("--- Tick 3: single supplier, normal operation ---");
-    let r3 = engine.tick(
-        &mut world,
-        &loci,
-        &influences,
-        vec![ProposedChange::stimulus(SUPPLIER_A, ORDER_KIND, &[1.0])],
-    );
+    let r3 = sim.step(vec![
+        ProposedChange::stimulus(SUPPLIER_A, ORDER_KIND, &[1.0]),
+    ]);
     println!(
         "  batches={} changes={} relationships={}",
-        r3.batches_committed, r3.changes_committed, world.relationships().len()
+        r3.tick.batches_committed, r3.tick.changes_committed, sim.world.relationships().len()
     );
-    let stock = world.locus(WAREHOUSE).map(|l| l.state.as_slice()[0]).unwrap_or(0.0);
+    let stock = sim.world.locus(WAREHOUSE).map(|l| l.state.as_slice()[0]).unwrap_or(0.0);
     println!("  warehouse stock: {stock:.3}");
-    print_relationships(&world);
+    print_relationships(&sim);
     println!();
 
     // ── Relationship health after decay flush ─────────────────────────────────
 
-    engine.flush_relationship_decay(&mut world, &influences);
+    sim.flush_relationship_decay();
     println!("--- Relationships after decay flush ---");
-    print_relationships(&world);
+    print_relationships(&sim);
     println!();
 
     // ── Entity recognition ─────────────────────────────────────────────────────
@@ -477,9 +459,9 @@ fn main() {
         min_activity_threshold: 0.01,
         ..Default::default()
     };
-    engine.recognize_entities(&mut world, &influences, &ep);
-    println!("--- Entities ({} active) ---", world.entities().active_count());
-    for e in world.entities().active() {
+    sim.recognize_entities(&ep);
+    println!("--- Entities ({} active) ---", sim.world.entities().active_count());
+    for e in sim.world.entities().active() {
         let members: Vec<&str> = e.current.members.iter().map(|l| locus_label(*l)).collect();
         println!(
             "  entity#{} members=[{}] coherence={:.3} layers={}",
@@ -494,8 +476,8 @@ fn main() {
     // ── Cohere clusters ────────────────────────────────────────────────────────
 
     let cp = DefaultCoherePerspective { min_bridge_activity: 0.01, ..Default::default() };
-    engine.extract_cohere(&mut world, &influences, &cp);
-    let coheres = world.coheres().get("default").unwrap_or(&[]);
+    sim.extract_cohere(&cp);
+    let coheres = sim.world.coheres().get("default").unwrap_or(&[]);
     println!("--- Coheres ({}) ---", coheres.len());
     for c in coheres {
         let ms = match &c.members {
@@ -514,10 +496,10 @@ fn main() {
     // ── Change log summary ─────────────────────────────────────────────────────
     // Show the final causal picture: number of committed changes per subject.
 
-    println!("--- Change log summary ({} changes total) ---", world.log().len());
+    println!("--- Change log summary ({} changes total) ---", sim.world.log().len());
     let mut locus_changes = 0u32;
     let mut rel_changes = 0u32;
-    for change in world.log().iter() {
+    for change in sim.world.log().iter() {
         match change.subject {
             ChangeSubject::Locus(_)        => locus_changes += 1,
             ChangeSubject::Relationship(_) => rel_changes += 1,
@@ -536,7 +518,7 @@ fn main() {
     // profile_similarity with itself is 1.0 — meaningful with multi-kind topologies.
 
     println!("--- Relationship profile: SUPPLIER_A ↔ FACTORY ---");
-    let bundle = Q::relationship_profile(&world, SUPPLIER_A, FACTORY);
+    let bundle = Q::relationship_profile(&sim.world, SUPPLIER_A, FACTORY);
     println!(
         "  edges: {}  net_activity={:.3}  dominant_kind={:?}",
         bundle.len(),
@@ -557,8 +539,8 @@ fn main() {
 
     println!("--- Activity trend for SUPPLIER_A→FACTORY ---");
     let from_batch = graph_core::BatchId(0);
-    let to_batch   = world.current_batch();
-    match Q::relationship_activity_trend(&world, sup_a_rel, from_batch, to_batch) {
+    let to_batch   = sim.world.current_batch();
+    match Q::relationship_activity_trend(&sim.world, sup_a_rel, from_batch, to_batch) {
         Some(Q::Trend::Rising { slope }) =>
             println!("  trend=Rising  slope={slope:+.4}/batch  (supply edge strengthening)"),
         Some(Q::Trend::Falling { slope }) =>

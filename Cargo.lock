@@ -279,6 +279,7 @@ version = "0.1.0"
 dependencies = [
  "rustc-hash",
  "serde",
+ "smallvec",
 ]
 
 [[package]]
@@ -291,7 +292,9 @@ dependencies = [
  "graph-storage",
  "graph-testkit",
  "graph-world",
+ "rayon",
  "rustc-hash",
+ "smallvec",
  "tempfile",
 ]
 
@@ -303,6 +306,7 @@ dependencies = [
  "graph-testkit",
  "graph-world",
  "rustc-hash",
+ "smallvec",
 ]
 
 [[package]]
@@ -325,6 +329,7 @@ dependencies = [
  "graph-core",
  "graph-engine",
  "graph-world",
+ "smallvec",
 ]
 
 [[package]]
@@ -337,6 +342,7 @@ dependencies = [
  "postcard",
  "rustc-hash",
  "serde",
+ "smallvec",
  "tempfile",
 ]
 
@@ -736,6 +742,15 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "smallvec"
+version = "1.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

@@ -10,8 +10,14 @@
 //! for each slot in a locus kind's `StateVector`, enabling named-slot queries
 //! and diagnostic output without encoding indices in caller code.
 //!
-//! Performance is not a concern at this layer of the redesign; correctness
-//! and clarity are. A SmallVec/aligned-buffer variant can land later.
+//! ## Inline storage
+//!
+//! `StateVector` backs its slots with a `SmallVec<[f32; 4]>`, keeping up to
+//! 4 floats on the stack without a heap allocation.  Relationship state
+//! (activity + weight = 2 slots) and small locus states fit entirely inline;
+//! larger state vectors fall back to the heap transparently.
+
+use smallvec::SmallVec;
 
 /// Metadata describing one slot in a locus's `StateVector`.
 ///
@@ -49,25 +55,32 @@ impl StateSlotDef {
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StateVector {
-    slots: Vec<f32>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            serialize_with = "crate::state::serde_smallvec_f32::serialize",
+            deserialize_with = "crate::state::serde_smallvec_f32::deserialize"
+        )
+    )]
+    slots: SmallVec<[f32; 4]>,
 }
 
 impl StateVector {
     /// Empty vector — equivalent to "no state observed yet".
     pub fn empty() -> Self {
-        Self { slots: Vec::new() }
+        Self { slots: SmallVec::new() }
     }
 
     /// All-zero vector of a given dimensionality.
     pub fn zeros(dim: usize) -> Self {
         Self {
-            slots: vec![0.0; dim],
+            slots: smallvec::smallvec![0.0; dim],
         }
     }
 
     pub fn from_slice(values: &[f32]) -> Self {
         Self {
-            slots: values.to_vec(),
+            slots: SmallVec::from_slice(values),
         }
     }
 
@@ -122,10 +135,12 @@ impl StateVector {
     /// fresh vector with `dim = max(self.dim, other.dim)`.
     pub fn add(&self, other: &StateVector) -> StateVector {
         let len = self.slots.len().max(other.slots.len());
-        let mut out = vec![0.0; len];
-        for (i, slot) in out.iter_mut().enumerate() {
-            *slot = self.slots.get(i).copied().unwrap_or(0.0)
-                + other.slots.get(i).copied().unwrap_or(0.0);
+        let mut out: SmallVec<[f32; 4]> = SmallVec::with_capacity(len);
+        for i in 0..len {
+            out.push(
+                self.slots.get(i).copied().unwrap_or(0.0)
+                    + other.slots.get(i).copied().unwrap_or(0.0),
+            );
         }
         StateVector { slots: out }
     }
@@ -151,8 +166,12 @@ impl StateVector {
     /// between the two vectors, in `[-1.0, 1.0]`.
     ///
     /// Returns `0.0` when either vector is all-zero (undefined by convention).
-    /// Only the shared prefix (length = `min(self.dim, other.dim)`) is used
-    /// when the vectors have different dimensions.
+    ///
+    /// # Dimension mismatch
+    ///
+    /// **Only the shared prefix** (`length = min(self.dim, other.dim)`) is used
+    /// when the two vectors have different dimensions.  Extra slots on the longer
+    /// vector are silently ignored — they do **not** contribute to the result.
     pub fn cosine_similarity(&self, other: &StateVector) -> f32 {
         let norm_a = self.l2_norm();
         let norm_b = other.l2_norm();
@@ -175,6 +194,32 @@ impl StateVector {
             })
             .sum::<f32>()
             .sqrt()
+    }
+}
+
+// ── Serde helpers for SmallVec<[f32; 4]> ─────────────────────────────────────
+//
+// SmallVec implements Serialize/Deserialize when its element type does, but
+// the derive macros on StateVector need explicit paths when the serde feature
+// is conditional.  We route through Vec<f32> for maximum compatibility.
+
+#[cfg(feature = "serde")]
+mod serde_smallvec_f32 {
+    use smallvec::SmallVec;
+
+    pub fn serialize<S>(v: &SmallVec<[f32; 4]>, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        s.collect_seq(v.iter())
+    }
+
+    pub fn deserialize<'de, D>(d: D) -> Result<SmallVec<[f32; 4]>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let v: Vec<f32> = serde::Deserialize::deserialize(d)?;
+        Ok(SmallVec::from_vec(v))
     }
 }
 
@@ -262,5 +307,24 @@ mod tests {
         let a = StateVector::from_slice(&[0.0, 0.0]);
         let b = StateVector::from_slice(&[3.0, 4.0]);
         assert!((a.euclidean_distance(&b) - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn inline_storage_for_two_slots() {
+        // Relationship state (activity + weight) must not heap-allocate.
+        let v = StateVector::from_slice(&[1.0, 0.0]);
+        assert!(!v.slots.spilled(), "2-slot StateVector should fit inline");
+    }
+
+    #[test]
+    fn four_slots_still_inline() {
+        let v = StateVector::from_slice(&[1.0, 2.0, 3.0, 4.0]);
+        assert!(!v.slots.spilled(), "4-slot StateVector should fit inline");
+    }
+
+    #[test]
+    fn five_slots_spills_to_heap() {
+        let v = StateVector::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0]);
+        assert!(v.slots.spilled(), "5-slot StateVector should spill to heap");
     }
 }

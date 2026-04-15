@@ -16,6 +16,7 @@ pub mod ids;
 pub mod locus;
 pub mod perspective;
 pub mod program;
+pub mod program_builder;
 pub mod property;
 pub mod regime_tag;
 pub mod relationship;
@@ -30,6 +31,7 @@ pub use program::{
     changes_of_kind, locus_changes, relationship_changes, relationship_changes_of_kind,
     LocusContext, LocusProgram, ProposedChange, StructuralProposal,
 };
+pub use program_builder::{ComposedProgram, ProgramBuilder};
 pub use cohere::{Cohere, CohereId, CohereMembers};
 pub use entity::{
     CompressedTransition, CompressionLevel, Entity, EntityId, EntityLayer, EntityLineage,
@@ -38,8 +40,8 @@ pub use entity::{
 pub use perspective::EmergenceProposal;
 pub use stabilization::{SaturationMode, StabilizationConfig};
 pub use relationship::{
-    EndpointKey, Endpoints, InteractionEffect, Relationship, RelationshipId, RelationshipLineage,
-    RelationshipSlotDef,
+    EndpointKey, Endpoints, InteractionEffect, KindObservation, Relationship, RelationshipId,
+    RelationshipLineage, RelationshipSlotDef,
 };
 pub use state::{StateSlotDef, StateVector};
 pub use event::WorldEvent;

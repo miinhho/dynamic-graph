@@ -16,7 +16,7 @@ mod snapshot;
 
 pub use snapshot::{WorldMeta, WorldSnapshot};
 
-use graph_core::{BatchId, Change, ChangeId, Endpoints, Locus, LocusId, Relationship, RelationshipId, RelationshipKindId, RelationshipLineage, StateVector};
+use graph_core::{BatchId, Change, ChangeId, Endpoints, KindObservation, Locus, LocusId, Relationship, RelationshipId, RelationshipKindId, RelationshipLineage, StateVector};
 
 use crate::store::change_log::ChangeLog;
 use crate::store::cohere_store::CohereStore;
@@ -138,11 +138,35 @@ impl World {
         id
     }
 
+    /// Reserve a contiguous block of `n` `ChangeId`s in one step.
+    ///
+    /// Returns the base `ChangeId` (the first of the reserved block).
+    /// The caller is responsible for assigning IDs `base`, `base+1`, …,
+    /// `base+n-1` and appending the corresponding `Change`s in that order
+    /// to preserve the density invariant.
+    ///
+    /// Engine-only — call `mint_change_id` for single-change paths.
+    pub fn reserve_change_ids(&mut self, n: usize) -> ChangeId {
+        let base = ChangeId(self.next_change_id);
+        self.next_change_id += n as u64;
+        base
+    }
+
     /// Append a change to the log. The engine is expected to have set
     /// `change.batch` to `current_batch` already; this method does not
     /// re-check that.
     pub fn append_change(&mut self, change: Change) -> ChangeId {
         self.log.append(change)
+    }
+
+    /// Bulk-append a Vec of pre-built changes from the same batch.
+    ///
+    /// Delegates to [`ChangeLog::extend_batch`]: all reverse indices are
+    /// updated in one grouping pass instead of one HashMap op per change.
+    /// Use this instead of repeated `append_change` calls when committing
+    /// an entire batch at once.
+    pub fn extend_batch_changes(&mut self, changes: Vec<Change>) {
+        self.log.extend_batch(changes);
     }
 
     /// Advance to the next batch. Called once per batch by the engine
@@ -197,7 +221,7 @@ impl World {
                 created_by: None,
                 last_touched_by: None,
                 change_count: 0,
-                kinds_observed: vec![kind],
+                kinds_observed: smallvec::smallvec![KindObservation::synthetic(kind)],
             },
             created_batch: self.current_batch,
             last_decayed_batch: current_batch,
@@ -305,7 +329,7 @@ mod tests {
                     created_by: None,
                     last_touched_by: None,
                     change_count: 1,
-                    kinds_observed: vec![rel_kind],
+                    kinds_observed: smallvec::smallvec![KindObservation::synthetic(rel_kind)],
                 },
                 created_batch: graph_core::BatchId(0),
                 last_decayed_batch: 0,
@@ -337,7 +361,7 @@ mod tests {
                     created_by: None,
                     last_touched_by: None,
                     change_count: 1,
-                    kinds_observed: vec![rk],
+                    kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
                 },
                 created_batch: graph_core::BatchId(0),
                 last_decayed_batch: 0,
@@ -390,7 +414,7 @@ mod tests {
                 created_by: None,
                 last_touched_by: None,
                 change_count: 1,
-                kinds_observed: vec![rk],
+                kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
             },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
@@ -435,7 +459,7 @@ mod tests {
                 created_by: None,
                 last_touched_by: None,
                 change_count: 1,
-                kinds_observed: vec![rk],
+                kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
             },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0, // idle since batch 0

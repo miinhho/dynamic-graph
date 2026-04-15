@@ -6,7 +6,7 @@
 //! the `Vec<WorldEvent>` itself.
 
 use crate::entity::EntityId;
-use crate::ids::{BatchId, InfluenceKindId, LocusId, LocusKindId};
+use crate::ids::{BatchId, ChangeId, InfluenceKindId, LocusId, LocusKindId};
 use crate::relationship::RelationshipId;
 
 /// A discrete event emitted by a world mutation.
@@ -53,6 +53,9 @@ pub enum WorldEvent {
         from: LocusId,
         to: LocusId,
         kind: InfluenceKindId,
+        /// The `ChangeId` that triggered emergence — the change that first
+        /// observed causal flow from `from` to `to` under this `kind`.
+        trigger_change_id: ChangeId,
     },
     /// A relationship was auto-pruned due to low activity.
     RelationshipPruned {

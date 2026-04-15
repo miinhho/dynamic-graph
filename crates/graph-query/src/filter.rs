@@ -293,6 +293,53 @@ where
     world.relationships().iter().filter(|r| pred(r)).collect()
 }
 
+/// All relationships where **every** specified slot satisfies its predicate
+/// simultaneously (logical AND across all slot conditions).
+///
+/// Each entry in `conditions` is `(slot_index, predicate)`. A relationship
+/// passes only when all slot predicates return `true`. Relationships that
+/// are missing any of the requested slots (i.e. the slot index is out of
+/// bounds) are excluded.
+///
+/// # Example
+///
+/// ```ignore
+/// // Supply edges that are both active (slot 0 > 0.3) AND reliable (slot 2 > 0.7).
+/// let healthy = graph_query::relationships_matching_slots(
+///     &world,
+///     vec![
+///         (0, Box::new(|v: f32| v > 0.3)),   // activity
+///         (2, Box::new(|v: f32| v > 0.7)),   // reliability (extra slot)
+///     ],
+/// );
+/// ```
+///
+/// For a single-slot filter prefer [`relationships_with_slot`], which avoids
+/// the allocation of a `Vec`. Use this function when composing two or more
+/// slot conditions.
+///
+/// [`relationships_with_slot`]: crate::relationships_with_slot
+pub fn relationships_matching_slots(
+    world: &World,
+    conditions: Vec<(usize, Box<dyn Fn(f32) -> bool>)>,
+) -> Vec<&Relationship> {
+    if conditions.is_empty() {
+        return world.relationships().iter().collect();
+    }
+    world
+        .relationships()
+        .iter()
+        .filter(|r| {
+            conditions.iter().all(|(slot_idx, pred)| {
+                r.state
+                    .as_slice()
+                    .get(*slot_idx)
+                    .is_some_and(|&v| pred(v))
+            })
+        })
+        .collect()
+}
+
 /// All relationships that have a string metadata property `key` satisfying `pred`.
 ///
 /// Relationships without `metadata`, or where `key` is absent or not a string,
@@ -653,12 +700,78 @@ pub fn top_entity_members(world: &World, n: usize) -> Vec<&Locus> {
     result
 }
 
+// ─── Relationship lineage queries ─────────────────────────────────────────────
+
+/// Return the influence kind that has flowed through `rel_id` the most times.
+///
+/// Delegates to [`RelationshipLineage::dominant_flow_kind`]. Returns `None`
+/// when the relationship is not found or its lineage has no observations.
+pub fn dominant_flow_kind(world: &World, rel_id: RelationshipId) -> Option<InfluenceKindId> {
+    world.relationships().get(rel_id)?.lineage.dominant_flow_kind()
+}
+
+/// Compute the kind-flow diversity score for `rel_id`.
+///
+/// Defined as `distinct_kind_count / total_touch_count`. Ranges from
+/// `1/N` (all touches from one kind) to `1.0` (each touch from a distinct
+/// kind — unlikely in practice). Returns `0.0` when the relationship is not
+/// found or has no touch history.
+///
+/// A higher value indicates a relationship through which many different
+/// influence kinds have flowed with roughly equal frequency; a lower value
+/// indicates one dominant kind.
+pub fn kind_flow_diversity(world: &World, rel_id: RelationshipId) -> f32 {
+    let rel = match world.relationships().get(rel_id) {
+        Some(r) => r,
+        None => return 0.0,
+    };
+    let lineage = &rel.lineage;
+    if lineage.change_count == 0 {
+        return 0.0;
+    }
+    let distinct = lineage.kinds_observed.len() as f32;
+    let total = lineage.change_count as f32;
+    distinct / total
+}
+
+/// Rate at which new influence kinds appear on `rel_id`, measured as
+/// distinct observed kinds per batch of the relationship's lifetime.
+///
+/// `kind_transition_rate = distinct_kind_count / age_in_batches`
+///
+/// `age_in_batches` is estimated as the gap between the most recently
+/// observed batch across all kinds and the relationship's `created_batch`.
+/// Returns `0.0` when the relationship is not found, has no observations,
+/// or has an age of zero batches.
+pub fn kind_transition_rate(world: &World, rel_id: RelationshipId) -> f32 {
+    let rel = match world.relationships().get(rel_id) {
+        Some(r) => r,
+        None => return 0.0,
+    };
+    let lineage = &rel.lineage;
+    if lineage.kinds_observed.is_empty() {
+        return 0.0;
+    }
+    let latest_batch = lineage
+        .kinds_observed
+        .iter()
+        .map(|o| o.last_batch.0)
+        .max()
+        .unwrap_or(0);
+    let age = latest_batch.saturating_sub(rel.created_batch.0);
+    if age == 0 {
+        // Relationship born and last-touched in the same batch.
+        return lineage.kinds_observed.len() as f32;
+    }
+    lineage.kinds_observed.len() as f32 / age as f32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use graph_core::{
-        Endpoints, InfluenceKindId, Locus, LocusKindId, Relationship, RelationshipKindId,
-        RelationshipLineage, StateVector,
+        Endpoints, InfluenceKindId, KindObservation, Locus, LocusKindId, Relationship,
+        RelationshipKindId, RelationshipLineage, StateVector,
     };
     use graph_world::World;
 
@@ -694,7 +807,7 @@ mod tests {
                 created_by: None,
                 last_touched_by: None,
                 change_count: 1,
-                kinds_observed: vec![rk],
+                kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
             },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
@@ -1005,7 +1118,7 @@ mod tests {
         w.insert_locus(graph_core::Locus::new(LocusId(0), LocusKindId(1), StateVector::from_slice(&[0.5])));
         w.insert_locus(graph_core::Locus::new(LocusId(1), LocusKindId(1), StateVector::from_slice(&[0.5])));
 
-        use graph_core::{Endpoints, Relationship, RelationshipLineage};
+        use graph_core::{Endpoints, KindObservation, Relationship, RelationshipLineage};
         let id = w.relationships_mut().mint_id();
         w.relationships_mut().insert(Relationship {
             id,
@@ -1015,7 +1128,7 @@ mod tests {
             lineage: RelationshipLineage {
                 created_by: None, last_touched_by: None,
                 change_count: 6,  // touched 6 times
-                kinds_observed: vec![rk],
+                kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
             },
             created_batch: BatchId(0),
             last_decayed_batch: 0,

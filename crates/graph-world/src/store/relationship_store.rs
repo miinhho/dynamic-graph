@@ -36,6 +36,17 @@ impl RelationshipStore {
         self.by_id.is_empty()
     }
 
+    /// Pre-allocate capacity for `additional` more relationships.
+    ///
+    /// Call this before bulk inserts (e.g. the auto-emerge pass when many
+    /// new relationships are expected) to avoid repeated HashMap rehashing.
+    pub fn reserve(&mut self, additional: usize) {
+        self.by_id.reserve(additional);
+        self.by_key.reserve(additional);
+        // by_locus gets at most 2*additional new entries (one per endpoint).
+        self.by_locus.reserve(additional.saturating_mul(2).min(additional + 1024));
+    }
+
     /// Mint a fresh `RelationshipId`. The engine assigns id and stores
     /// the relationship via `insert`; the two-step shape lets the
     /// caller fill in lineage data that depends on the new id.
@@ -211,7 +222,7 @@ fn locus_ids_of(endpoints: &Endpoints, mut f: impl FnMut(LocusId)) {
 mod tests {
     use super::*;
     use graph_core::{
-        Endpoints, InfluenceKindId, LocusId, RelationshipLineage, StateVector,
+        Endpoints, InfluenceKindId, KindObservation, LocusId, RelationshipLineage, StateVector,
     };
 
     fn rel(id: RelationshipId, from: u64, to: u64, kind: u64) -> Relationship {
@@ -227,7 +238,7 @@ mod tests {
                 created_by: None,
                 last_touched_by: None,
                 change_count: 0,
-                kinds_observed: vec![InfluenceKindId(kind)],
+                kinds_observed: smallvec::smallvec![KindObservation::synthetic(InfluenceKindId(kind))],
             },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,

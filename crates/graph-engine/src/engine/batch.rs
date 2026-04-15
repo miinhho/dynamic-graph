@@ -2,12 +2,13 @@
 //! staging, and the two relationship-graph mutations that fire inside tick.
 
 use graph_core::{
-    BatchId, ChangeId, Endpoints, ProposedChange, Relationship, RelationshipLineage,
-    StateVector, StructuralProposal,
+    BatchId, Change, ChangeId, ChangeSubject, Endpoints, InfluenceKindId, KindObservation, Locus,
+    LocusId, LocusKindId, Properties, ProposedChange, Relationship, RelationshipId,
+    RelationshipLineage, RelationshipSlotDef, StateVector, StructuralProposal,
 };
 use graph_world::World;
 
-use crate::registry::InfluenceKindConfig;
+use crate::registry::{InfluenceKindConfig, InfluenceKindRegistry};
 
 /// A change queued for the next batch: the user/program-supplied proposal
 /// plus any predecessor `ChangeId`s the engine derived from the previous
@@ -32,6 +33,315 @@ pub(crate) struct DispatchInput<'a> {
 /// attach to each follow-up change.
 pub(crate) type DispatchResult = (Vec<ProposedChange>, Vec<StructuralProposal>, Vec<ChangeId>);
 
+// ── Compute / Apply split ─────────────────────────────────────────────────
+//
+// The commit loop is split into two phases so the read-heavy computation
+// can run in parallel (on the pre-batch world snapshot) while the write-heavy
+// mutations remain sequential.
+//
+// COMPUTE phase: pure reads → `ComputedChange`
+//   - Reads pre-batch locus/relationship state
+//   - Computes stabilized state, cross-locus predecessor list, schema checks
+//   - Does NOT mint IDs or touch the world
+//
+// APPLY phase: sequential mutations
+//   - Mints ChangeId, appends to log, updates state
+//   - Calls `auto_emerge_relationship` for cross-locus flow
+
+/// A cross-locus predecessor extracted in the compute phase.
+/// Carried into the apply phase so `auto_emerge_relationship` can run
+/// there with full write access to the relationship store.
+pub(crate) struct CrossLocusPred {
+    pub(crate) from_locus: LocusId,
+    /// Activation value of `from_locus` at the time the predecessor fired.
+    /// Used as the pre-synaptic signal for Hebbian plasticity.
+    pub(crate) pre_signal: f32,
+    /// If the (from_kind, to_kind) pair violates `applies_between`, carries
+    /// the endpoint kinds so the apply phase can emit a `SchemaViolation`
+    /// event.  `None` means no violation.
+    pub(crate) schema_violation: Option<(LocusKindId, LocusKindId)>,
+}
+
+/// Read-only result for a locus-subject pending change.
+pub(crate) struct ComputedLocusChange {
+    pub(crate) locus_id: LocusId,
+    pub(crate) kind: InfluenceKindId,
+    pub(crate) predecessors: Vec<ChangeId>,
+    pub(crate) before: StateVector,
+    pub(crate) after: StateVector,
+    pub(crate) wall_time: Option<u64>,
+    pub(crate) metadata: Option<Properties>,
+    pub(crate) property_patch: Option<Properties>,
+    pub(crate) cross_locus_preds: Vec<CrossLocusPred>,
+    /// Resolved extra slot definitions (inherited) for `auto_emerge_relationship`.
+    pub(crate) resolved_slots: Vec<RelationshipSlotDef>,
+    pub(crate) plasticity_active: bool,
+    /// First slot of `after` — post-synaptic signal for Hebbian plasticity.
+    pub(crate) post_signal: f32,
+}
+
+/// Read-only result for a relationship-subject pending change.
+pub(crate) struct ComputedRelChange {
+    pub(crate) rel_id: RelationshipId,
+    pub(crate) kind: InfluenceKindId,
+    pub(crate) predecessors: Vec<ChangeId>,
+    pub(crate) before: StateVector,
+    pub(crate) after: StateVector,
+    pub(crate) wall_time: Option<u64>,
+    pub(crate) metadata: Option<Properties>,
+    pub(crate) from: LocusId,
+    pub(crate) to: LocusId,
+    /// Whether any subscriber is watching this relationship; cached here
+    /// so the apply phase can skip the subscription store lookup.
+    pub(crate) has_subscribers: bool,
+}
+
+/// Result of the compute phase for one `PendingChange`.
+pub(crate) enum ComputedChange {
+    Locus(ComputedLocusChange),
+    Relationship(ComputedRelChange),
+    /// The change was elided (no effect, no cross-locus flow, no metadata).
+    Elided,
+}
+
+// ── Build phase types ─────────────────────────────────────────────────────
+//
+// After the COMPUTE phase, each `ComputedChange` is promoted to a
+// `BuiltChange` that carries a pre-assigned `ChangeId` and a fully
+// constructed `Change` record ready for log insertion.  The BUILD
+// step can run in parallel (no world writes); the APPLY step that
+// follows uses these pre-built records sequentially.
+
+/// Pre-built locus change ready for sequential APPLY.
+pub(crate) struct BuiltLocusChange {
+    pub(crate) change: Change,
+    pub(crate) locus_id: LocusId,
+    /// Final locus state from this change — used by the dedup pass.
+    pub(crate) after: StateVector,
+    pub(crate) property_patch: Option<Properties>,
+    pub(crate) cross_locus_preds: Vec<CrossLocusPred>,
+    pub(crate) kind: InfluenceKindId,
+    pub(crate) resolved_slots: Vec<RelationshipSlotDef>,
+    pub(crate) plasticity_active: bool,
+    pub(crate) post_signal: f32,
+}
+
+/// Pre-built relationship change ready for sequential APPLY.
+pub(crate) struct BuiltRelChange {
+    pub(crate) change: Change,
+    pub(crate) rel_id: RelationshipId,
+    pub(crate) after: StateVector,
+    pub(crate) has_subscribers: bool,
+    pub(crate) from: LocusId,
+    pub(crate) to: LocusId,
+    pub(crate) kind: InfluenceKindId,
+}
+
+pub(crate) enum BuiltChange {
+    Locus(BuiltLocusChange),
+    Relationship(BuiltRelChange),
+}
+
+/// BUILD PHASE — pure construction, safe to call in parallel.
+///
+/// Assigns the pre-reserved `ChangeId` at position `idx` within the
+/// reserved block starting at `base_id`, then packages all APPLY-phase
+/// inputs into a `BuiltChange`.  No world reads or writes occur here.
+pub(crate) fn build_computed_change(
+    idx: usize,
+    base_id: ChangeId,
+    computed: ComputedChange,
+    batch: BatchId,
+) -> BuiltChange {
+    let id = ChangeId(base_id.0 + idx as u64);
+    match computed {
+        ComputedChange::Locus(c) => {
+            let change = Change {
+                id,
+                subject: ChangeSubject::Locus(c.locus_id),
+                kind: c.kind,
+                predecessors: c.predecessors,
+                before: c.before,
+                after: c.after.clone(),
+                batch,
+                wall_time: c.wall_time,
+                metadata: c.metadata,
+            };
+            BuiltChange::Locus(BuiltLocusChange {
+                change,
+                locus_id: c.locus_id,
+                after: c.after,
+                property_patch: c.property_patch,
+                cross_locus_preds: c.cross_locus_preds,
+                kind: c.kind,
+                resolved_slots: c.resolved_slots,
+                plasticity_active: c.plasticity_active,
+                post_signal: c.post_signal,
+            })
+        }
+        ComputedChange::Relationship(c) => {
+            let change = Change {
+                id,
+                subject: ChangeSubject::Relationship(c.rel_id),
+                kind: c.kind,
+                predecessors: c.predecessors,
+                before: c.before,
+                after: c.after.clone(),
+                batch,
+                wall_time: c.wall_time,
+                metadata: c.metadata,
+            };
+            BuiltChange::Relationship(BuiltRelChange {
+                change,
+                rel_id: c.rel_id,
+                after: c.after,
+                has_subscribers: c.has_subscribers,
+                from: c.from,
+                to: c.to,
+                kind: c.kind,
+            })
+        }
+        ComputedChange::Elided => unreachable!(
+            "build_computed_change must not be called with Elided — filter before dispatch"
+        ),
+    }
+}
+
+/// COMPUTE PHASE — pure read, safe to call in parallel.
+///
+/// Reads the pre-batch world snapshot and produces a `ComputedChange` that
+/// describes all mutations the apply phase needs to make.  No IDs are minted
+/// and no world state is touched.
+pub(crate) fn compute_pending_change(
+    pending: PendingChange,
+    world: &World,
+    influence_registry: &InfluenceKindRegistry,
+) -> ComputedChange {
+    let PendingChange { proposed, derived_predecessors } = pending;
+    let mut predecessors = derived_predecessors;
+    predecessors.extend(proposed.extra_predecessors.iter().copied());
+    let kind = proposed.kind;
+
+    match proposed.subject {
+        ChangeSubject::Locus(locus_id) => {
+            // Drop changes targeting non-existent loci.
+            if world.locus(locus_id).is_none() {
+                return ComputedChange::Elided;
+            }
+            let before = world
+                .locus(locus_id)
+                .map(|l| l.state.clone())
+                .unwrap_or_default();
+            let cross_locus_pairs: Vec<(LocusId, f32)> = predecessors
+                .iter()
+                .filter_map(|pid| world.log().get(*pid))
+                .filter_map(|pred| match pred.subject {
+                    ChangeSubject::Locus(pl)
+                        if pl != locus_id && world.locus(pl).is_some() =>
+                    {
+                        let pre = pred.after.as_slice().first().copied().unwrap_or(0.0);
+                        Some((pl, pre))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let kind_cfg = influence_registry.get(kind);
+            let resolved_slots = influence_registry.resolved_extra_slots(kind);
+            let stabilized_after = match kind_cfg {
+                Some(cfg) => cfg.stabilization.stabilize(&before, proposed.after),
+                None => proposed.after,
+            };
+            // Elide no-op follow-ups.
+            if !predecessors.is_empty()
+                && cross_locus_pairs.is_empty()
+                && stabilized_after == before
+                && proposed.metadata.is_none()
+                && proposed.property_patch.is_none()
+            {
+                return ComputedChange::Elided;
+            }
+            let post_signal = stabilized_after.as_slice().first().copied().unwrap_or(0.0);
+            let plasticity_active = kind_cfg
+                .map(|cfg| cfg.plasticity.is_active())
+                .unwrap_or(false);
+            // Build cross-locus pred descriptors with schema violation checks.
+            let cross_locus_preds: Vec<CrossLocusPred> = cross_locus_pairs
+                .into_iter()
+                .map(|(from_locus, pre_signal)| {
+                    let schema_violation = if let Some(cfg) = kind_cfg
+                        && !cfg.applies_between.is_empty()
+                    {
+                        let from_kind = world.locus(from_locus).map(|l| l.kind);
+                        let to_kind = world.locus(locus_id).map(|l| l.kind);
+                        match (from_kind, to_kind) {
+                            (Some(fk), Some(tk)) if !cfg.allows_endpoint_kinds(fk, tk) => {
+                                Some((fk, tk))
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    CrossLocusPred { from_locus, pre_signal, schema_violation }
+                })
+                .collect();
+            ComputedChange::Locus(ComputedLocusChange {
+                locus_id,
+                kind,
+                predecessors,
+                before,
+                after: stabilized_after,
+                wall_time: proposed.wall_time,
+                metadata: proposed.metadata,
+                property_patch: proposed.property_patch,
+                cross_locus_preds,
+                resolved_slots,
+                plasticity_active,
+                post_signal,
+            })
+        }
+        ChangeSubject::Relationship(rel_id) => {
+            let before = world
+                .relationships()
+                .get(rel_id)
+                .map(|r| r.state.clone())
+                .unwrap_or_default();
+            let raw_after = match proposed.slot_patches {
+                Some(patches) => patches
+                    .into_iter()
+                    .fold(before.clone(), |s, (idx, delta)| s.with_slot_delta(idx, delta)),
+                None => proposed.after,
+            };
+            let stabilized_after = match influence_registry.get(kind) {
+                Some(cfg) => cfg.stabilization.stabilize(&before, raw_after),
+                None => raw_after,
+            };
+            let (from, to) = world
+                .relationships()
+                .get(rel_id)
+                .map(|r| match r.endpoints {
+                    Endpoints::Directed { from, to } => (from, to),
+                    Endpoints::Symmetric { a, b } => (a, b),
+                })
+                .unwrap_or_default();
+            let has_subscribers =
+                world.subscriptions().has_any_subscribers(rel_id, kind, from, to);
+            ComputedChange::Relationship(ComputedRelChange {
+                rel_id,
+                kind,
+                predecessors,
+                before,
+                after: stabilized_after,
+                wall_time: proposed.wall_time,
+                metadata: proposed.metadata,
+                from,
+                to,
+                has_subscribers,
+            })
+        }
+    }
+}
+
 /// Recognize or update a directed relationship of `kind` going from
 /// `from` to `to`, attributing the touch to `change_id`. Adds 1.0 to
 /// the relationship's activity slot per touch.
@@ -50,6 +360,10 @@ pub(crate) fn auto_emerge_relationship(
     change_id: ChangeId,
     current_batch: u64,
     cfg: Option<&InfluenceKindConfig>,
+    // Resolved extra slots (including inherited from ancestor kinds).
+    // Passed separately so the caller (engine loop) can pre-compute them
+    // once per change via `InfluenceKindRegistry::resolved_extra_slots`.
+    resolved_slots: &[graph_core::RelationshipSlotDef],
 ) -> (graph_core::RelationshipId, bool) {
     debug_assert!(
         cfg.is_some(),
@@ -81,14 +395,13 @@ pub(crate) fn auto_emerge_relationship(
             if let Some(w) = slots.get_mut(Relationship::WEIGHT_SLOT) {
                 *w *= weight_decay.powi(delta as i32);
             }
-            // Decay extra slots with their per-slot rates.
-            if let Some(cfg) = cfg {
-                for (i, slot_def) in cfg.extra_slots.iter().enumerate() {
-                    if let Some(factor) = slot_def.decay {
-                        let idx = 2 + i;
-                        if let Some(v) = slots.get_mut(idx) {
-                            *v *= factor.powi(delta as i32);
-                        }
+            // Decay extra slots (resolved, includes inherited) with their
+            // per-slot rates.
+            for (i, slot_def) in resolved_slots.iter().enumerate() {
+                if let Some(factor) = slot_def.decay {
+                    let idx = 2 + i;
+                    if let Some(v) = slots.get_mut(idx) {
+                        *v *= factor.powi(delta as i32);
                     }
                 }
             }
@@ -99,15 +412,18 @@ pub(crate) fn auto_emerge_relationship(
         }
         rel.lineage.last_touched_by = Some(change_id);
         rel.lineage.change_count += 1;
-        if !rel.lineage.kinds_observed.contains(&kind) {
-            rel.lineage.kinds_observed.push(kind);
-        }
+        rel.lineage.observe_kind(kind, BatchId(current_batch));
         (rel_id, false)
     } else {
         let new_id = store.mint_id();
-        let initial_state = cfg
-            .map(|c| c.initial_relationship_state())
-            .unwrap_or_else(|| StateVector::from_slice(&[1.0, 0.0]));
+        // Build initial state from resolved slots (includes inherited defaults).
+        let initial_state = {
+            let mut values = vec![activity_contribution, 0.0f32];
+            for slot in resolved_slots {
+                values.push(slot.default);
+            }
+            StateVector::from_slice(&values)
+        };
         store.insert(Relationship {
             id: new_id,
             kind,
@@ -117,7 +433,7 @@ pub(crate) fn auto_emerge_relationship(
                 created_by: Some(change_id),
                 last_touched_by: Some(change_id),
                 change_count: 1,
-                kinds_observed: vec![kind],
+                kinds_observed: smallvec::smallvec![KindObservation::once(kind, BatchId(current_batch))],
             },
             created_batch: BatchId(current_batch),
             last_decayed_batch: current_batch,
@@ -134,20 +450,38 @@ pub(crate) fn auto_emerge_relationship(
 /// relationship with `created_by: None` (no originating change). Extra
 /// slots are initialised from the kind's `InfluenceKindConfig`.
 ///
-/// `DeleteRelationship`: remove from the store and clean up any
-/// subscriptions to the deleted relationship. The relationship's past
-/// changes in the log remain intact.
+/// `DeleteRelationship`: notify Specific subscribers (tombstone) **before**
+/// removal, then remove from the store. The relationship's past changes in
+/// the log remain intact.
 ///
 /// `SubscribeToRelationship` / `UnsubscribeFromRelationship`: update the
 /// world's subscription store so the subscriber locus receives inbox
 /// entries when the relationship's state changes.
+///
+/// ## Return value
+///
+/// Returns a `Vec<PendingChange>` of **tombstone** notifications — one per
+/// subscriber for each relationship deleted in this call. The caller must
+/// extend the next batch's `pending` queue with this vec so subscribers
+/// receive an inbox entry signalling the deletion.
+///
+/// A tombstone is a zero-delta `ChangeSubject::Locus` change with metadata:
+/// ```text
+/// { "tombstone": true, "rel_id": <id> }
+/// ```
+/// The subscriber's program can pattern-match on `change.metadata` to detect
+/// it. Because `predecessors` is empty (root stimulus), the elision guard
+/// does not apply, so the change is always committed even when locus state is
+/// unchanged.
 pub(crate) fn apply_structural_proposals(
     world: &mut World,
     proposals: Vec<StructuralProposal>,
     influence_registry: &crate::registry::InfluenceKindRegistry,
-) {
+) -> Vec<PendingChange> {
     let current_batch = world.current_batch().0;
     let batch_id = BatchId(current_batch);
+    let mut tombstones: Vec<PendingChange> = Vec::new();
+
     for proposal in proposals {
         match proposal {
             StructuralProposal::CreateRelationship { endpoints, kind, initial_activity, initial_state } => {
@@ -168,14 +502,11 @@ pub(crate) fn apply_structural_proposals(
                     // New relationship: resolve initial state in priority order.
                     // 1. initial_state (full vector) takes precedence.
                     // 2. initial_activity overrides only slot 0.
-                    // 3. Kind config default.
+                    // 3. Registry-resolved default (includes inherited slots).
                     let state = if let Some(s) = initial_state {
                         s
                     } else {
-                        let mut s = influence_registry
-                            .get(kind)
-                            .map(|c| c.initial_relationship_state())
-                            .unwrap_or_else(|| StateVector::from_slice(&[1.0, 0.0]));
+                        let mut s = influence_registry.initial_state_for(kind);
                         if let Some(act) = initial_activity {
                             if let Some(a) = s.as_mut_slice().get_mut(Relationship::ACTIVITY_SLOT) {
                                 *a = act;
@@ -193,7 +524,7 @@ pub(crate) fn apply_structural_proposals(
                             created_by: None,
                             last_touched_by: None,
                             change_count: 1,
-                            kinds_observed: vec![kind],
+                            kinds_observed: smallvec::smallvec![KindObservation::synthetic(kind)],
                         },
                         created_batch: BatchId(current_batch),
                         last_decayed_batch: current_batch,
@@ -202,14 +533,34 @@ pub(crate) fn apply_structural_proposals(
                 }
             }
             StructuralProposal::DeleteRelationship { rel_id } => {
-                world.subscriptions_mut().remove_relationship(rel_id);
+                // Capture (kind, subscribers) before removal so tombstones
+                // carry the correct kind and subscriber list.
+                let rel_kind = world.relationships().get(rel_id).map(|r| r.kind);
+                let specific_subs = world.subscriptions_mut().remove_relationship(rel_id);
                 world.relationships_mut().remove(rel_id);
+                if let Some(kind) = rel_kind {
+                    tombstones.extend(
+                        make_tombstones(world, rel_id, kind, specific_subs),
+                    );
+                }
             }
             StructuralProposal::SubscribeToRelationship { subscriber, rel_id } => {
                 world.subscriptions_mut().subscribe_at(subscriber, rel_id, Some(batch_id));
             }
             StructuralProposal::UnsubscribeFromRelationship { subscriber, rel_id } => {
                 world.subscriptions_mut().unsubscribe_at(subscriber, rel_id, Some(batch_id));
+            }
+            StructuralProposal::SubscribeToKind { subscriber, kind } => {
+                world.subscriptions_mut().subscribe_to_kind(subscriber, kind);
+            }
+            StructuralProposal::UnsubscribeFromKind { subscriber, kind } => {
+                world.subscriptions_mut().unsubscribe_from_kind(subscriber, kind);
+            }
+            StructuralProposal::SubscribeToAnchorKind { subscriber, anchor, kind } => {
+                world.subscriptions_mut().subscribe_to_anchor_kind(subscriber, anchor, kind);
+            }
+            StructuralProposal::UnsubscribeFromAnchorKind { subscriber, anchor, kind } => {
+                world.subscriptions_mut().unsubscribe_from_anchor_kind(subscriber, anchor, kind);
             }
             StructuralProposal::DeleteLocus { locus_id } => {
                 // Collect all relationship ids touching this locus first to avoid
@@ -220,14 +571,78 @@ pub(crate) fn apply_structural_proposals(
                     .map(|r| r.id)
                     .collect();
                 for rel_id in rel_ids {
-                    world.subscriptions_mut().remove_relationship(rel_id);
+                    let rel_kind = world.relationships().get(rel_id).map(|r| r.kind);
+                    let specific_subs = world.subscriptions_mut().remove_relationship(rel_id);
                     world.relationships_mut().remove(rel_id);
+                    if let Some(kind) = rel_kind {
+                        // Only notify external subscribers — not the locus being deleted.
+                        let external: Vec<_> = specific_subs
+                            .into_iter()
+                            .filter(|&s| s != locus_id)
+                            .collect();
+                        tombstones.extend(make_tombstones(world, rel_id, kind, external));
+                    }
                 }
                 world.subscriptions_mut().remove_locus(locus_id);
+                // Remove anchor-kind subscriptions for which this locus was the anchor.
+                world.subscriptions_mut().remove_anchor_locus(locus_id);
                 world.properties_mut().remove(locus_id);
                 world.names_mut().remove(locus_id);
                 world.loci_mut().remove(locus_id);
             }
+            StructuralProposal::CreateLocus { locus_id, kind, state, name, properties } => {
+                // Resolve the target ID: explicit or auto-assigned.
+                let id = locus_id.unwrap_or_else(|| world.loci().next_id());
+                world.insert_locus(Locus::new(id, kind, state));
+                if let Some(n) = name {
+                    world.names_mut().insert(n, id);
+                }
+                if let Some(props) = properties {
+                    world.properties_mut().insert(id, props);
+                }
+            }
         }
     }
+
+    tombstones
+}
+
+/// Build tombstone `PendingChange`s for a list of Specific-scope subscribers
+/// when `rel_id` (of the given `kind`) is about to be deleted.
+///
+/// The tombstone is a zero-delta locus change whose metadata carries:
+/// - `"tombstone"` = `true`
+/// - `"rel_id"` = numeric id of the deleted relationship
+///
+/// Using the subscriber's current locus state as `after` means the engine's
+/// stabilization step leaves the state unchanged; the only observable effect
+/// is the inbox entry with tombstone metadata.
+fn make_tombstones(
+    world: &World,
+    rel_id: graph_core::RelationshipId,
+    kind: graph_core::InfluenceKindId,
+    subscribers: Vec<graph_core::LocusId>,
+) -> Vec<PendingChange> {
+    subscribers
+        .into_iter()
+        .filter_map(|sub| {
+            let after = world.locus(sub)?.state.clone();
+            let mut meta = Properties::new();
+            meta.set("tombstone", true);
+            meta.set("rel_id", rel_id.0 as f64);
+            Some(PendingChange {
+                proposed: ProposedChange {
+                    subject: ChangeSubject::Locus(sub),
+                    kind,
+                    after,
+                    extra_predecessors: Vec::new(),
+                    wall_time: None,
+                    metadata: Some(meta),
+                    property_patch: None,
+                    slot_patches: None,
+                },
+                derived_predecessors: Vec::new(),
+            })
+        })
+        .collect()
 }

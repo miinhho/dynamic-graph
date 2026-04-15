@@ -167,8 +167,8 @@ impl CoherePerspective for DefaultCoherePerspective {
 mod tests {
     use super::*;
     use graph_core::{
-        BatchId, Entity, EntitySnapshot, Endpoints, InfluenceKindId, LocusId,
-        Relationship, RelationshipLineage, StateVector,
+        BatchId, Entity, EntitySnapshot, Endpoints, InfluenceKindId, KindObservation,
+        LocusId, Relationship, RelationshipLineage, StateVector,
     };
     use graph_world::{EntityStore, RelationshipStore};
 
@@ -197,7 +197,7 @@ mod tests {
                 created_by: None,
                 last_touched_by: None,
                 change_count: 1,
-                kinds_observed: vec![InfluenceKindId(1)],
+                kinds_observed: smallvec::smallvec![KindObservation::synthetic(InfluenceKindId(1))],
             },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,

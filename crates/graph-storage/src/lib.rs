@@ -62,12 +62,21 @@ use tables::*;
 /// Schema version stamped into every new database.
 /// `open()` rejects databases written under a different version.
 ///
-/// Version history:
-/// - v1: initial schema (loci, relationships, entities, changes, etc.)
-/// - v2: `Relationship` gained `metadata: Option<Properties>` field —
-///   postcard layout changed, old databases are not forward-compatible.
-///   Use `open_or_reset()` during development to drop and recreate.
-pub(crate) const CURRENT_SCHEMA_VERSION: u64 = 2;
+/// ## Development policy
+///
+/// During development, **do not bump this constant** on every internal struct
+/// change. Instead:
+///
+/// - Use `open_or_reset()` as the entry point — it silently deletes and
+///   recreates the file on mismatch, so stale databases are never an obstacle.
+/// - `Simulation::with_config` (via `SimulationBuilder::with_storage`) already
+///   calls `open_or_reset`, so dev workflows are handled automatically.
+///
+/// Bump `CURRENT_SCHEMA_VERSION` only when you want to signal an explicit
+/// incompatibility to users who call `Storage::open()` directly. Before the
+/// v1 library release, reset this to 1 and write proper migration functions
+/// for `open_and_migrate` instead of relying on destroy-and-recreate.
+pub(crate) const CURRENT_SCHEMA_VERSION: u64 = 1;
 
 /// redb-backed persistent storage for a `World`.
 pub struct Storage {

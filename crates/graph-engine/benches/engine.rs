@@ -1,7 +1,8 @@
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use graph_core::{
-    BatchId, Change, ChangeSubject, Endpoints, InfluenceKindId, Locus, LocusContext, LocusId,
-    LocusKindId, LocusProgram, ProposedChange, Relationship, RelationshipLineage, StateVector, props,
+    BatchId, Change, ChangeSubject, Endpoints, InfluenceKindId, KindObservation, Locus,
+    LocusContext, LocusId, LocusKindId, LocusProgram, ProposedChange, Relationship,
+    RelationshipLineage, StateVector, props,
 };
 use graph_engine::{
     DefaultEmergencePerspective, Engine, EngineConfig, InfluenceKindConfig, InfluenceKindRegistry,
@@ -9,7 +10,7 @@ use graph_engine::{
 };
 use graph_query::{connected_components, path_between, reachable_from};
 use graph_testkit::fixtures::{chain_world, fan_in_world, ring_world, star_world, stimulus};
-use graph_testkit::programs::InertProgram;
+use graph_testkit::programs::{InertProgram, TEST_KIND};
 use graph_world::World;
 
 fn bench_chain(c: &mut Criterion) {
@@ -544,7 +545,7 @@ fn bench_subscriber_fanout(c: &mut Criterion) {
                         state: StateVector::from_slice(&[1.0, 0.0, 0.3, 0.0]),
                         lineage: RelationshipLineage {
                             created_by: None, last_touched_by: None,
-                            change_count: 0, kinds_observed: vec![conflict_kind],
+                            change_count: 0, kinds_observed: smallvec::smallvec![KindObservation::synthetic(conflict_kind)],
                         },
                         created_batch: BatchId(0),
                         last_decayed_batch: 0,
@@ -621,7 +622,7 @@ fn bench_subscriber_cold_path(c: &mut Criterion) {
                                 state: StateVector::from_slice(&[1.0, 0.0]),
                                 lineage: RelationshipLineage {
                                     created_by: None, last_touched_by: None,
-                                    change_count: 0, kinds_observed: vec![kind],
+                                    change_count: 0, kinds_observed: smallvec::smallvec![KindObservation::synthetic(kind)],
                                 },
                                 created_batch: BatchId(0),
                                 last_decayed_batch: 0,
@@ -706,7 +707,7 @@ fn bench_extra_slot_decay_flush(c: &mut Criterion) {
                             state: StateVector::from_slice(&initial),
                             lineage: RelationshipLineage {
                                 created_by: None, last_touched_by: None,
-                                change_count: 0, kinds_observed: vec![kind],
+                                change_count: 0, kinds_observed: smallvec::smallvec![KindObservation::synthetic(kind)],
                             },
                             created_batch: BatchId(0),
                             last_decayed_batch: 0,
@@ -731,6 +732,87 @@ fn bench_extra_slot_decay_flush(c: &mut Criterion) {
     group.finish();
 }
 
+// ── 실제 도메인 규모 병렬 부하 ──────────────────────────────────────────────
+//
+// 기존 fan_in 벤치마크는 stimulus 1개로 소스 1개만 발화 → 각 sink의 inbox가
+// 항상 1개. MultiDimAggregatorProgram이 사실상 O(1 × dims) 작업만 수행하므로
+// 병렬화 오버헤드가 이익을 압도한다.
+//
+// 이 벤치마크는 모든 소스를 동시에 발화시켜 진짜 fan-in 부하를 만든다:
+// - Batch 1: n_sources 개 pending → n_sources BroadcastProgram 병렬 실행
+//   → n_sources × n_sinks 개 ProposedChange 생성
+// - Batch 2: n_sinks 개 pending → n_sinks MultiDimAggregatorProgram 병렬 실행
+//   각 프로그램은 O(n_sources × dims) float 연산 수행
+//
+// 이 구조가 실제 지식 그래프, 신경망 시뮬레이션, 센서 퓨전 등
+// 실사용 워크로드와 동일한 패턴이다.
+fn bench_domain_parallel(c: &mut Criterion) {
+    let mut group = c.benchmark_group("domain_parallel");
+    // sample_size를 줄여 대형 케이스에서 총 실행 시간을 제어
+    group.sample_size(30);
+
+    // (label, n_sources, n_sinks, dims)
+    // n_sources × n_sinks = batch 2의 pending 개수
+    // n_sinks × n_sources × dims = 전체 float 연산
+    for (label, n_sources, n_sinks, dims) in [
+        ("src16_sink64_d32",   16u64,  64u64,  32usize),   //   ~33K float ops/tick
+        ("src32_sink128_d64",  32u64, 128u64,  64usize),   //  ~262K float ops/tick
+        ("src64_sink256_d128", 64u64, 256u64, 128usize),   //    ~2M float ops/tick
+        ("src128_sink512_d128",128u64, 512u64, 128usize),  //    ~8M float ops/tick
+    ] {
+        group.bench_function(label, |b| {
+            b.iter_batched(
+                || {
+                    let (world, loci, influences) = fan_in_world(n_sources, n_sinks, dims, 0.9);
+                    // 모든 소스를 동시에 발화 — 각 sink가 n_sources 개의 inbox를 받게 됨
+                    let all_source_stimuli: Vec<ProposedChange> = (0..n_sources)
+                        .map(|i| ProposedChange::new(
+                            ChangeSubject::Locus(LocusId(i)),
+                            TEST_KIND,
+                            StateVector::from_slice(&vec![1.0f32 / n_sources as f32; dims]),
+                        ))
+                        .collect();
+                    (world, loci, influences, all_source_stimuli)
+                },
+                |(mut world, loci, influences, stimuli)| {
+                    let engine = Engine::new(EngineConfig::default());
+                    engine.tick(&mut world, &loci, &influences, stimuli)
+                },
+                BatchSize::LargeInput,
+            );
+        });
+    }
+
+    group.finish();
+}
+
+// ── 신경망 규모 star (순수 dispatch 병렬화 효과 측정) ────────────────────────
+//
+// 1000개, 4096개, 10000개 loci를 가진 star topology.
+// 허브가 BroadcastProgram으로 모든 spoke에 동시 발화.
+// spoke는 InertProgram이지만 dispatch 자체가 1000~10000개 병렬.
+// 병렬화 이점이 나타나는 최소 규모를 확인한다.
+fn bench_large_scale_star(c: &mut Criterion) {
+    let mut group = c.benchmark_group("large_scale_star");
+    group.sample_size(20);
+
+    for arms in [1_000u64, 4_096, 16_384] {
+        let label = format!("star_{arms}");
+        group.bench_function(&label, |b| {
+            b.iter_batched(
+                || star_world(arms, 0.9),
+                |(mut world, loci, influences)| {
+                    let engine = Engine::new(EngineConfig::default());
+                    engine.tick(&mut world, &loci, &influences, vec![stimulus(1.0)])
+                },
+                BatchSize::LargeInput,
+            );
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_chain,
@@ -739,6 +821,8 @@ criterion_group!(
     bench_star_large,
     bench_fan_in,
     bench_fan_in_large,
+    bench_domain_parallel,
+    bench_large_scale_star,
     bench_simulation_step_steady,
     bench_causal_ancestors,
     bench_changelog_queries,

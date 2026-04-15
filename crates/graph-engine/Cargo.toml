@@ -12,6 +12,8 @@ graph-core.workspace = true
 graph-world.workspace = true
 graph-query.workspace = true
 rustc-hash.workspace = true
+smallvec.workspace = true
+rayon = "1"
 graph-storage = { workspace = true, optional = true }
 
 [dev-dependencies]

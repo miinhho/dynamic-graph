@@ -413,7 +413,7 @@ mod tests {
 
     fn world_with_relationship() -> (World, graph_core::RelationshipId) {
         use graph_core::{
-            Endpoints, InfluenceKindId as IKId, Relationship, RelationshipKindId,
+            Endpoints, InfluenceKindId as IKId, KindObservation, Relationship, RelationshipKindId,
             RelationshipLineage, StateVector as SV,
         };
         let rk: RelationshipKindId = IKId(1);
@@ -428,7 +428,7 @@ mod tests {
                 created_by: None,
                 last_touched_by: None,
                 change_count: 0,
-                kinds_observed: vec![rk],
+                kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
             },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,

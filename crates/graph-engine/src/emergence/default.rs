@@ -389,7 +389,7 @@ fn membership_delta(entity: &Entity, new: &EntitySnapshot) -> LayerTransition {
 mod tests {
     use super::*;
     use graph_core::{
-        Endpoints, InfluenceKindId, LocusId, RelationshipLineage, StateVector,
+        Endpoints, InfluenceKindId, KindObservation, LocusId, RelationshipLineage, StateVector,
     };
     use graph_world::{RelationshipStore, EntityStore};
     use graph_core::Relationship;
@@ -413,7 +413,7 @@ mod tests {
                 created_by: None,
                 last_touched_by: None,
                 change_count: 1,
-                kinds_observed: vec![InfluenceKindId(1)],
+                kinds_observed: smallvec::smallvec![KindObservation::synthetic(InfluenceKindId(1))],
             },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,

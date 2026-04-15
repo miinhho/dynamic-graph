@@ -388,6 +388,53 @@ pub fn changes_to_relationship_in_range(
         .collect()
 }
 
+// ─── Forward causal walk ─────────────────────────────────────────────────────
+
+/// All changes that have `target` as a direct or transitive causal predecessor
+/// — the "forward" dual of [`causal_ancestors`].
+///
+/// Because the `ChangeLog` only stores backward (predecessor) links, this
+/// requires an O(N) scan of the full log to build a forward-edge index, then a
+/// BFS from `target`. For large logs this can be expensive; use on trimmed or
+/// bounded logs where appropriate.
+///
+/// The result is deduplicated but unordered. `target` itself is not included.
+/// Returns an empty `Vec` when `target` has no descendants (e.g. it is the
+/// most recent change, or it is not in the log).
+pub fn causal_descendants(world: &World, target: ChangeId) -> Vec<ChangeId> {
+    use rustc_hash::FxHashMap;
+    use std::collections::VecDeque;
+
+    // Build forward adjacency: predecessor → Vec<successor>.
+    let mut forward: FxHashMap<ChangeId, Vec<ChangeId>> = FxHashMap::default();
+    for c in world.log().iter() {
+        for &pred in &c.predecessors {
+            forward.entry(pred).or_default().push(c.id);
+        }
+    }
+
+    // BFS forward from target.
+    let mut visited: FxHashSet<ChangeId> = FxHashSet::default();
+    let mut queue: VecDeque<ChangeId> = VecDeque::new();
+    if let Some(children) = forward.get(&target) {
+        for &c in children {
+            if visited.insert(c) {
+                queue.push_back(c);
+            }
+        }
+    }
+    while let Some(cid) = queue.pop_front() {
+        if let Some(children) = forward.get(&cid) {
+            for &c in children {
+                if visited.insert(c) {
+                    queue.push_back(c);
+                }
+            }
+        }
+    }
+    visited.into_iter().collect()
+}
+
 // ─── Source trace ─────────────────────────────────────────────────────────────
 
 /// Walk backwards from `target` to find all root changes (stimuli — changes
@@ -496,7 +543,7 @@ mod tests {
         root_pred: Vec<u64>,
     ) -> (World, RelationshipId) {
         use graph_core::{
-            Endpoints, InfluenceKindId, Locus, LocusKindId, Relationship,
+            Endpoints, InfluenceKindId, KindObservation, Locus, LocusKindId, Relationship,
             RelationshipKindId, RelationshipLineage, StateVector,
         };
         let mut w = World::new();
@@ -521,7 +568,7 @@ mod tests {
                 created_by: created_by.map(ChangeId),
                 last_touched_by: None,
                 change_count: 1,
-                kinds_observed: vec![rk],
+                kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
             },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
@@ -553,7 +600,7 @@ mod tests {
         push_change(&mut w, 2, 2, vec![1], 2);    // created_by
 
         use graph_core::{
-            Endpoints, InfluenceKindId, Locus, LocusKindId, Relationship,
+            Endpoints, InfluenceKindId, KindObservation, Locus, LocusKindId, Relationship,
             RelationshipKindId, RelationshipLineage, StateVector,
         };
         let rk: RelationshipKindId = InfluenceKindId(1);
@@ -570,7 +617,7 @@ mod tests {
                 created_by: Some(ChangeId(2)),
                 last_touched_by: None,
                 change_count: 1,
-                kinds_observed: vec![rk],
+                kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
             },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
@@ -585,7 +632,7 @@ mod tests {
 
     fn world_with_rel_changes(activity_values: &[f32]) -> (World, RelationshipId) {
         use graph_core::{
-            Change, ChangeSubject, Endpoints, InfluenceKindId, Locus, LocusKindId,
+            Change, ChangeSubject, Endpoints, InfluenceKindId, KindObservation, Locus, LocusKindId,
             Relationship, RelationshipKindId, RelationshipLineage, StateVector,
         };
         let rk: RelationshipKindId = InfluenceKindId(1);
@@ -603,7 +650,7 @@ mod tests {
                 created_by: None,
                 last_touched_by: None,
                 change_count: activity_values.len() as u64,
-                kinds_observed: vec![rk],
+                kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
             },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,

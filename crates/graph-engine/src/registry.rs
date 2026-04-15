@@ -558,11 +558,68 @@ impl InfluenceKindRegistry {
         self.interactions.get(&key)
     }
 
+    // ─── Slot inheritance ─────────────────────────────────────────────────────
+
+    /// Return the resolved extra-slot list for `kind`, merging ancestor slots.
+    ///
+    /// Walks the parent chain from the root down to `kind`. A child's slot
+    /// definition overrides a parent's slot of the same name. The returned
+    /// `Vec` is in declaration order: ancestor slots first, then child slots
+    /// (with any overrides applied in place).
+    ///
+    /// If `kind` is not registered, returns an empty `Vec`.
+    pub fn resolved_extra_slots(&self, kind: InfluenceKindId) -> Vec<RelationshipSlotDef> {
+        // Collect the ancestry chain (furthest ancestor first, kind last).
+        let mut chain: Vec<InfluenceKindId> = self.ancestors_of(kind);
+        chain.reverse();   // root → ... → parent
+        chain.push(kind);  // root → ... → parent → kind
+
+        // Merge: start from root slots, child overrides on name collision.
+        let mut merged: Vec<RelationshipSlotDef> = Vec::new();
+        for k in chain {
+            if let Some(cfg) = self.configs.get(&k) {
+                for slot in &cfg.extra_slots {
+                    if let Some(existing) = merged.iter_mut().find(|s| s.name == slot.name) {
+                        *existing = slot.clone();
+                    } else {
+                        merged.push(slot.clone());
+                    }
+                }
+            }
+        }
+        merged
+    }
+
+    /// Build the initial `StateVector` for a new relationship of `kind`,
+    /// including inherited extra slots from ancestor kinds.
+    ///
+    /// Layout: `[activity_contribution, 0.0, ...resolved_extra_slots...]`
+    ///
+    /// Child kinds override parent slots of the same name. Slots from
+    /// ancestors are prepended in root→child order; own slots follow.
+    pub fn resolved_initial_state_for(&self, kind: InfluenceKindId) -> StateVector {
+        let activity_contribution = self.configs
+            .get(&kind)
+            .map(|c| c.activity_contribution)
+            .unwrap_or(1.0);
+        let resolved = self.resolved_extra_slots(kind);
+        let mut values = vec![activity_contribution, 0.0f32];
+        for slot in &resolved {
+            values.push(slot.default);
+        }
+        StateVector::from_slice(&values)
+    }
+
     fn rebuild_slot_defs(&mut self) {
+        // Use resolved (inherited) slots so BatchContext sees the full slot
+        // layout including ancestor-defined slots.
         self.slot_defs = self.configs
-            .iter()
-            .filter(|(_, cfg)| !cfg.extra_slots.is_empty())
-            .map(|(&k, cfg)| (k, cfg.extra_slots.clone()))
+            .keys()
+            .copied()
+            .filter_map(|k| {
+                let resolved = self.resolved_extra_slots(k);
+                if resolved.is_empty() { None } else { Some((k, resolved)) }
+            })
             .collect();
     }
 
@@ -578,24 +635,25 @@ impl InfluenceKindRegistry {
         self.configs.get(&kind)
     }
 
-    /// Build the initial `StateVector` for a new relationship of `kind`.
+    /// Build the initial `StateVector` for a new relationship of `kind`,
+    /// including inherited extra slots from ancestor kinds.
     ///
-    /// Returns the kind-config's `initial_relationship_state()` when registered,
-    /// or a minimal `[1.0, 0.0]` (activity=1, weight=0) when the kind is unknown.
-    /// Use this in world-construction code that creates relationships before the
-    /// first tick so the initial state matches the kind's extra-slot defaults.
+    /// Delegates to [`resolved_initial_state_for`] so child kinds automatically
+    /// inherit parent-defined extra slots. Returns a minimal `[1.0, 0.0]` when
+    /// the kind is not registered.
+    ///
+    /// Use this instead of `InfluenceKindConfig::initial_relationship_state()` in
+    /// any code that should honour the kind hierarchy.
     pub fn initial_state_for(&self, kind: InfluenceKindId) -> StateVector {
-        self.configs
-            .get(&kind)
-            .map(|cfg| cfg.initial_relationship_state())
-            .unwrap_or_else(|| {
-                debug_assert!(
-                    false,
-                    "initial_state_for called with unregistered InfluenceKindId: {kind:?}; \
-                     extra-slot defaults will be missing from the returned state"
-                );
-                StateVector::from_slice(&[1.0, 0.0])
-            })
+        if !self.configs.contains_key(&kind) {
+            debug_assert!(
+                false,
+                "initial_state_for called with unregistered InfluenceKindId: {kind:?}; \
+                 extra-slot defaults will be missing from the returned state"
+            );
+            return StateVector::from_slice(&[1.0, 0.0]);
+        }
+        self.resolved_initial_state_for(kind)
     }
 
     pub fn require(&self, kind: InfluenceKindId) -> Option<&InfluenceKindConfig> {
@@ -615,17 +673,37 @@ impl InfluenceKindRegistry {
     /// Return the `StateVector` index of a named extra slot for `kind`, or
     /// `None` if the kind is not registered or the slot name is not declared.
     ///
+    /// Only searches the kind's own `extra_slots` (not inherited ones).
+    /// Use `resolved_slot_index` when the slot may come from an ancestor kind.
+    ///
     /// Built-in slot 0 = activity, slot 1 = weight. Extra slots start at 2.
     pub fn slot_index(&self, kind: InfluenceKindId, name: &str) -> Option<usize> {
         self.get(kind)?.slot_index(name)
     }
 
-    /// Read a named slot value from `rel`'s `StateVector` for `rel.kind`.
+    /// Return the `StateVector` index of a named extra slot for `kind`,
+    /// searching the fully-resolved slot list (own + inherited from ancestors).
     ///
-    /// Returns `None` if the kind is not registered, the slot name is unknown,
-    /// or the state vector is too short.
+    /// Child overrides shadow parent slots of the same name. Returns `None`
+    /// if the kind is not registered or the name is not found anywhere in the
+    /// ancestry chain.
+    ///
+    /// Built-in slot 0 = activity, slot 1 = weight. Extra slots start at 2.
+    pub fn resolved_slot_index(&self, kind: InfluenceKindId, name: &str) -> Option<usize> {
+        self.resolved_extra_slots(kind)
+            .into_iter()
+            .position(|s| s.name == name)
+            .map(|pos| pos + 2)
+    }
+
+    /// Read a named slot value from `rel`'s `StateVector` for `rel.kind`,
+    /// searching own and inherited slots.
+    ///
+    /// Returns `None` if the kind is not registered, the slot name is unknown
+    /// in the resolved slot list, or the state vector is too short.
     pub fn read_slot(&self, kind: InfluenceKindId, rel: &graph_core::Relationship, name: &str) -> Option<f32> {
-        self.get(kind)?.read_slot(&rel.state, name)
+        let idx = self.resolved_slot_index(kind, name)?;
+        rel.state.as_slice().get(idx).copied()
     }
 
     pub fn len(&self) -> usize {
@@ -931,5 +1009,127 @@ mod tests {
             reg.interaction_between(InfluenceKindId(1), InfluenceKindId(2)),
             Some(&InteractionEffect::Neutral),
         );
+    }
+
+    // ─── Slot inheritance ─────────────────────────────────────────────────────
+
+    #[test]
+    fn resolved_extra_slots_root_only() {
+        use graph_core::RelationshipSlotDef;
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(
+            InfluenceKindId(1),
+            InfluenceKindConfig::new("root").with_extra_slots(vec![
+                RelationshipSlotDef::new("tension", 0.5),
+            ]),
+        );
+        let slots = reg.resolved_extra_slots(InfluenceKindId(1));
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].name, "tension");
+        assert!((slots[0].default - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn resolved_extra_slots_child_inherits_parent_slot() {
+        use graph_core::RelationshipSlotDef;
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(
+            InfluenceKindId(1),
+            InfluenceKindConfig::new("parent").with_extra_slots(vec![
+                RelationshipSlotDef::new("trust", 1.0),
+            ]),
+        );
+        reg.insert(
+            InfluenceKindId(2),
+            InfluenceKindConfig::new("child")
+                .with_parent(InfluenceKindId(1))
+                .with_extra_slots(vec![
+                    RelationshipSlotDef::new("hostility", 0.0),
+                ]),
+        );
+        let slots = reg.resolved_extra_slots(InfluenceKindId(2));
+        // trust (from parent) first, hostility (own) second
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots[0].name, "trust");
+        assert_eq!(slots[1].name, "hostility");
+    }
+
+    #[test]
+    fn resolved_extra_slots_child_overrides_parent_slot_by_name() {
+        use graph_core::RelationshipSlotDef;
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(
+            InfluenceKindId(1),
+            InfluenceKindConfig::new("parent").with_extra_slots(vec![
+                RelationshipSlotDef::new("trust", 1.0),
+            ]),
+        );
+        reg.insert(
+            InfluenceKindId(2),
+            InfluenceKindConfig::new("child")
+                .with_parent(InfluenceKindId(1))
+                .with_extra_slots(vec![
+                    RelationshipSlotDef::new("trust", 0.5), // overrides parent default
+                ]),
+        );
+        let slots = reg.resolved_extra_slots(InfluenceKindId(2));
+        // Only one "trust" slot — child override wins
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].name, "trust");
+        assert!((slots[0].default - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn initial_state_for_includes_inherited_slots() {
+        use graph_core::RelationshipSlotDef;
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(
+            InfluenceKindId(1),
+            InfluenceKindConfig::new("parent").with_extra_slots(vec![
+                RelationshipSlotDef::new("trust", 0.8),
+            ]),
+        );
+        reg.insert(
+            InfluenceKindId(2),
+            InfluenceKindConfig::new("child")
+                .with_parent(InfluenceKindId(1))
+                .with_extra_slots(vec![
+                    RelationshipSlotDef::new("hostility", 0.3),
+                ]),
+        );
+        let state = reg.initial_state_for(InfluenceKindId(2));
+        let s = state.as_slice();
+        // [activity=1.0, weight=0.0, trust=0.8, hostility=0.3]
+        assert_eq!(s.len(), 4);
+        assert!((s[0] - 1.0).abs() < 1e-6, "activity");
+        assert!((s[1] - 0.0).abs() < 1e-6, "weight");
+        assert!((s[2] - 0.8).abs() < 1e-6, "trust (inherited)");
+        assert!((s[3] - 0.3).abs() < 1e-6, "hostility (own)");
+    }
+
+    #[test]
+    fn resolved_slot_index_finds_inherited_slot() {
+        use graph_core::RelationshipSlotDef;
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(
+            InfluenceKindId(1),
+            InfluenceKindConfig::new("parent").with_extra_slots(vec![
+                RelationshipSlotDef::new("trust", 1.0),
+            ]),
+        );
+        reg.insert(
+            InfluenceKindId(2),
+            InfluenceKindConfig::new("child")
+                .with_parent(InfluenceKindId(1))
+                .with_extra_slots(vec![
+                    RelationshipSlotDef::new("hostility", 0.0),
+                ]),
+        );
+        // "trust" is at slot 2 (first extra slot, inherited from parent)
+        assert_eq!(reg.resolved_slot_index(InfluenceKindId(2), "trust"), Some(2));
+        // "hostility" is at slot 3 (second extra slot, own)
+        assert_eq!(reg.resolved_slot_index(InfluenceKindId(2), "hostility"), Some(3));
+        // Plain slot_index only sees own slots, so "trust" not found for child
+        assert_eq!(reg.slot_index(InfluenceKindId(2), "trust"), None);
     }
 }

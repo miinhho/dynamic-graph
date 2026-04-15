@@ -8,6 +8,7 @@ version.workspace = true
 graph-core.workspace = true
 graph-engine.workspace = true
 graph-world.workspace = true
+smallvec.workspace = true
 
 [lib]
 path = "src/lib.rs"

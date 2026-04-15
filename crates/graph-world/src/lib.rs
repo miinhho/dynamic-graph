@@ -17,7 +17,7 @@ pub use store::locus_store::LocusStore;
 pub use store::name_index::NameIndex;
 pub use store::property_store::PropertyStore;
 pub use store::relationship_store::RelationshipStore;
-pub use store::subscription_store::SubscriptionStore;
+pub use store::subscription_store::{SubscriptionEvent, SubscriptionScope, SubscriptionStore};
 pub use context::BatchContext;
 pub use diff::{RelationshipDelta, WorldDiff};
 pub use metrics::{ACTIVITY_THRESHOLD, TOP_N, WorldMetrics};

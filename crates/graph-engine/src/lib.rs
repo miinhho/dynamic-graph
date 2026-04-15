@@ -23,4 +23,6 @@ pub use graph_core::{DefaultEntityWeathering, Encoder, EntityWeatheringPolicy, L
 pub use registry::{InfluenceKindConfig, InfluenceKindRegistry, LocusKindConfig, LocusKindRegistry, PlasticityConfig, SlotDefsMap};
 pub use graph_core::RelationshipSlotDef;
 pub use graph_world::{SubscriptionStore, WorldDiff, WorldMetrics};
-pub use simulation::{Simulation, SimulationBuilder, SimulationConfig, StepObservation};
+pub use simulation::{
+    EventHistory, Simulation, SimulationBuilder, SimulationConfig, StepObservation, TickSummary,
+};

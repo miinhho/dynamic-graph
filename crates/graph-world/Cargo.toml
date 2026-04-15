@@ -10,6 +10,7 @@ serde = ["graph-core/serde", "dep:serde", "dep:postcard", "dep:crc32fast"]
 [dependencies]
 graph-core.workspace = true
 rustc-hash.workspace = true
+smallvec.workspace = true
 serde = { workspace = true, optional = true }
 postcard = { workspace = true, optional = true }
 crc32fast = { workspace = true, optional = true }

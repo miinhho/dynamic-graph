@@ -10,6 +10,7 @@ serde = ["dep:serde"]
 [dependencies]
 rustc-hash.workspace = true
 serde = { workspace = true, optional = true }
+smallvec = { workspace = true }
 
 [lib]
 path = "src/lib.rs"

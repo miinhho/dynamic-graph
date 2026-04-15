@@ -17,7 +17,7 @@
 //! sim.ingest_named("Apple", "ORG", props! { "confidence" => 0.92 });
 //! ```
 
-use graph_core::{DefaultEntityWeathering, Encoder, EntityWeatheringPolicy, LocusKindId, InfluenceKindId, LocusProgram};
+use graph_core::{DefaultEntityWeathering, Encoder, EntityWeatheringPolicy, LocusId, LocusKindId, InfluenceKindId, LocusProgram, RelationshipId};
 use graph_world::World;
 use rustc_hash::FxHashMap;
 
@@ -134,6 +134,146 @@ impl SimulationBuilder {
     /// Provide a pre-built `World`. If not called, an empty world is used.
     pub fn world(mut self, world: World) -> Self {
         self.world = world;
+        self
+    }
+
+    /// Returns the initial `StateVector` for relationships of a named influence kind.
+    ///
+    /// Delegates to `InfluenceKindRegistry::initial_state_for`. Use this during
+    /// bootstrap to create pre-wired relationships with the correct slot count
+    /// (base `[activity, weight]` + any `extra_slots` declared via `.influence()`):
+    ///
+    /// ```ignore
+    /// let state = builder.initial_relationship_state("supply");
+    /// let rel = builder.world_mut().add_relationship(endpoints, supply_kind_id, state);
+    /// ```
+    ///
+    /// Panics in debug builds if `kind_name` was not registered.
+    pub fn initial_relationship_state(&self, kind_name: &str) -> graph_core::StateVector {
+        let id = self.influence_kind_names.get(kind_name).copied().unwrap_or_else(|| {
+            panic!("initial_relationship_state: influence kind \"{kind_name}\" not registered — call .influence() first");
+        });
+        self.influence_registry.initial_state_for(id)
+    }
+
+    /// Look up the `InfluenceKindId` for a registered influence kind name.
+    ///
+    /// Returns `None` when the name has not been registered.
+    pub fn influence_kind(&self, name: &str) -> Option<InfluenceKindId> {
+        self.influence_kind_names.get(name).copied()
+    }
+
+    /// Look up the `LocusKindId` for a registered locus kind name.
+    ///
+    /// Returns `None` when the name has not been registered.
+    pub fn locus_kind_id(&self, name: &str) -> Option<LocusKindId> {
+        self.locus_kind_names.get(name).copied()
+    }
+
+    /// Mutable access to the `World` held by this builder.
+    ///
+    /// Use this during a **bootstrap phase** — after declaring kinds and
+    /// influences but before calling `build()` — to:
+    ///
+    /// - Pre-create relationships whose `RelationshipId`s are needed by
+    ///   programs registered via [`add_locus_kind`].
+    /// - Set up initial subscriptions via
+    ///   `world_mut().subscriptions_mut().subscribe_at(...)`.
+    /// - Insert loci with specific `LocusId`s.
+    ///
+    /// [`add_locus_kind`]: SimulationBuilder::add_locus_kind
+    ///
+    /// ```ignore
+    /// let mut builder = SimulationBuilder::new()
+    ///     .locus_kind("SUPPLIER", SupplierProgram { factory: FACTORY })
+    ///     .influence("supply", |c| c.with_decay(0.9));
+    ///
+    /// // Bootstrap: create the edge first, then register the program that needs its ID.
+    /// let sup_rel = builder.world_mut().add_relationship(
+    ///     Endpoints::directed(SUPPLIER, FACTORY), SUPPLY_KIND, state,
+    /// );
+    /// builder.world_mut().subscriptions_mut().subscribe_at(ANALYST, sup_rel, None);
+    /// builder.add_locus_kind("ANALYST", AnalystProgram { sup_rel });
+    ///
+    /// let mut sim = builder.build();
+    /// ```
+    pub fn world_mut(&mut self) -> &mut World {
+        &mut self.world
+    }
+
+    /// Register a locus kind by name — **mutable** variant for bootstrap use.
+    ///
+    /// Identical to [`locus_kind`] but takes `&mut self` so it can be called
+    /// after `world_mut()` returns relationship IDs that the program needs.
+    /// Returns the assigned `LocusKindId` so callers can immediately use it
+    /// when inserting loci via `world_mut()`:
+    ///
+    /// ```ignore
+    /// let rel_id = builder.world_mut().add_relationship(...);
+    /// let kind = builder.add_locus_kind("OBSERVER", ObserverProgram { rel_id });
+    /// builder.world_mut().insert_locus(Locus::new(OBSERVER_ID, kind, state));
+    /// ```
+    ///
+    /// [`locus_kind`]: SimulationBuilder::locus_kind
+    pub fn add_locus_kind(
+        &mut self,
+        name: impl Into<String>,
+        program: impl LocusProgram + 'static,
+    ) -> LocusKindId {
+        let name = name.into();
+        let id = LocusKindId(self.next_locus_kind);
+        self.next_locus_kind += 1;
+        self.loci_registry.insert(id, Box::new(program));
+        self.locus_kind_names.insert(name, id);
+        id
+    }
+
+    /// Register a locus kind with full config — **mutable** variant for bootstrap use.
+    ///
+    /// Returns the assigned `LocusKindId`. See [`add_locus_kind`] for the
+    /// bootstrap pattern.
+    ///
+    /// [`add_locus_kind`]: SimulationBuilder::add_locus_kind
+    pub fn add_locus_kind_with(
+        &mut self,
+        name: impl Into<String>,
+        program: impl LocusProgram + 'static,
+        configure: impl FnOnce(LocusKindBuilder) -> LocusKindBuilder,
+    ) -> LocusKindId {
+        let name = name.into();
+        let id = LocusKindId(self.next_locus_kind);
+        self.next_locus_kind += 1;
+        let built = configure(LocusKindBuilder::default());
+        self.loci_registry.insert_with_config(id, LocusKindConfig {
+            name: Some(name.clone()),
+            state_slots: built.state_slots,
+            program: Box::new(program),
+            refractory_batches: built.refractory_batches,
+            encoder: built.encoder,
+            max_proposals_per_dispatch: built.max_proposals_per_dispatch,
+        });
+        self.locus_kind_names.insert(name, id);
+        id
+    }
+
+    /// Pre-register subscriptions before the first tick.
+    ///
+    /// Each `(subscriber, rel_id)` pair is subscribed via
+    /// `SubscriptionStore::subscribe_at` with no batch tag.  Subscriptions
+    /// registered this way appear in the initial state and are visible to
+    /// programs from tick 1.
+    ///
+    /// For subscriptions that require a `RelationshipId` only known after
+    /// the world is partially built, prefer calling
+    /// `world_mut().subscriptions_mut().subscribe_at(...)` directly.
+    ///
+    /// ```ignore
+    /// builder.initial_subscriptions(vec![(analyst, sup_a_rel), (analyst, sup_b_rel)])
+    /// ```
+    pub fn initial_subscriptions(mut self, subs: Vec<(LocusId, RelationshipId)>) -> Self {
+        for (subscriber, rel_id) in subs {
+            self.world.subscriptions_mut().subscribe_at(subscriber, rel_id, None);
+        }
         self
     }
 
@@ -259,7 +399,7 @@ impl LocusKindBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use graph_core::{Change, Locus, LocusContext, ProposedChange};
+    use graph_core::{Change, Endpoints, Locus, LocusContext, LocusId, ProposedChange, StateVector};
 
     struct NoopProgram;
     impl LocusProgram for NoopProgram {
@@ -344,5 +484,81 @@ mod tests {
             .build();
 
         sim.ingest_named("X", "ORG", graph_core::props! {});
+    }
+
+    /// Verifies that `world_mut()` + `add_locus_kind()` enable bootstrap patterns
+    /// where a program needs a `RelationshipId` generated during world setup.
+    #[test]
+    fn world_mut_bootstrap_and_add_locus_kind() {
+        // A simple observer program that records the relationship ID it watches.
+        struct ObserverProgram { watched: RelationshipId }
+        impl LocusProgram for ObserverProgram {
+            fn process(&self, _: &Locus, _: &[&Change], _: &dyn LocusContext) -> Vec<ProposedChange> {
+                Vec::new()
+            }
+        }
+
+        const NODE_A: LocusId = LocusId(10);
+        const NODE_B: LocusId = LocusId(11);
+        const OBSERVER: LocusId = LocusId(12);
+
+        let mut builder = SimulationBuilder::new()
+            .locus_kind("NODE", NoopProgram)
+            .influence("link", |cfg| cfg.with_decay(0.9));
+
+        // Bootstrap: insert loci and a relationship, capture the RelationshipId.
+        {
+            let w = builder.world_mut();
+            w.insert_locus(graph_core::Locus::new(NODE_A, LocusKindId(1), StateVector::zeros(1)));
+            w.insert_locus(graph_core::Locus::new(NODE_B, LocusKindId(1), StateVector::zeros(1)));
+            w.insert_locus(graph_core::Locus::new(OBSERVER, LocusKindId(2), StateVector::zeros(1)));
+        }
+
+        let rel_id = builder.world_mut().add_relationship(
+            Endpoints::directed(NODE_A, NODE_B),
+            InfluenceKindId(1),
+            StateVector::zeros(2),
+        );
+
+        // Subscribe the observer to the relationship.
+        builder.world_mut().subscriptions_mut().subscribe_at(OBSERVER, rel_id, None);
+
+        // Register the observer program — only possible here because rel_id is now known.
+        builder.add_locus_kind("OBSERVER", ObserverProgram { watched: rel_id });
+
+        let sim = builder.build();
+
+        // The subscription is already in place before the first tick.
+        assert_eq!(sim.world.subscriptions().subscription_count(), 1);
+        // The relationship exists.
+        assert!(sim.world.relationships().get(rel_id).is_some());
+    }
+
+    /// `initial_subscriptions()` sets subscriptions in bulk before build.
+    #[test]
+    fn initial_subscriptions_fluent() {
+        const NODE_A: LocusId = LocusId(1);
+        const NODE_B: LocusId = LocusId(2);
+        const WATCHER: LocusId = LocusId(3);
+
+        // Pre-build a world with the relationship so we have a RelationshipId.
+        let mut pre_world = World::new();
+        pre_world.insert_locus(graph_core::Locus::new(NODE_A, LocusKindId(1), StateVector::zeros(1)));
+        pre_world.insert_locus(graph_core::Locus::new(NODE_B, LocusKindId(1), StateVector::zeros(1)));
+        pre_world.insert_locus(graph_core::Locus::new(WATCHER, LocusKindId(1), StateVector::zeros(1)));
+        let rel_id = pre_world.add_relationship(
+            Endpoints::directed(NODE_A, NODE_B),
+            InfluenceKindId(1),
+            StateVector::zeros(2),
+        );
+
+        let sim = SimulationBuilder::new()
+            .locus_kind("NODE", NoopProgram)
+            .influence("link", |cfg| cfg.with_decay(0.9))
+            .world(pre_world)
+            .initial_subscriptions(vec![(WATCHER, rel_id)])
+            .build();
+
+        assert_eq!(sim.world.subscriptions().subscription_count(), 1);
     }
 }

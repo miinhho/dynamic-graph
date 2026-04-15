@@ -17,16 +17,45 @@
 //! they are valid `ChangeSubject`s — relationship-subject changes update
 //! their state and feed higher emergent layers.
 
+use smallvec::SmallVec;
+
 use crate::ids::{BatchId, ChangeId, InfluenceKindId, LocusId, RelationshipKindId};
 use crate::property::Properties;
 use crate::state::StateVector;
+
+/// Per-kind observation record in a `RelationshipLineage`.
+///
+/// Tracks how many times a specific influence kind has flowed through the
+/// relationship and which batch last produced a touch of that kind.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct KindObservation {
+    pub kind: InfluenceKindId,
+    /// Number of times this kind has touched the relationship.
+    pub touch_count: u64,
+    /// Batch in which this kind last touched the relationship.
+    pub last_batch: BatchId,
+}
+
+impl KindObservation {
+    /// Create a first-touch observation at the given batch.
+    pub fn once(kind: InfluenceKindId, batch: BatchId) -> Self {
+        Self { kind, touch_count: 1, last_batch: batch }
+    }
+
+    /// Create a placeholder observation for synthetic relationships that have
+    /// no batch context (e.g. test fixtures, query-internal temporaries).
+    pub fn synthetic(kind: InfluenceKindId) -> Self {
+        Self { kind, touch_count: 1, last_batch: BatchId(0) }
+    }
+}
 
 /// The net effect when two influence kinds co-occur on the same pair of loci.
 ///
 /// Used by `InfluenceKindRegistry::register_interaction` to declare how
 /// cross-kind relationships should be interpreted at query time. The engine
-/// never consults this during the batch loop — semantics are resolved
-/// entirely in `graph-query`.
+/// also applies these rules during the batch loop (activity multiplier after
+/// Hebbian plasticity) whenever 2+ kinds co-occur on the same edge in one tick.
 ///
 /// # Examples
 ///
@@ -218,10 +247,97 @@ pub struct RelationshipLineage {
     pub last_touched_by: Option<ChangeId>,
     pub change_count: u64,
     /// Influence kinds the engine has seen flow through this
-    /// relationship. Often a single entry, but kept open in case the
-    /// emergence policy chooses to collapse multiple kinds into one
-    /// edge.
-    pub kinds_observed: Vec<InfluenceKindId>,
+    /// relationship. Usually a single entry; kept as `SmallVec<[_; 2]>`
+    /// so the 1-kind and 2-kind cases avoid heap allocation entirely.
+    pub kinds_observed: SmallVec<[KindObservation; 2]>,
+}
+
+impl RelationshipLineage {
+    /// Create a lineage for a newly auto-emerged relationship (single kind, change-attributed).
+    #[inline]
+    pub fn new_emerged(change_id: ChangeId, kind: InfluenceKindId, batch: BatchId) -> Self {
+        let mut kinds_observed = SmallVec::new();
+        kinds_observed.push(KindObservation::once(kind, batch));
+        Self {
+            created_by: Some(change_id),
+            last_touched_by: Some(change_id),
+            change_count: 1,
+            kinds_observed,
+        }
+    }
+
+    /// Create a lineage for a synthetically created relationship (structural proposals,
+    /// test helpers, queries) — no originating change, single observed kind.
+    #[inline]
+    pub fn new_synthetic(kind: InfluenceKindId) -> Self {
+        let mut kinds_observed = SmallVec::new();
+        kinds_observed.push(KindObservation::synthetic(kind));
+        Self {
+            created_by: None,
+            last_touched_by: None,
+            change_count: 1,
+            kinds_observed,
+        }
+    }
+
+    /// Create an empty lineage — no observed kinds, no attributed change.
+    #[inline]
+    pub fn empty() -> Self {
+        Self {
+            created_by: None,
+            last_touched_by: None,
+            change_count: 0,
+            kinds_observed: SmallVec::new(),
+        }
+    }
+
+    /// Record or update the observation for `kind` at `batch`.
+    ///
+    /// If `kind` already appears in `kinds_observed`, increments
+    /// `touch_count` and updates `last_batch`. Otherwise appends a new
+    /// `KindObservation`. This is the canonical way for the engine to
+    /// update lineage on each relationship touch.
+    pub fn observe_kind(&mut self, kind: InfluenceKindId, batch: BatchId) {
+        if let Some(obs) = self.kinds_observed.iter_mut().find(|o| o.kind == kind) {
+            obs.touch_count += 1;
+            obs.last_batch = batch;
+        } else {
+            self.kinds_observed.push(KindObservation::once(kind, batch));
+        }
+    }
+
+    /// Return the influence kind that has flowed through this relationship
+    /// the most times. Ties are broken by kind id (lower wins). Returns
+    /// `None` when `kinds_observed` is empty.
+    pub fn dominant_flow_kind(&self) -> Option<InfluenceKindId> {
+        self.kinds_observed
+            .iter()
+            .max_by(|a, b| {
+                a.touch_count.cmp(&b.touch_count)
+                    .then_with(|| b.kind.0.cmp(&a.kind.0)) // lower id wins tie
+            })
+            .map(|obs| obs.kind)
+    }
+
+    /// Number of times `kind` has touched this relationship. Returns `0`
+    /// when the kind has never been observed.
+    pub fn touch_count_for(&self, kind: InfluenceKindId) -> u64 {
+        self.kinds_observed
+            .iter()
+            .find(|o| o.kind == kind)
+            .map(|o| o.touch_count)
+            .unwrap_or(0)
+    }
+
+    /// Returns `true` when `kind` has been observed on this relationship.
+    pub fn has_seen_kind(&self, kind: InfluenceKindId) -> bool {
+        self.kinds_observed.iter().any(|o| o.kind == kind)
+    }
+
+    /// Iterate the ids of all influence kinds that have been observed.
+    pub fn observed_kind_ids(&self) -> impl Iterator<Item = InfluenceKindId> + '_ {
+        self.kinds_observed.iter().map(|o| o.kind)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -358,7 +474,7 @@ mod tests {
                 created_by: None,
                 last_touched_by: None,
                 change_count: 0,
-                kinds_observed: vec![],
+                kinds_observed: smallvec::SmallVec::new(),
             },
             created_batch: BatchId(0),
             last_decayed_batch: 0,
@@ -401,5 +517,96 @@ mod tests {
         let rel = make_rel(symmetric(3, 7));
         assert_eq!(rel.from(), None);
         assert_eq!(rel.to(), None);
+    }
+
+    // ── RelationshipLineage: observe_kind, dominant_flow_kind ─────────────────
+
+    fn empty_lineage() -> RelationshipLineage {
+        RelationshipLineage {
+            created_by: None,
+            last_touched_by: None,
+            change_count: 0,
+            kinds_observed: smallvec::SmallVec::new(),
+        }
+    }
+
+    #[test]
+    fn observe_kind_appends_first_touch() {
+        let mut lin = empty_lineage();
+        lin.observe_kind(InfluenceKindId(1), BatchId(5));
+        assert_eq!(lin.kinds_observed.len(), 1);
+        assert_eq!(lin.kinds_observed[0].touch_count, 1);
+        assert_eq!(lin.kinds_observed[0].last_batch, BatchId(5));
+    }
+
+    #[test]
+    fn observe_kind_increments_existing_count() {
+        let mut lin = empty_lineage();
+        lin.observe_kind(InfluenceKindId(1), BatchId(1));
+        lin.observe_kind(InfluenceKindId(1), BatchId(3));
+        lin.observe_kind(InfluenceKindId(1), BatchId(7));
+        assert_eq!(lin.kinds_observed.len(), 1);
+        let obs = &lin.kinds_observed[0];
+        assert_eq!(obs.touch_count, 3);
+        assert_eq!(obs.last_batch, BatchId(7));
+    }
+
+    #[test]
+    fn observe_kind_tracks_multiple_kinds_separately() {
+        let mut lin = empty_lineage();
+        lin.observe_kind(InfluenceKindId(1), BatchId(1));
+        lin.observe_kind(InfluenceKindId(2), BatchId(2));
+        lin.observe_kind(InfluenceKindId(1), BatchId(3));
+        assert_eq!(lin.kinds_observed.len(), 2);
+        assert_eq!(lin.touch_count_for(InfluenceKindId(1)), 2);
+        assert_eq!(lin.touch_count_for(InfluenceKindId(2)), 1);
+    }
+
+    #[test]
+    fn dominant_flow_kind_returns_most_touched() {
+        let mut lin = empty_lineage();
+        lin.observe_kind(InfluenceKindId(1), BatchId(1));
+        lin.observe_kind(InfluenceKindId(2), BatchId(2));
+        lin.observe_kind(InfluenceKindId(2), BatchId(3));
+        lin.observe_kind(InfluenceKindId(2), BatchId(4));
+        assert_eq!(lin.dominant_flow_kind(), Some(InfluenceKindId(2)));
+    }
+
+    #[test]
+    fn dominant_flow_kind_breaks_tie_by_lower_id() {
+        let mut lin = empty_lineage();
+        lin.observe_kind(InfluenceKindId(5), BatchId(1));
+        lin.observe_kind(InfluenceKindId(2), BatchId(2));
+        // Both have touch_count = 1; lower id (2) should win.
+        assert_eq!(lin.dominant_flow_kind(), Some(InfluenceKindId(2)));
+    }
+
+    #[test]
+    fn dominant_flow_kind_empty_is_none() {
+        assert_eq!(empty_lineage().dominant_flow_kind(), None);
+    }
+
+    #[test]
+    fn touch_count_for_returns_zero_for_unseen() {
+        let lin = empty_lineage();
+        assert_eq!(lin.touch_count_for(InfluenceKindId(99)), 0);
+    }
+
+    #[test]
+    fn has_seen_kind_true_and_false() {
+        let mut lin = empty_lineage();
+        lin.observe_kind(InfluenceKindId(1), BatchId(0));
+        assert!(lin.has_seen_kind(InfluenceKindId(1)));
+        assert!(!lin.has_seen_kind(InfluenceKindId(2)));
+    }
+
+    #[test]
+    fn observed_kind_ids_yields_all_registered_kinds() {
+        let mut lin = empty_lineage();
+        lin.observe_kind(InfluenceKindId(3), BatchId(0));
+        lin.observe_kind(InfluenceKindId(7), BatchId(0));
+        let mut ids: Vec<_> = lin.observed_kind_ids().collect();
+        ids.sort();
+        assert_eq!(ids, vec![InfluenceKindId(3), InfluenceKindId(7)]);
     }
 }

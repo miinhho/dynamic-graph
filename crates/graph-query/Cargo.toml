@@ -8,6 +8,7 @@ version.workspace = true
 graph-core.workspace = true
 graph-world.workspace = true
 rustc-hash.workspace = true
+smallvec.workspace = true
 
 [dev-dependencies]
 graph-testkit.workspace = true

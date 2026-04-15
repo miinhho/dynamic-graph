@@ -60,14 +60,14 @@ pub(crate) fn flush_relationship_decay(
                 if let Some(w) = slots.get_mut(Relationship::WEIGHT_SLOT) {
                     *w *= wt_factor;
                 }
-                // Decay extra slots with their per-slot rates.
-                if let Some(cfg) = cfg {
-                    for (i, slot_def) in cfg.extra_slots.iter().enumerate() {
-                        if let Some(factor) = slot_def.decay {
-                            let idx = 2 + i;
-                            if let Some(v) = slots.get_mut(idx) {
-                                *v *= factor.powi(delta as i32);
-                            }
+                // Decay extra slots with their per-slot rates, including
+                // inherited slots from ancestor kinds.
+                let resolved_slots = influence_registry.resolved_extra_slots(rel.kind);
+                for (i, slot_def) in resolved_slots.iter().enumerate() {
+                    if let Some(factor) = slot_def.decay {
+                        let idx = 2 + i;
+                        if let Some(v) = slots.get_mut(idx) {
+                            *v *= factor.powi(delta as i32);
                         }
                     }
                 }
@@ -86,6 +86,11 @@ pub(crate) fn flush_relationship_decay(
     // Phase 2: remove pruned relationships (requires &mut, sequential).
     // Also clean up any subscriptions pointing at pruned relationships so
     // subscribers don't receive notifications for non-existent edges.
+    // Note: tombstone notifications for decay-pruned relationships are not
+    // emitted here because flush_relationship_decay is called on-demand
+    // (outside the batch loop) and has no access to the pending queue.
+    // Decay-pruned edges have near-zero activity, so subscriber programs
+    // are typically idle and the omission is acceptable.
     let pruned = to_prune.len();
     let events: Vec<WorldEvent> = to_prune
         .iter()

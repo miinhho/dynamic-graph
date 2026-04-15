@@ -29,6 +29,9 @@ pub struct StepObservation {
     /// `flush_relationship_decay` was called within the step, or the
     /// regime changed.
     pub events: Vec<WorldEvent>,
+    /// Rich per-tick summary: per-batch stats, loci changed, categorized
+    /// event counts. A superset of the information in `tick` and `events`.
+    pub summary: super::observability::TickSummary,
 }
 
 /// Configuration for `Simulation`.
@@ -73,6 +76,14 @@ pub struct SimulationConfig {
     /// simulations: batch N writes of 1 tick each → 1 write of N ticks.
     #[cfg(feature = "storage")]
     pub auto_commit: bool,
+    /// Number of [`TickSummary`][super::observability::TickSummary] records
+    /// to retain in the rolling [`EventHistory`][super::observability::EventHistory]
+    /// attached to `Simulation`.
+    ///
+    /// `0` (the default) disables the history ring buffer. When non-zero,
+    /// `Simulation::history()` returns an `EventHistory` with the last N
+    /// summaries, accessible for trend analysis across steps.
+    pub event_history_len: usize,
 }
 
 impl Default for SimulationConfig {
@@ -89,6 +100,7 @@ impl Default for SimulationConfig {
             auto_weather_every_ticks: None,
             #[cfg(feature = "storage")]
             auto_commit: true,
+            event_history_len: 0,
         }
     }
 }
