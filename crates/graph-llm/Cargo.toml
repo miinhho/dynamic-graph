@@ -1,0 +1,29 @@
+[package]
+name = "graph-llm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LLM-assisted ingestion and narration for dynamic-graph-db"
+
+[features]
+default = ["anthropic"]
+# Enables the AnthropicClient implementation (reqwest).
+# Disable to use only the LlmClient trait and mock/custom implementations.
+anthropic = ["dep:reqwest"]
+# Enables the OllamaClient implementation (reqwest).
+ollama = ["dep:reqwest"]
+
+[dependencies]
+graph-core  = { workspace = true }
+graph-query = { workspace = true }
+graph-boundary = { workspace = true }
+graph-schema   = { workspace = true }
+graph-world    = { workspace = true }
+serde       = { workspace = true }
+serde_json  = "1"
+rustc-hash  = { workspace = true }
+
+reqwest = { version = "0.12", features = ["blocking", "json"], optional = true }
+
+[dev-dependencies]
+graph-engine = { workspace = true }

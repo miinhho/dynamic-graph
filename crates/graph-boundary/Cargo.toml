@@ -1,0 +1,15 @@
+[package]
+name = "graph-boundary"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+graph-core = { workspace = true }
+graph-world = { workspace = true }
+graph-schema = { path = "../graph-schema" }
+rustc-hash.workspace = true
+smallvec = { workspace = true }
+
+[lib]
+path = "src/lib.rs"

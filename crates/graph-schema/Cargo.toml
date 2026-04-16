@@ -1,0 +1,12 @@
+[package]
+name = "graph-schema"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+graph-core = { workspace = true }
+rustc-hash.workspace = true
+
+[lib]
+path = "src/lib.rs"
