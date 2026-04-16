@@ -673,6 +673,23 @@ impl Storage {
     }
 
     /// Read a single relationship by ID.
+    /// Iterate all stored relationships.
+    ///
+    /// Reads the full `RELATIONSHIPS` table in one transaction — O(n_stored).
+    /// Used by `Simulation::promote_all_cold` to bring every cold relationship
+    /// back into hot memory before an entity recognition pass.
+    pub fn all_relationships(&self) -> Result<Vec<Relationship>, StorageError> {
+        let txn = self.db.begin_read()?;
+        let t = txn.open_table(RELATIONSHIPS)?;
+        let mut out = Vec::new();
+        let mut iter = t.iter()?;
+        while let Some(entry) = iter.next() {
+            let (_, val) = entry?;
+            out.push(postcard::from_bytes(val.value())?);
+        }
+        Ok(out)
+    }
+
     pub fn get_relationship(&self, id: RelationshipId) -> Result<Option<Relationship>, StorageError> {
         let txn = self.db.begin_read()?;
         let t = txn.open_table(RELATIONSHIPS)?;

@@ -7,13 +7,25 @@
 //! Entities are never deleted per `docs/redesign.md` §3.4. A call to
 //! mark an entity dormant flips its `status` field; the record remains
 //! in the store indefinitely.
+//!
+//! ## Member index
+//!
+//! `by_member` maps each `LocusId` to the set of entity IDs whose
+//! `current.members` contains that locus.  It is maintained by all
+//! mutation paths (`insert`, `update_snapshot`) and enables
+//! `candidates_for_members` — an O(k) pre-filter used by the emergence
+//! perspective's `all_matches` to avoid scanning every entity when
+//! looking for overlap candidates.
 
-use graph_core::{BatchId, Entity, EntityId, EntityLayer, EntityStatus};
-use rustc_hash::FxHashMap;
+use graph_core::{BatchId, Entity, EntityId, EntityLayer, EntitySnapshot, EntityStatus, LocusId};
+use rustc_hash::{FxHashMap, FxHashSet};
 
 #[derive(Debug, Default, Clone)]
 pub struct EntityStore {
     by_id: FxHashMap<EntityId, Entity>,
+    /// Locus → entities whose `current.members` contains that locus.
+    /// Kept in sync by `insert` and `update_snapshot`.
+    by_member: FxHashMap<LocusId, Vec<EntityId>>,
     next_id: u64,
     generation: u64,
 }
@@ -42,10 +54,59 @@ impl EntityStore {
     /// Insert a freshly born entity. Panics on duplicate id.
     pub fn insert(&mut self, entity: Entity) {
         let id = entity.id;
+        for &locus in &entity.current.members {
+            self.by_member.entry(locus).or_default().push(id);
+        }
         if self.by_id.insert(id, entity).is_some() {
             panic!("EntityStore: duplicate id {id:?}");
         }
         self.generation += 1;
+    }
+
+    /// Update an entity's current snapshot and maintain the `by_member` index.
+    ///
+    /// Removes the entity from index entries for members it no longer has,
+    /// then adds it to index entries for the new members.  The layer stack
+    /// and other fields are unaffected; push the corresponding `EntityLayer`
+    /// via `get_mut` after calling this.
+    ///
+    /// Does nothing when the entity ID is not found.
+    pub fn update_snapshot(&mut self, id: EntityId, snapshot: EntitySnapshot) {
+        let Some(entity) = self.by_id.get_mut(&id) else { return };
+        // Fast path: members unchanged — only update numeric fields, skip index churn.
+        // The common case for CoherenceShift transitions is identical member sets.
+        if entity.current.members == snapshot.members {
+            entity.current = snapshot;
+            self.generation += 1;
+            return;
+        }
+        let old_members = std::mem::take(&mut entity.current.members);
+        for locus in &old_members {
+            if let Some(ids) = self.by_member.get_mut(locus) {
+                ids.retain(|&eid| eid != id);
+            }
+        }
+        entity.current = snapshot;
+        for &locus in &entity.current.members {
+            self.by_member.entry(locus).or_default().push(id);
+        }
+        self.generation += 1;
+    }
+
+    /// Return the set of entity IDs whose `current.members` contains at least
+    /// one locus from `loci`.
+    ///
+    /// This is an O(|loci| + hits) pre-filter for overlap matching — it
+    /// returns *candidates*, not confirmed matches.  The caller must still
+    /// compute the Jaccard overlap score.
+    pub fn candidates_for_members(&self, loci: &FxHashSet<LocusId>) -> FxHashSet<EntityId> {
+        let mut out = FxHashSet::default();
+        for locus in loci {
+            if let Some(ids) = self.by_member.get(locus) {
+                out.extend(ids);
+            }
+        }
+        out
     }
 
     pub fn get(&self, id: EntityId) -> Option<&Entity> {

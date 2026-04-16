@@ -21,8 +21,10 @@
 //! let sim = profile_ab.state_similarity(&profile_ac);
 //! ```
 
-use graph_core::{InfluenceKindId, InteractionEffect, LocusId, Relationship};
+use graph_core::{BatchId, InfluenceKindId, InteractionEffect, LocusId, RelationshipId, Relationship};
 use graph_world::World;
+
+use crate::causality::changes_to_relationship_in_range;
 
 /// All relationships between a specific pair of loci, across every kind.
 ///
@@ -177,13 +179,14 @@ impl<'w> RelationshipBundle<'w> {
     /// so missing kinds are zero-padded symmetrically.  The dimension-mismatch
     /// caveat on `StateVector::cosine_similarity` does **not** apply here.
     pub fn profile_similarity(&self, other: &RelationshipBundle<'_>) -> f32 {
-        let mut all_kinds: Vec<InfluenceKindId> = {
+        let all_kinds: Vec<InfluenceKindId> = {
             let mut set = rustc_hash::FxHashSet::default();
             for r in &self.relationships { set.insert(r.kind); }
             for r in &other.relationships { set.insert(r.kind); }
-            set.into_iter().collect()
+            let mut v: Vec<_> = set.into_iter().collect();
+            v.sort();
+            v
         };
-        all_kinds.sort(); // deterministic ordering
 
         let vec_a: Vec<f32> = {
             let map: rustc_hash::FxHashMap<_, _> = self
@@ -204,6 +207,97 @@ impl<'w> RelationshipBundle<'w> {
         let sv_b = graph_core::StateVector::from_slice(&vec_b);
         sv_a.cosine_similarity(&sv_b)
     }
+}
+
+impl<'w> RelationshipBundle<'w> {
+    /// Cosine similarity between the **OLS activity-slope vectors** of two bundles.
+    ///
+    /// Where `profile_similarity` compares a *snapshot* of current activity,
+    /// this method asks a different question: **"do these two locus pairs move
+    /// together over time?"**
+    ///
+    /// # Algorithm
+    ///
+    /// 1. For each relationship in the bundle, collect the sequence of
+    ///    `ChangeSubject::Relationship` log entries within `[from_batch, to_batch]`.
+    /// 2. Fit an OLS linear regression to the activity slot of those entries
+    ///    (y = activity, x = change-index within the window).  The slope is the
+    ///    per-change-index rate of change.
+    /// 3. Sum slopes by influence kind (A→B and B→A slopes for the same kind are
+    ///    added, matching `activity_by_kind`'s semantics).
+    /// 4. Project both bundles onto the **union** of their kind sets (missing
+    ///    kinds get slope 0), then compute cosine similarity.
+    ///
+    /// Returns `0.0` when either bundle has no log entries in the range
+    /// (insufficient data for any regression).
+    ///
+    /// # Interpretation
+    ///
+    /// - `+1.0` — both pairs exhibit the same directional trend in every kind.
+    /// - `0.0`  — orthogonal trends (or one side has no trend data).
+    /// - `-1.0` — opposing trends: one pair is strengthening where the other weakens.
+    pub fn profile_trend_similarity(
+        &self,
+        other: &RelationshipBundle<'_>,
+        world: &World,
+        from_batch: BatchId,
+        to_batch: BatchId,
+    ) -> f32 {
+        let map_a = slope_map(self, world, from_batch, to_batch);
+        let map_b = slope_map(other, world, from_batch, to_batch);
+
+        if map_a.is_empty() && map_b.is_empty() {
+            return 0.0;
+        }
+
+        let all_kinds = union_sorted_map_keys(&map_a, &map_b);
+        let vec_a: Vec<f32> = all_kinds.iter().map(|k| *map_a.get(k).unwrap_or(&0.0)).collect();
+        let vec_b: Vec<f32> = all_kinds.iter().map(|k| *map_b.get(k).unwrap_or(&0.0)).collect();
+
+        let sv_a = graph_core::StateVector::from_slice(&vec_a);
+        let sv_b = graph_core::StateVector::from_slice(&vec_b);
+        sv_a.cosine_similarity(&sv_b)
+    }
+}
+
+/// Build a kind→sum-of-slopes map for all relationships in a bundle.
+fn slope_map(
+    bundle: &RelationshipBundle<'_>,
+    world: &World,
+    from_batch: BatchId,
+    to_batch: BatchId,
+) -> rustc_hash::FxHashMap<InfluenceKindId, f32> {
+    let mut by_kind: rustc_hash::FxHashMap<InfluenceKindId, f32> =
+        rustc_hash::FxHashMap::default();
+    for rel in &bundle.relationships {
+        if let Some(s) = ols_slope_for_rel(world, rel.id, from_batch, to_batch) {
+            *by_kind.entry(rel.kind).or_insert(0.0) += s;
+        }
+    }
+    by_kind
+}
+
+/// Return the sorted union of keys from two `FxHashMap<InfluenceKindId, _>`.
+fn union_sorted_map_keys(
+    a: &rustc_hash::FxHashMap<InfluenceKindId, f32>,
+    b: &rustc_hash::FxHashMap<InfluenceKindId, f32>,
+) -> Vec<InfluenceKindId> {
+    let mut set = rustc_hash::FxHashSet::default();
+    for &k in a.keys() { set.insert(k); }
+    for &k in b.keys() { set.insert(k); }
+    let mut v: Vec<_> = set.into_iter().collect();
+    v.sort();
+    v
+}
+
+fn ols_slope_for_rel(
+    world: &World,
+    rel: RelationshipId,
+    from_batch: BatchId,
+    to_batch: BatchId,
+) -> Option<f32> {
+    let changes = changes_to_relationship_in_range(world, rel, from_batch, to_batch);
+    crate::causality::ols_activity_slope(&changes)
 }
 
 /// Collect all relationships between `a` and `b` into a [`RelationshipBundle`].

@@ -246,7 +246,7 @@ fn bench_bfs_traversal(c: &mut Criterion) {
         for _ in 0..9 {
             sim.step(vec![]);
         }
-        sim.world
+        sim.into_world()
     };
 
     // path_between: O(V+E) BFS from L0 to the antipodal node.

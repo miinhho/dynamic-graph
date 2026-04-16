@@ -46,6 +46,12 @@ pub struct PlasticityConfig {
     pub weight_decay: f32,
     /// Maximum weight value. Weights are clamped to `[0, max_weight]`.
     pub max_weight: f32,
+    /// When true, use STDP rule:
+    ///   - causal (pre fired before post): Δw = +η × pre × post
+    ///   - anti-causal (post fired before pre): Δw = -η × pre × post  (weight decrease)
+    ///   - simultaneous (same batch): Δw = +η × pre × post  (standard Hebbian)
+    /// When false (default), use standard symmetric Hebbian.
+    pub stdp: bool,
 }
 
 impl Default for PlasticityConfig {
@@ -54,6 +60,7 @@ impl Default for PlasticityConfig {
             learning_rate: 0.0,
             weight_decay: 1.0,
             max_weight: f32::MAX,
+            stdp: false,
         }
     }
 }
@@ -62,6 +69,17 @@ impl PlasticityConfig {
     /// True when plasticity is effectively enabled for this config.
     pub(crate) fn is_active(&self) -> bool {
         self.learning_rate > 0.0
+    }
+
+    /// Enable STDP (Spike-Timing Dependent Plasticity).
+    ///
+    /// When enabled:
+    /// - causal flow (pre before post): weight increases (`+η × pre × post`)
+    /// - anti-causal flow (post before pre): weight decreases (`-η × pre × post`)
+    /// - simultaneous (same batch): same as standard Hebbian
+    pub fn with_stdp(mut self) -> Self {
+        self.stdp = true;
+        self
     }
 }
 
@@ -100,20 +118,29 @@ pub struct InfluenceKindConfig {
     /// per-batch by their individual `decay` rate (if any), and ignored
     /// by the Hebbian plasticity rule.
     pub extra_slots: Vec<RelationshipSlotDef>,
-    /// Signed contribution to relationship activity on each touch.
+    /// Scale factor applied to the pre-synaptic signal when updating
+    /// relationship activity.
     ///
-    /// Added to `state[0]` (the activity slot) every time the engine
-    /// observes this influence kind flowing through a relationship.
+    /// On each auto-emergence touch, the engine increments the activity slot
+    /// by `activity_contribution × |pre_signal|`, where `pre_signal` is the
+    /// first slot of the predecessor change's after-state (the signal that
+    /// actually flowed through the relationship).
     ///
-    /// - `+1.0` (default) — excitatory: activity grows with each touch.
-    /// - `-1.0` — inhibitory: activity decreases with each touch (e.g.,
-    ///   an antagonistic or suppressive influence).
-    /// - `0.0` — neutral: `change_count` is still incremented but the
-    ///   activity level is unaffected.
+    /// This coupling ties the activity scale to the simulation's signal
+    /// domain, so thresholds can be expressed in the same units as program
+    /// outputs without independent scale calibration.
     ///
-    /// The initial activity of a newly auto-emerged relationship is set to
-    /// this value (the first touch), so inhibitory relationships start
-    /// negative immediately.
+    /// - `+1.0` (default) — activity tracks signal directly.
+    /// - `+2.0` — amplified: large signals accumulate activity faster.
+    /// - `-1.0` — inhibitory: strong signals push activity negative.
+    /// - `0.0` — neutral: signal is observed but activity is unaffected.
+    ///
+    /// **Steady-state** (regular stimulation, signal magnitude `s`):
+    /// `activity_contribution × s / (1 − decay_per_batch)`.
+    ///
+    /// **Note**: `StructuralProposal::CreateRelationship` touches use
+    /// `activity_contribution` directly (no signal context), treating the
+    /// explicit declaration as a full-strength touch.
     pub activity_contribution: f32,
     /// Optional parent kind in the influence-kind hierarchy.
     ///
@@ -139,6 +166,30 @@ pub struct InfluenceKindConfig {
     /// warning, non-blocking) whenever a relationship auto-emerges between loci
     /// whose kinds are not listed here. Empty = no constraint (default).
     pub applies_between: Vec<(LocusKindId, LocusKindId)>,
+    /// Minimum cross-locus signal magnitude required to auto-emerge a new
+    /// relationship of this kind.
+    ///
+    /// When a predecessor's signal (`|after[0]|`) is below this threshold
+    /// the engine skips relationship creation for that predecessor.  An
+    /// **already-existing** relationship is always updated regardless of
+    /// this threshold — only the initial creation is gated.
+    ///
+    /// `0.0` (default) — every cross-locus causal flow creates a relationship.
+    pub min_emerge_activity: f32,
+    /// Optional hard cap on the relationship activity slot.
+    ///
+    /// When `Some(cap)`, the activity slot is clamped to `[-cap, cap]` after
+    /// every touch (both creation and update). This prevents unbounded
+    /// accumulation in high-frequency or long-running simulations where
+    /// `decay_per_batch` is less than 1.0 but stimulation keeps arriving.
+    ///
+    /// The steady-state activity without a cap is `activity_contribution /
+    /// (1 − decay_per_batch)`, which can be large for slow-decay kinds.
+    /// Setting `max_activity` to a meaningful upper bound keeps values in a
+    /// human-readable range without changing the decay dynamics.
+    ///
+    /// `None` (default) — no cap applied.
+    pub max_activity: Option<f32>,
 }
 
 impl InfluenceKindConfig {
@@ -154,6 +205,8 @@ impl InfluenceKindConfig {
             parent: None,
             symmetric: false,
             applies_between: Vec::new(),
+            min_emerge_activity: 0.0,
+            max_activity: None,
         }
     }
 
@@ -182,6 +235,7 @@ impl InfluenceKindConfig {
             learning_rate: rate,
             weight_decay: 0.99,
             max_weight: 1.0,
+            stdp: false,
         };
         self
     }
@@ -212,6 +266,24 @@ impl InfluenceKindConfig {
 
     pub fn with_extra_slots(mut self, slots: Vec<RelationshipSlotDef>) -> Self {
         self.extra_slots = slots;
+        self
+    }
+
+    /// Minimum signal magnitude required to auto-emerge a new relationship.
+    ///
+    /// Only gates relationship *creation*; existing relationships are updated
+    /// regardless of the threshold.
+    pub fn with_min_emerge_activity(mut self, threshold: f32) -> Self {
+        self.min_emerge_activity = threshold;
+        self
+    }
+
+    /// Cap the activity slot at `±cap` after each touch.
+    ///
+    /// Prevents unbounded accumulation in high-frequency simulations.
+    /// The cap is applied to the absolute value: `activity.clamp(-cap, cap)`.
+    pub fn with_max_activity(mut self, cap: f32) -> Self {
+        self.max_activity = Some(cap);
         self
     }
 
@@ -474,6 +546,13 @@ impl InfluenceKindRegistry {
             "InfluenceKindConfig '{}': activity_contribution must be finite, got {}",
             config.name, config.activity_contribution
         );
+        if let Some(cap) = config.max_activity {
+            assert!(
+                cap > 0.0 && cap.is_finite(),
+                "InfluenceKindConfig '{}': max_activity must be finite and > 0, got {}",
+                config.name, cap
+            );
+        }
         if let Some(parent) = config.parent {
             assert!(
                 self.configs.contains_key(&parent),
@@ -844,6 +923,7 @@ mod tests {
                 learning_rate: -0.1,
                 weight_decay: 1.0,
                 max_weight: 1.0,
+                stdp: false,
             }),
         );
     }
@@ -858,6 +938,7 @@ mod tests {
                 learning_rate: 0.0,
                 weight_decay: 1.0,
                 max_weight: 0.0,
+                stdp: false,
             }),
         );
     }

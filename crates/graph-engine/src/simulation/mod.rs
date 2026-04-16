@@ -24,9 +24,11 @@ mod watch;
 
 pub use builder::SimulationBuilder;
 pub use config::{SimulationConfig, StepObservation};
+pub use ingest::IngestError;
 pub use observability::{EventHistory, TickSummary};
 
 use rustc_hash::FxHashMap;
+use std::sync::{Arc, RwLock};
 
 use graph_core::{BatchId, InfluenceKindId, ProposedChange, RelationshipId, WorldEvent};
 use graph_world::World;
@@ -44,14 +46,14 @@ use graph_storage::Storage;
 /// Bundles the world, registries, engine, regime classifier, and
 /// adaptive guard rail into a single step-by-step interface.
 pub struct Simulation {
-    /// Direct read/write access to the world state.
+    /// Shared, lock-protected world state.
     ///
-    /// This field is `pub` so that callers in other crates can read query
-    /// the world (e.g. `sim.world.loci()`, `sim.world.relationships()`).
-    /// For writes, prefer the `Simulation` methods or `StructuralProposal`
-    /// so the engine's internal state stays consistent.
+    /// Access the world via [`Simulation::world`] (read guard) or
+    /// [`Simulation::world_mut`] (write guard). For concurrent read access
+    /// from a background query thread, clone the handle via
+    /// [`Simulation::world_handle`] and call `.read()` between `step()` calls.
     ///
-    /// # Invariants — direct mutation can break these
+    /// # Invariants — direct mutation via the write guard can break these
     ///
     /// The following engine invariants can be violated by bypassing the
     /// normal mutation paths:
@@ -74,7 +76,7 @@ pub struct Simulation {
     ///   directly (without a batch tag) produces events not visible to
     ///   `WorldDiff`. Use `subscribe_at`/`unsubscribe_at` or a
     ///   `StructuralProposal`.
-    pub world: World,
+    world: Arc<RwLock<World>>,
     pub(crate) loci: LocusKindRegistry,
     /// Original influence configs — never mutated. Each tick we clone
     /// this and apply the guard-rail scale before calling the engine.
@@ -142,28 +144,71 @@ impl Simulation {
 
     // ── World accessors ───────────────────────────────────────────────────
 
-    /// Read-only access to the world.
+    /// Read-only access to the world via a scoped read guard.
     ///
-    /// Equivalent to `&sim.world`. Prefer this over direct field access when
-    /// writing generic code that may later need to work through a trait or
-    /// wrapper type.
+    /// The guard borrows the world for its lifetime. Multiple callers may
+    /// hold read guards simultaneously; a write guard (e.g. during `step()`)
+    /// blocks until all readers release.
+    ///
+    /// For a scalar read that doesn't outlive its statement, the guard may be
+    /// a temporary: `sim.world().relationships().len()`. For accesses that
+    /// return references into the world (iterators, slices, etc.), bind the
+    /// guard explicitly:
+    ///
+    /// ```ignore
+    /// let w = sim.world();
+    /// for rel in w.relationships().iter() { ... }
+    /// ```
     #[inline]
-    pub fn world(&self) -> &World {
-        &self.world
+    pub fn world(&self) -> std::sync::RwLockReadGuard<'_, World> {
+        self.world.read().unwrap()
     }
 
-    /// Mutable access to the world.
+    /// Mutable access to the world via a scoped write guard.
     ///
     /// Use this to make one-off mutations (e.g. inserting a locus before the
     /// first tick). For structural changes that must happen *during* a tick
     /// (topology changes, subscriptions), prefer `StructuralProposal` so the
     /// engine's indices and audit log stay in sync.
     ///
-    /// See the `pub world` field documentation for the invariants that must
+    /// See the `world` field documentation for the invariants that must
     /// be preserved when writing directly.
     #[inline]
-    pub fn world_mut(&mut self) -> &mut World {
-        &mut self.world
+    pub fn world_mut(&mut self) -> std::sync::RwLockWriteGuard<'_, World> {
+        self.world.write().unwrap()
+    }
+
+    /// Clone the shared world handle for use by background query threads.
+    ///
+    /// Background threads should call `.read()` on the returned `Arc` between
+    /// `step()` calls. The write lock is held for the duration of each `step()`
+    /// call, so read attempts during `step()` will block until the step
+    /// completes.
+    ///
+    /// ```ignore
+    /// let handle = sim.world_handle();
+    /// std::thread::spawn(move || {
+    ///     loop {
+    ///         let w = handle.read().unwrap();
+    ///         // query w ...
+    ///     }
+    /// });
+    /// ```
+    #[inline]
+    pub fn world_handle(&self) -> Arc<RwLock<World>> {
+        Arc::clone(&self.world)
+    }
+
+    /// Consume the simulation and return the underlying `World`.
+    ///
+    /// Panics if any `Arc` clones obtained via [`world_handle`] are still alive.
+    ///
+    /// [`world_handle`]: Simulation::world_handle
+    pub fn into_world(self) -> World {
+        Arc::try_unwrap(self.world)
+            .unwrap_or_else(|_| panic!("world Arc has other owners; drop all world_handle clones first"))
+            .into_inner()
+            .unwrap()
     }
 
     pub fn with_config(
@@ -191,7 +236,7 @@ impl Simulation {
         };
 
         Self {
-            world,
+            world: Arc::new(RwLock::new(world)),
             loci,
             base_influences: influences,
             engine: Engine::new(config.engine),
@@ -258,20 +303,96 @@ impl Simulation {
         }
 
         let prev_batch = self.prev_batch;
-        let tick = self
-            .engine
-            .tick(&mut self.world, &self.loci, &effective, stimuli);
 
-        let current_batch = self.world.current_batch();
-        let metrics = self.tick_metrics(prev_batch, current_batch);
-        self.prev_batch = current_batch;
+        // ── Acquire write lock for the entire world mutation window ───────────
+        // The lock is released before `fire_watches`, allowing background
+        // query threads (holding a clone from `world_handle()`) to read
+        // a consistent snapshot between successive `step()` calls.
+        let (tick, current_batch, relationships, active_entities, summary) = {
+            let mut world = self.world.write().unwrap();
 
-        self.history.push(metrics);
-        let regime = self.classifier.classify(&self.history);
+            let tick = self.engine.tick(&mut *world, &self.loci, &effective, stimuli);
+            let current_batch = world.current_batch();
 
-        for kind in &kinds {
-            self.guard_rail.observe(*kind, regime);
-        }
+            // Inline tick_metrics: keeps the guard alive while we iterate the log.
+            let metrics = {
+                let changes = (prev_batch.0 + 1..=current_batch.0)
+                    .flat_map(|b| world.log().batch(BatchId(b)));
+                BatchMetrics::from_changes(changes)
+            };
+            self.prev_batch = current_batch;
+            self.history.push(metrics);
+            let regime = self.classifier.classify(&self.history);
+            for kind in &kinds {
+                self.guard_rail.observe(*kind, regime);
+            }
+
+            // Persist committed batches to redb storage (only when auto-commit is enabled).
+            // When auto_commit is false, batches accumulate until flush() is called.
+            #[cfg(feature = "storage")]
+            if self.auto_commit {
+                if self.storage.is_some() {
+                    let mut had_error = false;
+                    for batch_idx in self.last_flushed_batch.0..current_batch.0 {
+                        let storage = self.storage.as_ref().unwrap();
+                        if let Err(e) = storage.commit_batch(&*world, BatchId(batch_idx)) {
+                            self.last_storage_error = Some(e);
+                            had_error = true;
+                            break;
+                        }
+                    }
+                    if !had_error {
+                        self.last_flushed_batch = current_batch;
+                        if self.last_storage_error.is_some() {
+                            self.last_storage_error = None;
+                        }
+                    }
+                }
+            }
+
+            // ── Hot/Cold memory management ────────────────────────────────
+            // Auto-trim: keep only recent batches in the in-memory ChangeLog.
+            // Older changes are already persisted in storage (if configured).
+            if let Some(retention) = self.change_retention_batches
+                && current_batch.0 > retention
+            {
+                let cutoff = BatchId(current_batch.0 - retention);
+                self.engine.trim_change_log_to(&mut *world, cutoff);
+                world.subscriptions_mut().trim_audit_before(cutoff);
+                world.trim_pruned_log_before(cutoff);
+            }
+
+            // Cold eviction: move inactive relationships out of memory.
+            // They remain in storage for on-demand promotion or analysis.
+            if let Some(threshold) = self.cold_relationship_threshold {
+                let min_idle = self.cold_relationship_min_idle_batches;
+                world.evict_cold_relationships(threshold, min_idle, current_batch);
+            }
+
+            // Auto-weathering: compress entity sediment on a periodic cadence.
+            self.tick_count += 1;
+            if let Some(interval) = self.auto_weather_every_ticks
+                && self.tick_count.is_multiple_of(interval as u64)
+                && let Some(policy) = self.auto_weather_policy.as_deref()
+            {
+                self.engine.weather_entities(&mut *world, policy);
+            }
+
+            // Compute TickSummary and snapshot scalars before releasing the guard.
+            let summary = TickSummary::compute(
+                self.tick_count,
+                &tick,
+                prev_batch,
+                current_batch,
+                &*world,
+                &[],  // events not yet built; RegimeShift is added below
+            );
+            let relationships = world.relationships().len();
+            let active_entities = world.entities().active_count();
+
+            (tick, current_batch, relationships, active_entities, summary)
+            // write lock released here ↑
+        };
 
         let scales = kinds
             .iter()
@@ -279,7 +400,8 @@ impl Simulation {
             .collect();
 
         let mut events = Vec::new();
-        if regime != self.prev_regime {
+        if self.classifier.classify(&self.history) != self.prev_regime {
+            let regime = self.classifier.classify(&self.history);
             events.push(WorldEvent::RegimeShift {
                 from: self.prev_regime.to_tag(),
                 to: regime.to_tag(),
@@ -287,78 +409,15 @@ impl Simulation {
             self.prev_regime = regime;
         }
 
-        // Persist committed batches to redb storage (only when auto-commit is enabled).
-        // When auto_commit is false, batches accumulate until flush() is called.
-        #[cfg(feature = "storage")]
-        if self.auto_commit {
-            if let Some(ref storage) = self.storage {
-                let mut had_error = false;
-                for batch_idx in self.last_flushed_batch.0..current_batch.0 {
-                    if let Err(e) = storage.commit_batch(&self.world, BatchId(batch_idx)) {
-                        self.last_storage_error = Some(e);
-                        had_error = true;
-                        break;
-                    }
-                }
-                if !had_error {
-                    self.last_flushed_batch = current_batch;
-                    if self.last_storage_error.is_some() {
-                        self.last_storage_error = None;
-                    }
-                }
-            }
-        }
-
-        // ── Hot/Cold memory management ────────────────────────────────
-        // Auto-trim: keep only recent batches in the in-memory ChangeLog.
-        // Older changes are already persisted in storage (if configured).
-        if let Some(retention) = self.change_retention_batches
-            && current_batch.0 > retention
-        {
-            let cutoff = BatchId(current_batch.0 - retention);
-            self.engine.trim_change_log_to(&mut self.world, cutoff);
-            self.world.subscriptions_mut().trim_audit_before(cutoff);
-            self.world.trim_pruned_log_before(cutoff);
-        }
-
-        // Cold eviction: move inactive relationships out of memory.
-        // They remain in storage for on-demand promotion or analysis.
-        if let Some(threshold) = self.cold_relationship_threshold {
-            let min_idle = self.cold_relationship_min_idle_batches;
-            self.world.evict_cold_relationships(
-                threshold,
-                min_idle,
-                current_batch,
-            );
-        }
-
-        // Auto-weathering: compress entity sediment on a periodic cadence.
-        self.tick_count += 1;
-        if let Some(interval) = self.auto_weather_every_ticks
-            && self.tick_count.is_multiple_of(interval as u64)
-            && let Some(policy) = self.auto_weather_policy.as_deref()
-        {
-            self.engine.weather_entities(&mut self.world, policy);
-        }
-
-        // Compute TickSummary, push to history ring buffer if enabled.
-        let summary = TickSummary::compute(
-            self.tick_count,
-            &tick,
-            prev_batch,
-            current_batch,
-            &self.world,
-            &events,
-        );
         if let Some(ref mut history) = self.event_history {
             history.push(summary.clone());
         }
 
         let obs = StepObservation {
             tick,
-            regime,
-            relationships: self.world.relationships().len(),
-            active_entities: self.world.entities().active_count(),
+            regime: self.prev_regime,
+            relationships,
+            active_entities,
             scales,
             events,
             summary,
@@ -378,14 +437,6 @@ impl Simulation {
     /// (`event_history_len == 0`).
     pub fn event_history(&self) -> Option<&EventHistory> {
         self.event_history.as_ref()
-    }
-
-    /// Aggregate `BatchMetrics` over all batches committed between
-    /// `from` (exclusive) and `to` (inclusive).
-    fn tick_metrics(&self, from: BatchId, to: BatchId) -> BatchMetrics {
-        let changes = (from.0 + 1..=to.0)
-            .flat_map(|b| self.world.log().batch(BatchId(b)));
-        BatchMetrics::from_changes(changes)
     }
 
     // ── multi-step convenience ────────────────────────────────────────────
@@ -418,7 +469,7 @@ impl Simulation {
         let mut stimuli = Some(stimuli);
         for _ in 0..max_steps {
             let s = self.step(stimuli.take().unwrap_or_default());
-            let done = pred(&s, &self.world);
+            let done = { let w = self.world.read().unwrap(); pred(&s, &*w) };
             observations.push(s);
             if done {
                 return (observations, true);
@@ -432,12 +483,12 @@ impl Simulation {
     /// Recognize entities using `perspective`. Convenience wrapper so
     /// the caller avoids split-borrow issues with `engine()` + `world`.
     pub fn recognize_entities(&mut self, perspective: &dyn EmergencePerspective) -> Vec<WorldEvent> {
-        engine::world_ops::recognize_entities(&mut self.world, &self.base_influences, perspective)
+        engine::world_ops::recognize_entities(&mut *self.world.write().unwrap(), &self.base_influences, perspective)
     }
 
     /// Extract cohere clusters using `perspective`.
     pub fn extract_cohere(&mut self, perspective: &dyn CoherePerspective) {
-        engine::world_ops::extract_cohere(&mut self.world, &self.base_influences, perspective);
+        engine::world_ops::extract_cohere(&mut *self.world.write().unwrap(), &self.base_influences, perspective);
     }
 
     /// Apply one round of per-kind activity and weight decay to all
@@ -449,24 +500,32 @@ impl Simulation {
     /// for example, to observe the fully-decayed relationship state before
     /// entity recognition or diagnostic output, without running a full tick.
     pub fn flush_relationship_decay(&mut self) {
-        engine::world_ops::flush_relationship_decay(&mut self.world, &self.base_influences);
+        engine::world_ops::flush_relationship_decay(&mut *self.world.write().unwrap(), &self.base_influences);
     }
 
     /// Apply a weathering policy to every entity's sediment layer stack.
     pub fn weather_entities(&mut self, policy: &dyn graph_core::EntityWeatheringPolicy) {
-        self.engine.weather_entities(&mut self.world, policy);
+        self.engine.weather_entities(&mut *self.world.write().unwrap(), policy);
     }
 
     /// Trim the change log, dropping all changes in batches strictly
     /// older than `current_batch - retention_batches`. Returns count removed.
     pub fn trim_change_log(&mut self, retention_batches: u64) -> usize {
-        self.engine.trim_change_log(&mut self.world, retention_batches)
+        self.engine.trim_change_log(&mut *self.world.write().unwrap(), retention_batches)
     }
 
     /// Point-in-time entity query: returns all entities with their
-    /// state at or before `batch`. See `World::entities_at_batch`.
-    pub fn entities_at_batch(&self, batch: BatchId) -> Vec<(graph_core::EntityId, &graph_core::EntityLayer)> {
-        self.world.entities_at_batch(batch)
+    /// state at or before `batch`.
+    ///
+    /// Returns owned `EntityLayer` values (cloned from the store). Use
+    /// `sim.world().entities_at_batch(batch)` if you need borrowed references
+    /// and can keep the read guard alive.
+    pub fn entities_at_batch(&self, batch: BatchId) -> Vec<(graph_core::EntityId, graph_core::EntityLayer)> {
+        self.world.read().unwrap()
+            .entities_at_batch(batch)
+            .into_iter()
+            .map(|(id, layer)| (id, layer.clone()))
+            .collect()
     }
 
     // ── cold → hot promotion ─────────────────────────────────────────────
@@ -482,7 +541,7 @@ impl Simulation {
     pub fn promote_relationship(&mut self, rel_id: graph_core::RelationshipId) -> bool {
         let Some(ref storage) = self.storage else { return false; };
         match storage.get_relationship(rel_id) {
-            Ok(Some(rel)) => self.world.restore_relationship(rel),
+            Ok(Some(rel)) => self.world.write().unwrap().restore_relationship(rel),
             _ => false,
         }
     }
@@ -501,12 +560,58 @@ impl Simulation {
     pub fn promote_relationships_for_locus(&mut self, locus_id: graph_core::LocusId) -> usize {
         let Some(ref storage) = self.storage else { return 0; };
         match storage.relationships_for_locus(locus_id) {
-            Ok(rels) => rels.into_iter().filter(|r| self.world.restore_relationship(r.clone())).count(),
+            Ok(rels) => {
+                let mut world = self.world.write().unwrap();
+                rels.into_iter().filter(|r| world.restore_relationship(r.clone())).count()
+            }
             Err(e) => {
                 self.last_storage_error = Some(e);
                 0
             }
         }
+    }
+
+    /// Promote every cold (storage-only) relationship back into hot memory.
+    ///
+    /// Reads all stored relationships in a single O(n_stored) transaction and
+    /// restores any not already present in the in-memory world. Returns the
+    /// count of relationships actually promoted (already-hot ones are skipped).
+    ///
+    /// Use this before `recognize_entities` (or call
+    /// `recognize_entities_with_promotion`) to ensure the entity topology
+    /// reflects every edge, not just the hot subset.
+    ///
+    /// No-op and returns 0 if storage is not configured.
+    #[cfg(feature = "storage")]
+    pub fn promote_all_cold(&mut self) -> usize {
+        let Some(ref storage) = self.storage else { return 0; };
+        match storage.all_relationships() {
+            Ok(rels) => {
+                let mut world = self.world.write().unwrap();
+                rels.into_iter().filter(|r| world.restore_relationship(r.clone())).count()
+            }
+            Err(e) => {
+                self.last_storage_error = Some(e);
+                0
+            }
+        }
+    }
+
+    /// Run entity recognition after promoting all cold relationships.
+    ///
+    /// Equivalent to calling `promote_all_cold()` then `recognize_entities()`.
+    /// Use this when you want entity emergence to see the complete topology
+    /// (hot + cold). The overhead is an extra O(n_stored_relationships) storage
+    /// scan per call — acceptable for periodic recognition passes.
+    ///
+    /// When storage is not configured this is identical to `recognize_entities`.
+    pub fn recognize_entities_with_promotion(
+        &mut self,
+        perspective: &dyn EmergencePerspective,
+    ) -> Vec<WorldEvent> {
+        #[cfg(feature = "storage")]
+        self.promote_all_cold();
+        engine::world_ops::recognize_entities(&mut *self.world.write().unwrap(), &self.base_influences, perspective)
     }
 
     // ── slot queries ─────────────────────────────────────────────────────
@@ -521,8 +626,10 @@ impl Simulation {
         kind: InfluenceKindId,
         slot_name: &str,
     ) -> Option<f32> {
-        let rel = self.world.relationships().get(rel_id)?;
-        self.base_influences.get(kind)?.read_slot(&rel.state, slot_name)
+        let world = self.world.read().unwrap();
+        let rel_state = world.relationships().get(rel_id)?.state.clone();
+        drop(world);
+        self.base_influences.get(kind)?.read_slot(&rel_state, slot_name)
     }
 
     /// History of a named slot for a relationship, newest-first, back to `since`.
@@ -543,7 +650,8 @@ impl Simulation {
             Some(idx) => idx,
             None => return Vec::new(),
         };
-        self.world
+        let world = self.world.read().unwrap();
+        world
             .changes_to_relationship(rel_id)
             .take_while(|c| c.batch.0 >= since.0)
             .filter_map(|c| c.after.as_slice().get(slot_idx).copied().map(|v| (c.batch, v)))
@@ -555,28 +663,29 @@ impl Simulation {
     /// Current batch id — the id that will be assigned to the *next* batch
     /// committed by a `step()` call.
     pub fn current_batch(&self) -> graph_core::BatchId {
-        self.world.current_batch()
+        self.world.read().unwrap().current_batch()
     }
 
-    /// Return the locus with the given id, if it exists.
-    ///
-    /// Shorthand for `sim.world.locus(id)`. Avoids requiring callers to
-    /// know the internal `world` field layout.
-    pub fn locus(&self, id: graph_core::LocusId) -> Option<&graph_core::Locus> {
-        self.world.locus(id)
+    /// Return the locus with the given id, if it exists (cloned).
+    pub fn locus(&self, id: graph_core::LocusId) -> Option<graph_core::Locus> {
+        self.world.read().unwrap().locus(id).cloned()
     }
 
-    /// Return the relationship with the given id, if it exists.
-    pub fn relationship(&self, id: graph_core::RelationshipId) -> Option<&graph_core::Relationship> {
-        self.world.relationships().get(id)
+    /// Return the relationship with the given id, if it exists (cloned).
+    pub fn relationship(&self, id: graph_core::RelationshipId) -> Option<graph_core::Relationship> {
+        self.world.read().unwrap().relationships().get(id).cloned()
     }
 
-    /// All loci of a specific kind.
-    pub fn loci_of_kind(&self, kind: graph_core::LocusKindId) -> Vec<&graph_core::Locus> {
-        graph_query::loci_of_kind(&self.world, kind)
+    /// All loci of a specific kind (cloned).
+    pub fn loci_of_kind(&self, kind: graph_core::LocusKindId) -> Vec<graph_core::Locus> {
+        let world = self.world.read().unwrap();
+        graph_query::loci_of_kind(&*world, kind)
+            .into_iter()
+            .cloned()
+            .collect()
     }
 
-    /// Find a relationship between two loci, if any exists.
+    /// Find a relationship between two loci, if any exists (cloned).
     ///
     /// Checks both directed and symmetric edges in either direction.
     /// O(k_a) where k_a is the degree of locus `a`.
@@ -584,8 +693,12 @@ impl Simulation {
         &self,
         a: graph_core::LocusId,
         b: graph_core::LocusId,
-    ) -> Option<&graph_core::Relationship> {
-        self.world.relationships().relationships_between(a, b).next()
+    ) -> Option<graph_core::Relationship> {
+        self.world.read().unwrap()
+            .relationships()
+            .relationships_between(a, b)
+            .next()
+            .cloned()
     }
 
     // ── kind registry accessors ──────────────────────────────────────────
@@ -698,7 +811,7 @@ mod tests {
         let (world, loci, influences) = two_locus_world();
         let mut sim = Simulation::new(world, loci, influences);
         sim.step(vec![stimulus_to(LocusId(0), 1.0)]);
-        assert_eq!(sim.world.relationships().len(), 1);
+        assert_eq!(sim.world().relationships().len(), 1);
     }
 
     #[test]
@@ -716,9 +829,9 @@ mod tests {
     fn diff_since_captures_changes_and_new_relationships() {
         let (world, loci, influences) = two_locus_world();
         let mut sim = Simulation::new(world, loci, influences);
-        let before = sim.world.current_batch();
+        let before = sim.world().current_batch();
         sim.step(vec![stimulus_to(LocusId(0), 1.0)]);
-        let diff = sim.world.diff_since(before);
+        let diff = sim.world().diff_since(before);
         assert!(diff.change_count() > 0);
         assert!(!diff.relationships_created.is_empty());
         assert!(diff.relationships_updated.is_empty());
@@ -729,9 +842,9 @@ mod tests {
         let (world, loci, influences) = two_locus_world();
         let mut sim = Simulation::new(world, loci, influences);
         sim.step(vec![stimulus_to(LocusId(0), 1.0)]);
-        let before = sim.world.current_batch();
+        let before = sim.world().current_batch();
         sim.step(vec![stimulus_to(LocusId(0), 1.0)]);
-        let diff = sim.world.diff_since(before);
+        let diff = sim.world().diff_since(before);
         assert!(diff.relationships_created.is_empty());
         assert!(!diff.relationships_updated.is_empty());
     }
@@ -783,8 +896,8 @@ mod tests {
             "type" => "ORG",
             "confidence" => 0.92_f64,
         });
-        assert!(sim.world.locus(id).is_some());
-        assert_eq!(sim.name_of(id), Some("Apple"));
+        assert!(sim.world().locus(id).is_some());
+        assert_eq!(sim.name_of(id).as_deref(), Some("Apple"));
         assert_eq!(sim.resolve("Apple"), Some(id));
         let props = sim.properties_of(id).unwrap();
         assert_eq!(props.get_str("type"), Some("ORG"));
@@ -829,7 +942,7 @@ mod tests {
         let obs = sim.flush_ingested();
         assert!(obs.tick.changes_committed >= 2);
         assert!(
-            !sim.world.relationships().is_empty(),
+            !sim.world().relationships().is_empty(),
             "expected co-occurrence relationship, got 0"
         );
     }
@@ -881,7 +994,7 @@ mod tests {
         }
 
         // The relationship between locus 0 and 1 should exist.
-        assert!(!sim.world.relationships().is_empty());
+        assert!(!sim.world().relationships().is_empty());
 
         // rel_slot_value: unknown slot returns None.
         let rel_id = RelationshipId(0);
@@ -918,14 +1031,14 @@ mod tests {
                     sim.step(vec![]);
                 }
                 assert!(sim.last_storage_error().is_none());
-                expected_meta = sim.world.world_meta();
-                expected_rels = sim.world.relationships().len();
+                expected_meta = sim.world().world_meta();
+                expected_rels = sim.world().relationships().len();
             }
 
             let (_, loci2, influences2) = two_locus_world();
             let sim2 = Simulation::from_storage(f.path(), loci2, influences2, SimulationConfig::default()).unwrap();
-            assert_eq!(expected_meta, sim2.world.world_meta());
-            assert_eq!(expected_rels, sim2.world.relationships().len());
+            assert_eq!(expected_meta, sim2.world().world_meta());
+            assert_eq!(expected_rels, sim2.world().relationships().len());
         }
 
         #[test]
@@ -979,12 +1092,12 @@ mod tests {
                 }
                 // Full save instead of incremental.
                 sim.save_world().unwrap();
-                expected_meta = sim.world.world_meta();
+                expected_meta = sim.world().world_meta();
             }
 
             let (_, loci2, influences2) = two_locus_world();
             let sim2 = Simulation::from_storage(f.path(), loci2, influences2, SimulationConfig::default()).unwrap();
-            assert_eq!(expected_meta, sim2.world.world_meta());
+            assert_eq!(expected_meta, sim2.world().world_meta());
         }
 
         #[test]
@@ -1008,7 +1121,7 @@ mod tests {
             let storage_changes = storage.table_counts().unwrap().changes;
 
             // In-memory log should only retain the recent retention window.
-            let log_len = sim.world.log().iter().count();
+            let log_len = sim.world().log().iter().count();
 
             assert!(
                 storage_changes > log_len as u64,
@@ -1033,7 +1146,7 @@ mod tests {
             // After step, relationships emerged, but eviction runs at end of step.
             // With threshold=100.0, all relationships have activity < 100.0.
             // With min_idle=0, all are eligible.
-            let rels_in_memory = sim.world.relationships().len();
+            let rels_in_memory = sim.world().relationships().len();
 
             // Storage has the relationships from commit_batch (before eviction).
             let storage = sim.storage().unwrap();
@@ -1059,7 +1172,7 @@ mod tests {
             sim.step(vec![stimulus_to(LocusId(0), 1.0)]);
 
             // All relationships are now evicted from memory.
-            assert_eq!(sim.world.relationships().len(), 0);
+            assert_eq!(sim.world().relationships().len(), 0);
             let stored_count = sim.storage().unwrap().table_counts().unwrap().relationships;
             assert!(stored_count > 0);
 
@@ -1067,11 +1180,11 @@ mod tests {
             let rel_id = graph_core::RelationshipId(0);
             let was_promoted = sim.promote_relationship(rel_id);
             assert!(was_promoted);
-            assert_eq!(sim.world.relationships().len(), 1);
+            assert_eq!(sim.world().relationships().len(), 1);
 
             // Promoting the same relationship again is a no-op.
             assert!(!sim.promote_relationship(rel_id));
-            assert_eq!(sim.world.relationships().len(), 1);
+            assert_eq!(sim.world().relationships().len(), 1);
         }
 
         #[test]
@@ -1087,12 +1200,12 @@ mod tests {
             let mut sim = Simulation::with_config(world, loci, influences, config);
             sim.step(vec![stimulus_to(LocusId(0), 1.0)]);
 
-            assert_eq!(sim.world.relationships().len(), 0);
+            assert_eq!(sim.world().relationships().len(), 0);
 
             // Promote all relationships involving locus 0.
             let promoted = sim.promote_relationships_for_locus(LocusId(0));
             assert!(promoted > 0);
-            assert_eq!(sim.world.relationships().len(), promoted);
+            assert_eq!(sim.world().relationships().len(), promoted);
         }
     }
 }

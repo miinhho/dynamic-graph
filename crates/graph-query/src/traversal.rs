@@ -237,6 +237,121 @@ pub fn directed_path_of_kind(
     })
 }
 
+// ─── Activity-aware traversal ─────────────────────────────────────────────────
+//
+// This engine assigns every relationship a live `activity()` score that rises
+// with causal flow and decays each batch.  These variants prune edges whose
+// activity falls below `min_activity` *during* BFS traversal — meaning the
+// BFS never crosses dormant edges, and loci reachable only through them are
+// excluded from the result entirely.
+//
+// This is distinct from post-filtering `reachable_from` output: post-filtering
+// would still cross the dormant edge and find nodes behind it; here we never
+// step onto dormant edges at all.
+
+/// All loci reachable from `start` within `depth` undirected hops, traversing
+/// only edges whose `activity()` meets or exceeds `min_activity`.
+///
+/// Unlike `reachable_from`, dormant edges (activity below the threshold) are
+/// pruned *during* BFS — the traversal never crosses them. Loci reachable
+/// only through dormant edges are excluded from the result.
+///
+/// This is the preferred query for **live-signal subgraphs**: in a running
+/// simulation, dormant edges carry no active causal flow.
+///
+/// Returns an empty `Vec` when `depth == 0`.
+/// Complexity: O(V_live + E_live) where the subscript denotes the subgraph
+/// induced by edges with `activity >= min_activity`.
+pub fn reachable_from_active(
+    world: &World,
+    start: LocusId,
+    depth: usize,
+    min_activity: f32,
+) -> Vec<LocusId> {
+    bfs_reachable(start, depth, |locus, buf| {
+        buf.extend(
+            world
+                .relationships_for_locus(locus)
+                .filter(|r| r.activity() >= min_activity)
+                .map(|r| r.endpoints.other_than(locus)),
+        )
+    })
+}
+
+/// All loci reachable by following directed edges **forward** from `start`,
+/// restricted to edges with `activity() >= min_activity`.
+///
+/// Analogous to `downstream_of` but skips dormant edges during BFS.
+/// Returns an empty `Vec` when `depth == 0`.
+pub fn downstream_of_active(
+    world: &World,
+    start: LocusId,
+    depth: usize,
+    min_activity: f32,
+) -> Vec<LocusId> {
+    bfs_reachable(start, depth, |locus, buf| {
+        buf.extend(
+            world
+                .relationships_for_locus(locus)
+                .filter(|r| r.activity() >= min_activity)
+                .filter_map(move |r| match r.endpoints {
+                    Endpoints::Directed { from, to } if from == locus => Some(to),
+                    Endpoints::Directed { .. } => None,
+                    Endpoints::Symmetric { .. } => Some(r.endpoints.other_than(locus)),
+                }),
+        )
+    })
+}
+
+/// All loci reachable by following directed edges **backward** from `start`,
+/// restricted to edges with `activity() >= min_activity`.
+///
+/// Analogous to `upstream_of` but skips dormant edges during BFS.
+/// Returns an empty `Vec` when `depth == 0`.
+pub fn upstream_of_active(
+    world: &World,
+    start: LocusId,
+    depth: usize,
+    min_activity: f32,
+) -> Vec<LocusId> {
+    bfs_reachable(start, depth, |locus, buf| {
+        buf.extend(
+            world
+                .relationships_for_locus(locus)
+                .filter(|r| r.activity() >= min_activity)
+                .filter_map(move |r| match r.endpoints {
+                    Endpoints::Directed { from, to } if to == locus => Some(from),
+                    Endpoints::Directed { .. } => None,
+                    Endpoints::Symmetric { .. } => Some(r.endpoints.other_than(locus)),
+                }),
+        )
+    })
+}
+
+/// BFS shortest path from `from` to `to`, traversing only edges with
+/// `activity() >= min_activity`.
+///
+/// Returns `None` if no path exists through sufficiently active edges.
+/// Returns `Some(vec![from])` if `from == to`.
+///
+/// Use this instead of `path_between` when you want a path through the
+/// **live-signal subgraph** rather than the full structural graph.
+pub fn path_between_active(
+    world: &World,
+    from: LocusId,
+    to: LocusId,
+    min_activity: f32,
+) -> Option<Vec<LocusId>> {
+    bfs_path(from, to, |locus, buf| {
+        buf.extend(
+            world
+                .relationships_for_locus(locus)
+                .filter(|r| r.activity() >= min_activity)
+                .map(|r| r.endpoints.other_than(locus)),
+        )
+    })
+}
+
 // ─── Reciprocal / structural topology helpers ────────────────────────────────
 
 /// Find the reciprocal of a directed relationship.
@@ -318,6 +433,93 @@ pub fn isolated_loci(world: &World) -> Vec<LocusId> {
         .loci()
         .iter()
         .filter(|l| world.relationships().degree(l.id) == 0)
+        .map(|l| l.id)
+        .collect()
+}
+
+/// Returns `true` if the **directed** relationship graph contains at least one
+/// directed cycle.
+///
+/// Only `Directed` relationships are considered; `Symmetric` edges are ignored.
+/// Uses iterative three-colour DFS to detect back edges without recursion, so
+/// large graphs do not overflow the call stack.
+///
+/// Complexity: O(V + E_directed).
+pub fn has_cycle(world: &World) -> bool {
+    // 0 = WHITE (unvisited), 1 = GRAY (in current DFS stack), 2 = BLACK (done)
+    let mut color: FxHashMap<LocusId, u8> = FxHashMap::default();
+
+    for locus in world.loci().iter() {
+        if color.get(&locus.id).copied().unwrap_or(0) != 0 {
+            continue;
+        }
+        // Stack entries: (node, returning).
+        // returning=false → entering for the first time.
+        // returning=true  → all successors processed; mark BLACK.
+        let mut stack: Vec<(LocusId, bool)> = vec![(locus.id, false)];
+        let mut seen: FxHashSet<LocusId> = FxHashSet::default();
+        while let Some((node, returning)) = stack.pop() {
+            if returning {
+                color.insert(node, 2); // BLACK
+                continue;
+            }
+            let c = color.get(&node).copied().unwrap_or(0);
+            if c == 2 {
+                continue; // Already fully processed
+            }
+            if c == 1 {
+                return true; // Back edge → cycle
+            }
+            // First visit: mark GRAY, schedule return, push successors.
+            color.insert(node, 1);
+            stack.push((node, true));
+            seen.clear();
+            for rel in world.relationships_for_locus(node) {
+                if let graph_core::Endpoints::Directed { from, to } = rel.endpoints {
+                    if from == node && seen.insert(to) {
+                        let tc = color.get(&to).copied().unwrap_or(0);
+                        if tc == 1 {
+                            return true; // Immediate back edge
+                        }
+                        if tc == 0 {
+                            stack.push((to, false));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// All loci that have **no incoming** directed edges but **at least one
+/// outgoing** directed edge.
+///
+/// These are the "origins" of directed flows in the graph. Symmetric edges are
+/// not counted as incoming or outgoing.
+///
+/// Complexity: O(V).
+pub fn source_loci(world: &World) -> Vec<LocusId> {
+    world
+        .loci()
+        .iter()
+        .filter(|l| world.in_degree(l.id) == 0 && world.out_degree(l.id) > 0)
+        .map(|l| l.id)
+        .collect()
+}
+
+/// All loci that have **no outgoing** directed edges but **at least one
+/// incoming** directed edge.
+///
+/// These are the "terminal sinks" of directed flows in the graph. Symmetric
+/// edges are not counted as incoming or outgoing.
+///
+/// Complexity: O(V).
+pub fn sink_loci(world: &World) -> Vec<LocusId> {
+    world
+        .loci()
+        .iter()
+        .filter(|l| world.out_degree(l.id) == 0 && world.in_degree(l.id) > 0)
         .map(|l| l.id)
         .collect()
 }
@@ -1257,5 +1459,248 @@ mod tests {
         let w = trust_chain_world();
         let trust: graph_core::RelationshipKindId = InfluenceKindId(10);
         assert!(infer_transitive(&w, LocusId(0), LocusId(0), trust, TransitiveRule::Product).is_none());
+    }
+
+    // ── has_cycle ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn has_cycle_returns_false_for_dag() {
+        // Diamond DAG: 0→1, 0→2, 1→3, 2→3 — no cycle.
+        let w = diamond_world();
+        assert!(!has_cycle(&w));
+    }
+
+    #[test]
+    fn has_cycle_returns_true_for_simple_cycle() {
+        let lk = LocusKindId(1);
+        let rk: RelationshipKindId = InfluenceKindId(1);
+        let mut w = World::new();
+        for i in 0u64..3 {
+            w.insert_locus(Locus::new(LocusId(i), lk, StateVector::zeros(1)));
+        }
+        // 0→1→2→0
+        for (from, to) in [(0u64, 1), (1, 2), (2, 0)] {
+            let id = w.relationships_mut().mint_id();
+            w.relationships_mut().insert(Relationship {
+                id,
+                kind: rk,
+                endpoints: Endpoints::Directed { from: LocusId(from), to: LocusId(to) },
+                state: StateVector::from_slice(&[1.0, 0.0]),
+                lineage: RelationshipLineage {
+                    created_by: None, last_touched_by: None,
+                    change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
+                },
+                created_batch: graph_core::BatchId(0),
+                last_decayed_batch: 0,
+                metadata: None,
+            });
+        }
+        assert!(has_cycle(&w));
+    }
+
+    #[test]
+    fn has_cycle_ignores_symmetric_edges() {
+        let lk = LocusKindId(1);
+        let rk: RelationshipKindId = InfluenceKindId(1);
+        let mut w = World::new();
+        for i in 0u64..2 {
+            w.insert_locus(Locus::new(LocusId(i), lk, StateVector::zeros(1)));
+        }
+        // Symmetric edge 0↔1: not a directed cycle.
+        let id = w.relationships_mut().mint_id();
+        w.relationships_mut().insert(Relationship {
+            id,
+            kind: rk,
+            endpoints: Endpoints::Symmetric { a: LocusId(0), b: LocusId(1) },
+            state: StateVector::from_slice(&[1.0, 0.0]),
+            lineage: RelationshipLineage {
+                created_by: None, last_touched_by: None,
+                change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
+            },
+            created_batch: graph_core::BatchId(0),
+            last_decayed_batch: 0,
+            metadata: None,
+        });
+        assert!(!has_cycle(&w));
+    }
+
+    #[test]
+    fn has_cycle_empty_world_returns_false() {
+        assert!(!has_cycle(&World::new()));
+    }
+
+    // ── source_loci / sink_loci ──────────────────────────────────────────────
+
+    #[test]
+    fn source_loci_in_chain() {
+        // chain_world: 0→1→2→3 (directed)
+        let w = chain_world(4);
+        let mut sources = source_loci(&w);
+        sources.sort();
+        assert_eq!(sources, vec![LocusId(0)], "only locus 0 has no incoming edges");
+    }
+
+    #[test]
+    fn sink_loci_in_chain() {
+        let w = chain_world(4);
+        let mut sinks = sink_loci(&w);
+        sinks.sort();
+        assert_eq!(sinks, vec![LocusId(3)], "only locus 3 has no outgoing edges");
+    }
+
+    #[test]
+    fn source_and_sink_empty_for_cycle() {
+        let lk = LocusKindId(1);
+        let rk: RelationshipKindId = InfluenceKindId(1);
+        let mut w = World::new();
+        for i in 0u64..3 {
+            w.insert_locus(Locus::new(LocusId(i), lk, StateVector::zeros(1)));
+        }
+        for (from, to) in [(0u64, 1), (1, 2), (2, 0)] {
+            let id = w.relationships_mut().mint_id();
+            w.relationships_mut().insert(Relationship {
+                id,
+                kind: rk,
+                endpoints: Endpoints::Directed { from: LocusId(from), to: LocusId(to) },
+                state: StateVector::from_slice(&[1.0, 0.0]),
+                lineage: RelationshipLineage {
+                    created_by: None, last_touched_by: None,
+                    change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
+                },
+                created_batch: graph_core::BatchId(0),
+                last_decayed_batch: 0,
+                metadata: None,
+            });
+        }
+        assert!(source_loci(&w).is_empty(), "cycle has no pure source");
+        assert!(sink_loci(&w).is_empty(), "cycle has no pure sink");
+    }
+
+    // ── activity-aware traversal ─────────────────────────────────────────────
+
+    /// Chain: L0 --(0.8)--> L1 --(0.1)--> L2 --(0.8)--> L3.
+    /// The middle edge (L1→L2, activity=0.1) acts as a dormant barrier.
+    fn activity_chain_world() -> World {
+        let lk = LocusKindId(1);
+        let rk: RelationshipKindId = InfluenceKindId(1);
+        let mut w = World::new();
+        for i in 0u64..4 {
+            w.insert_locus(Locus::new(LocusId(i), lk, StateVector::zeros(1)));
+        }
+        for (from, to, activity) in [(0u64, 1u64, 0.8f32), (1, 2, 0.1), (2, 3, 0.8)] {
+            let id = w.relationships_mut().mint_id();
+            w.relationships_mut().insert(Relationship {
+                id,
+                kind: rk,
+                endpoints: Endpoints::Directed { from: LocusId(from), to: LocusId(to) },
+                state: StateVector::from_slice(&[activity, 0.0]),
+                lineage: RelationshipLineage {
+                    created_by: None,
+                    last_touched_by: None,
+                    change_count: 1,
+                    kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
+                },
+                created_batch: graph_core::BatchId(0),
+                last_decayed_batch: 0,
+                metadata: None,
+            });
+        }
+        w
+    }
+
+    #[test]
+    fn reachable_from_active_skips_dormant_edges() {
+        let w = activity_chain_world();
+        // min_activity=0.5: L0→L1 ok (0.8), L1→L2 pruned (0.1).
+        // Only L1 is reachable from L0; L2 and L3 are behind the dormant barrier.
+        let mut reach = reachable_from_active(&w, LocusId(0), 10, 0.5);
+        reach.sort();
+        assert_eq!(reach, vec![LocusId(1)], "L2 and L3 should not be reachable");
+    }
+
+    #[test]
+    fn reachable_from_active_depth_zero_is_empty() {
+        let w = activity_chain_world();
+        assert!(reachable_from_active(&w, LocusId(0), 0, 0.5).is_empty());
+    }
+
+    #[test]
+    fn reachable_from_active_zero_threshold_equals_reachable_from() {
+        let w = activity_chain_world();
+        // min_activity=0.0 — all edges pass, same result as reachable_from.
+        let mut active = reachable_from_active(&w, LocusId(0), 10, 0.0);
+        let mut standard = reachable_from(&w, LocusId(0), 10);
+        active.sort();
+        standard.sort();
+        assert_eq!(active, standard);
+    }
+
+    #[test]
+    fn downstream_of_active_skips_dormant_forward_edges() {
+        let w = activity_chain_world();
+        // From L0 forward, min=0.5: L0→L1(0.8 ✓), L1→L2(0.1 ✗ pruned).
+        let mut ds = downstream_of_active(&w, LocusId(0), 10, 0.5);
+        ds.sort();
+        assert_eq!(ds, vec![LocusId(1)]);
+    }
+
+    #[test]
+    fn upstream_of_active_skips_dormant_backward_edges() {
+        let w = activity_chain_world();
+        // From L3 backward, min=0.5: L2→L3(0.8 ✓), L1→L2(0.1 ✗ pruned).
+        let mut us = upstream_of_active(&w, LocusId(3), 10, 0.5);
+        us.sort();
+        assert_eq!(us, vec![LocusId(2)]);
+    }
+
+    #[test]
+    fn path_between_active_blocked_by_dormant_edge() {
+        let w = activity_chain_world();
+        // No active path L0→L3 with min=0.5 (L1→L2 blocks it).
+        assert!(path_between_active(&w, LocusId(0), LocusId(3), 0.5).is_none());
+    }
+
+    #[test]
+    fn path_between_active_finds_path_at_zero_threshold() {
+        let w = activity_chain_world();
+        let path = path_between_active(&w, LocusId(0), LocusId(3), 0.0).unwrap();
+        assert_eq!(path.first(), Some(&LocusId(0)));
+        assert_eq!(path.last(), Some(&LocusId(3)));
+    }
+
+    #[test]
+    fn path_between_active_same_locus_returns_singleton() {
+        let w = activity_chain_world();
+        assert_eq!(
+            path_between_active(&w, LocusId(1), LocusId(1), 0.9),
+            Some(vec![LocusId(1)])
+        );
+    }
+
+    #[test]
+    fn symmetric_edges_not_counted_as_directed_degree() {
+        let lk = LocusKindId(1);
+        let rk: RelationshipKindId = InfluenceKindId(1);
+        let mut w = World::new();
+        for i in 0u64..2 {
+            w.insert_locus(Locus::new(LocusId(i), lk, StateVector::zeros(1)));
+        }
+        // Only a symmetric edge: neither source nor sink.
+        let id = w.relationships_mut().mint_id();
+        w.relationships_mut().insert(Relationship {
+            id,
+            kind: rk,
+            endpoints: Endpoints::Symmetric { a: LocusId(0), b: LocusId(1) },
+            state: StateVector::from_slice(&[1.0, 0.0]),
+            lineage: RelationshipLineage {
+                created_by: None, last_touched_by: None,
+                change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
+            },
+            created_batch: graph_core::BatchId(0),
+            last_decayed_batch: 0,
+            metadata: None,
+        });
+        assert!(source_loci(&w).is_empty());
+        assert!(sink_loci(&w).is_empty());
     }
 }

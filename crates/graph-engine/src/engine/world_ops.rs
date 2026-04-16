@@ -7,15 +7,18 @@
 //! directly without routing through a method receiver.
 
 use graph_core::{
-    apply_skeleton, BatchId, EmergenceProposal, Entity, EntityLayer, EntityLineage,
-    EntitySnapshot, EntityStatus, EntityWeatheringPolicy, LayerTransition,
-    LifecycleCause, Relationship, WeatheringEffect, WorldEvent,
+    apply_skeleton, BatchId, EmergenceProposal, EndpointKey, Entity, EntityLayer, EntityLineage,
+    EntitySnapshot, EntityStatus, EntityWeatheringPolicy, InfluenceKindId, InteractionEffect,
+    LayerTransition, LifecycleCause, Relationship, RelationshipId,
+    WeatheringEffect, WorldEvent,
 };
 use graph_world::World;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::cohere::CoherePerspective;
 use crate::emergence::EmergencePerspective;
 use crate::registry::InfluenceKindRegistry;
+use crate::engine::batch::{PlasticityObs, TimingOrder};
 
 /// Flush all pending lazy decay for every relationship.
 ///
@@ -33,6 +36,11 @@ pub(crate) fn flush_relationship_decay(
     influence_registry: &InfluenceKindRegistry,
 ) -> (usize, Vec<WorldEvent>) {
     let current_batch = world.current_batch().0;
+
+    // Pre-compute resolved extra slots once per distinct kind — avoids
+    // O(n_rels) Vec allocations inside the relationship loop.
+    let mut slot_cache: FxHashMap<InfluenceKindId, Vec<graph_core::RelationshipSlotDef>> =
+        FxHashMap::default();
 
     let to_prune: Vec<graph_core::RelationshipId> = world
         .relationships_mut()
@@ -60,9 +68,9 @@ pub(crate) fn flush_relationship_decay(
                 if let Some(w) = slots.get_mut(Relationship::WEIGHT_SLOT) {
                     *w *= wt_factor;
                 }
-                // Decay extra slots with their per-slot rates, including
-                // inherited slots from ancestor kinds.
-                let resolved_slots = influence_registry.resolved_extra_slots(rel.kind);
+                let resolved_slots = slot_cache
+                    .entry(rel.kind)
+                    .or_insert_with(|| influence_registry.resolved_extra_slots(rel.kind));
                 for (i, slot_def) in resolved_slots.iter().enumerate() {
                     if let Some(factor) = slot_def.decay {
                         let idx = 2 + i;
@@ -197,6 +205,78 @@ pub(crate) fn trim_change_log(world: &mut World, retention_batches: u64) -> usiz
     let current = world.current_batch().0;
     let retain_from = graph_core::BatchId(current.saturating_sub(retention_batches));
     world.log_mut().trim_before_batch(retain_from)
+}
+
+/// Apply Hebbian or STDP plasticity weight updates for a batch's observations.
+///
+/// When `cfg.plasticity.stdp` is false (default), standard symmetric Hebbian:
+///   `Δweight = η × pre × post`
+///
+/// When `cfg.plasticity.stdp` is true, timing-dependent rule:
+///   - `PreFirst` or `Simultaneous`: `Δweight = +η × pre × post`  (LTP)
+///   - `PostFirst`: `Δweight = -η × pre × post`  (LTD)
+pub(crate) fn apply_hebbian_updates(
+    world: &mut World,
+    obs: &[PlasticityObs],
+    influence_registry: &InfluenceKindRegistry,
+) {
+    for &PlasticityObs { rel_id, kind, pre, post, timing } in obs {
+        if let Some(cfg) = influence_registry.get(kind)
+            && let Some(rel) = world.relationships_mut().get_mut(rel_id)
+            && let Some(w) = rel.state.as_mut_slice().get_mut(Relationship::WEIGHT_SLOT)
+        {
+            // STDP: PostFirst → LTD (negative delta); otherwise LTP.
+            // When stdp is false, sign is always +1 (standard Hebbian).
+            let sign: f32 = if cfg.plasticity.stdp && timing == TimingOrder::PostFirst {
+                -1.0
+            } else {
+                1.0
+            };
+            *w = (*w + sign * cfg.plasticity.learning_rate * pre * post)
+                .clamp(0.0, cfg.plasticity.max_weight);
+        }
+    }
+}
+
+/// Apply cross-kind interaction effects for endpoint pairs touched by 2+
+/// distinct influence kinds in a single batch.
+///
+/// Pairs of kinds are enumerated; if a registered `InteractionEffect` exists
+/// for the pair, its multiplier is accumulated multiplicatively. The composed
+/// factor is then applied once to the activity slot of every relationship
+/// between those endpoints, making the result order-independent.
+pub(crate) fn apply_interaction_effects(
+    world: &mut World,
+    batch_kind_touches: &FxHashMap<EndpointKey, (FxHashSet<InfluenceKindId>, FxHashSet<RelationshipId>)>,
+    influence_registry: &InfluenceKindRegistry,
+) {
+    for (_ep_key, (touched_kinds, rel_ids)) in batch_kind_touches {
+        if touched_kinds.len() < 2 {
+            continue;
+        }
+        let kinds: Vec<InfluenceKindId> = touched_kinds.iter().copied().collect();
+        let mut multiplier = 1.0f32;
+        for i in 0..kinds.len() {
+            for j in (i + 1)..kinds.len() {
+                if let Some(effect) = influence_registry.interaction_between(kinds[i], kinds[j]) {
+                    multiplier *= match effect {
+                        InteractionEffect::Synergistic { boost } => *boost,
+                        InteractionEffect::Antagonistic { dampen } => *dampen,
+                        InteractionEffect::Neutral => 1.0,
+                    };
+                }
+            }
+        }
+        if (multiplier - 1.0).abs() > f32::EPSILON {
+            for rel_id in rel_ids {
+                if let Some(rel) = world.relationships_mut().get_mut(*rel_id) {
+                    if let Some(a) = rel.state.as_mut_slice().get_mut(Relationship::ACTIVITY_SLOT) {
+                        *a *= multiplier;
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Apply a list of emergence proposals to the entity store, returning
@@ -336,4 +416,137 @@ pub(crate) fn apply_proposals(
     }
 
     events
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use graph_core::{
+        BatchId, Endpoints, InfluenceKindId, Locus, LocusId, LocusKindId,
+        Relationship, RelationshipId, RelationshipLineage, StateVector,
+    };
+    use graph_world::World;
+    use smallvec::SmallVec;
+
+    use crate::registry::{InfluenceKindConfig, InfluenceKindRegistry, PlasticityConfig};
+    use crate::engine::batch::{PlasticityObs, TimingOrder};
+
+    fn make_world_with_rel(activity: f32, weight: f32) -> (World, RelationshipId) {
+        let mut world = World::default();
+        world.loci_mut().insert(Locus::new(LocusId(1), LocusKindId(0), StateVector::zeros(1)));
+        world.loci_mut().insert(Locus::new(LocusId(2), LocusKindId(0), StateVector::zeros(1)));
+        let rel = Relationship {
+            id: RelationshipId(0),
+            kind: InfluenceKindId(1),
+            endpoints: Endpoints::symmetric(LocusId(1), LocusId(2)),
+            state: StateVector::from_slice(&[activity, weight]),
+            lineage: RelationshipLineage {
+                created_by: None,
+                last_touched_by: None,
+                change_count: 0,
+                kinds_observed: SmallVec::new(),
+            },
+            created_batch: BatchId(0),
+            last_decayed_batch: 0,
+            metadata: None,
+        };
+        let rel_id = rel.id;
+        world.relationships_mut().insert(rel);
+        (world, rel_id)
+    }
+
+    #[test]
+    fn hebbian_delta_weight_formula() {
+        let (mut world, rel_id) = make_world_with_rel(1.0, 0.0);
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(InfluenceKindId(1), InfluenceKindConfig::new("t").with_plasticity(
+            PlasticityConfig { learning_rate: 0.1, weight_decay: 1.0, max_weight: 10.0, stdp: false },
+        ));
+
+        // Δw = 0.1 × 0.8 × 0.9 = 0.072
+        apply_hebbian_updates(&mut world, &[PlasticityObs { rel_id, kind: InfluenceKindId(1), pre: 0.8, post: 0.9, timing: TimingOrder::Simultaneous }], &reg);
+
+        let w = world.relationships().get(rel_id).unwrap().weight();
+        assert!((w - 0.072).abs() < 1e-6, "weight = {w}");
+    }
+
+    #[test]
+    fn hebbian_clamps_at_max_weight() {
+        let (mut world, rel_id) = make_world_with_rel(1.0, 9.9);
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(InfluenceKindId(1), InfluenceKindConfig::new("t").with_plasticity(
+            PlasticityConfig { learning_rate: 1.0, weight_decay: 1.0, max_weight: 10.0, stdp: false },
+        ));
+
+        apply_hebbian_updates(&mut world, &[PlasticityObs { rel_id, kind: InfluenceKindId(1), pre: 1.0, post: 1.0, timing: TimingOrder::Simultaneous }], &reg);
+
+        let w = world.relationships().get(rel_id).unwrap().weight();
+        assert!((w - 10.0).abs() < 1e-6, "weight = {w}");
+    }
+
+    #[test]
+    fn hebbian_no_op_when_learning_rate_zero() {
+        let (mut world, rel_id) = make_world_with_rel(1.0, 3.0);
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(InfluenceKindId(1), InfluenceKindConfig::new("t"));
+
+        apply_hebbian_updates(&mut world, &[PlasticityObs { rel_id, kind: InfluenceKindId(1), pre: 1.0, post: 1.0, timing: TimingOrder::Simultaneous }], &reg);
+
+        let w = world.relationships().get(rel_id).unwrap().weight();
+        assert!((w - 3.0).abs() < 1e-6, "weight should be unchanged, got {w}");
+    }
+
+    fn make_stdp_reg() -> InfluenceKindRegistry {
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(
+            InfluenceKindId(1),
+            InfluenceKindConfig::new("stdp").with_plasticity(PlasticityConfig {
+                learning_rate: 0.1,
+                weight_decay: 1.0,
+                max_weight: 10.0,
+                stdp: true,
+            }),
+        );
+        reg
+    }
+
+    #[test]
+    fn stdp_causal_strengthens() {
+        let (mut world, rel_id) = make_world_with_rel(1.0, 0.0);
+        let reg = make_stdp_reg();
+        apply_hebbian_updates(&mut world, &[PlasticityObs { rel_id, kind: InfluenceKindId(1), pre: 0.8, post: 0.9, timing: TimingOrder::PreFirst }], &reg);
+        let w = world.relationships().get(rel_id).unwrap().weight();
+        assert!(w > 0.0, "causal STDP should increase weight, got {w}");
+        assert!((w - 0.072).abs() < 1e-6, "expected 0.072, got {w}");
+    }
+
+    #[test]
+    fn stdp_anticausal_weakens() {
+        let (mut world, rel_id) = make_world_with_rel(1.0, 0.5);
+        let reg = make_stdp_reg();
+        // Δw = -0.1 × 1.0 × 1.0 = -0.1  → 0.5 - 0.1 = 0.4
+        apply_hebbian_updates(&mut world, &[PlasticityObs { rel_id, kind: InfluenceKindId(1), pre: 1.0, post: 1.0, timing: TimingOrder::PostFirst }], &reg);
+        let w = world.relationships().get(rel_id).unwrap().weight();
+        assert!(w < 0.5, "anti-causal STDP should decrease weight, got {w}");
+        assert!((w - 0.4).abs() < 1e-6, "expected 0.4, got {w}");
+    }
+
+    #[test]
+    fn stdp_anticausal_clamps_at_zero() {
+        let (mut world, rel_id) = make_world_with_rel(1.0, 0.0);
+        let reg = make_stdp_reg();
+        apply_hebbian_updates(&mut world, &[PlasticityObs { rel_id, kind: InfluenceKindId(1), pre: 1.0, post: 1.0, timing: TimingOrder::PostFirst }], &reg);
+        let w = world.relationships().get(rel_id).unwrap().weight();
+        assert!((w - 0.0).abs() < 1e-6, "weight should be clamped at 0, got {w}");
+    }
+
+    #[test]
+    fn stdp_simultaneous_strengthens() {
+        let (mut world, rel_id) = make_world_with_rel(1.0, 0.0);
+        let reg = make_stdp_reg();
+        apply_hebbian_updates(&mut world, &[PlasticityObs { rel_id, kind: InfluenceKindId(1), pre: 0.8, post: 0.9, timing: TimingOrder::Simultaneous }], &reg);
+        let w = world.relationships().get(rel_id).unwrap().weight();
+        assert!(w > 0.0, "simultaneous STDP should increase weight, got {w}");
+        assert!((w - 0.072).abs() < 1e-6, "expected 0.072, got {w}");
+    }
 }

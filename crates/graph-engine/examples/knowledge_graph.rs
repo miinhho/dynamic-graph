@@ -112,7 +112,7 @@ fn ingest_document(
     // that have never been stepped yet).
     let last_change: Vec<Option<ChangeId>> = ids
         .iter()
-        .map(|&id| sim.world.log().changes_to_locus(id).next().map(|c| c.id))
+        .map(|&id| sim.world().log().changes_to_locus(id).next().map(|c| c.id))
         .collect();
 
     // Build stimuli: each entity gets a co-occurrence signal, with every other
@@ -152,6 +152,7 @@ fn main() {
                     learning_rate: 0.05,
                     weight_decay: 0.005,
                     max_weight: 5.0,
+                    stdp: false,
                 })
         })
         .default_influence("cooccurrence")
@@ -165,32 +166,32 @@ fn main() {
         ("Apple",    "ORG",    props! { "name" => "Apple",    "type" => "tech" }),
         ("Tim_Cook", "PERSON", props! { "name" => "Tim_Cook", "role" => "CEO"  }),
     ]);
-    println!("Doc 1: Apple + Tim_Cook  → {} relationships", sim.world.relationships().len());
+    println!("Doc 1: Apple + Tim_Cook  → {} relationships", sim.world().relationships().len());
 
     ingest_document(&mut sim, vec![
         ("Elon_Musk", "PERSON", props! { "name" => "Elon_Musk", "role" => "CEO"  }),
         ("Tesla",     "ORG",    props! { "name" => "Tesla",     "type" => "tech" }),
     ]);
-    println!("Doc 2: Elon_Musk + Tesla → {} relationships", sim.world.relationships().len());
+    println!("Doc 2: Elon_Musk + Tesla → {} relationships", sim.world().relationships().len());
 
     ingest_document(&mut sim, vec![
         ("Apple",  "ORG", props! { "name" => "Apple",  "type" => "tech" }),
         ("OpenAI", "ORG", props! { "name" => "OpenAI", "type" => "ai"   }),
     ]);
-    println!("Doc 3: Apple + OpenAI    → {} relationships", sim.world.relationships().len());
+    println!("Doc 3: Apple + OpenAI    → {} relationships", sim.world().relationships().len());
 
     // Bridge documents: connect the two clusters.
     ingest_document(&mut sim, vec![
         ("Tim_Cook", "PERSON", props! { "name" => "Tim_Cook" }),
         ("Tesla",    "ORG",    props! { "name" => "Tesla"    }),
     ]);
-    println!("Doc 4: Tim_Cook + Tesla  → {} relationships", sim.world.relationships().len());
+    println!("Doc 4: Tim_Cook + Tesla  → {} relationships", sim.world().relationships().len());
 
     ingest_document(&mut sim, vec![
         ("Elon_Musk", "PERSON", props! { "name" => "Elon_Musk" }),
         ("OpenAI",    "ORG",    props! { "name" => "OpenAI"    }),
     ]);
-    println!("Doc 5: Elon_Musk + OpenAI→ {} relationships", sim.world.relationships().len());
+    println!("Doc 5: Elon_Musk + OpenAI→ {} relationships", sim.world().relationships().len());
 
     // ── Run a few more ticks to let Hebbian plasticity reinforce weights ──────
     println!("\n=== Reinforcement ticks ===");
@@ -203,7 +204,8 @@ fn main() {
     }
 
     // ── Query the emerged graph ────────────────────────────────────────────────
-    let world = &sim.world;
+    let world_guard = sim.world();
+    let world = &*world_guard;
 
     let name_of = |id| world.names().name_of(id).unwrap_or("?");
 

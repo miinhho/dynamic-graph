@@ -29,6 +29,7 @@ fn main() {
             learning_rate: 0.05,
             weight_decay: 0.98,
             max_weight: 1.0,
+            stdp: false,
         };
     }
 
@@ -38,7 +39,7 @@ fn main() {
 
     println!("=== Ring Dynamics (8 loci, gain=0.9) ===\n");
 
-    let before_run = sim.world.current_batch();
+    let before_run = sim.world().current_batch();
 
     let (obs, converged) = sim.step_until(
         |o, _| matches!(o.regime, DynamicsRegime::LimitCycleSuspect),
@@ -57,8 +58,8 @@ fn main() {
 
     // ── Phase 2: WorldDiff over the full run ─────────────────────────────────
 
-    let diff = sim.world.diff_since(before_run);
-    println!("--- WorldDiff (batch {} → {}) ---", before_run.0, sim.world.current_batch().0);
+    let diff = sim.world().diff_since(before_run);
+    println!("--- WorldDiff (batch {} → {}) ---", before_run.0, sim.world().current_batch().0);
     println!("  changes:               {}", diff.change_ids.len());
     println!("  relationships created: {}", diff.relationships_created.len());
     println!("  relationships updated: {}", diff.relationships_updated.len());
@@ -66,7 +67,7 @@ fn main() {
 
     // ── Phase 3: WorldMetrics snapshot ───────────────────────────────────────
 
-    let m = sim.world.metrics();
+    let m = sim.world().metrics();
     println!("--- WorldMetrics ---");
     println!("  loci:              {}", m.locus_count);
     println!("  relationships:     {} ({} active)", m.relationship_count, m.active_relationship_count);
@@ -82,23 +83,27 @@ fn main() {
     // ── Phase 4: graph traversal ──────────────────────────────────────────────
 
     use graph_core::LocusId;
-    let path = path_between(&sim.world, LocusId(0), LocusId(4));
-    if let Some(p) = path {
-        let hops: Vec<String> = p.iter().map(|l| format!("L{}", l.0)).collect();
-        println!("Shortest path L0 → L4: {}", hops.join(" → "));
-    } else {
-        println!("No path L0 → L4 (ring not yet connected)");
+    {
+        let wg = sim.world();
+        let w = &*wg;
+        let path = path_between(w, LocusId(0), LocusId(4));
+        if let Some(p) = path {
+            let hops: Vec<String> = p.iter().map(|l| format!("L{}", l.0)).collect();
+            println!("Shortest path L0 → L4: {}", hops.join(" → "));
+        } else {
+            println!("No path L0 → L4 (ring not yet connected)");
+        }
+
+        let reachable = reachable_from(w, LocusId(0), 3);
+        println!(
+            "Reachable from L0 within 3 hops: {:?}",
+            reachable.iter().map(|l| l.0).collect::<Vec<_>>()
+        );
+
+        let components = connected_components(w);
+        println!("Connected components: {} (largest: {} loci)", components.len(),
+            components.iter().map(Vec::len).max().unwrap_or(0));
     }
-
-    let reachable = reachable_from(&sim.world, LocusId(0), 3);
-    println!(
-        "Reachable from L0 within 3 hops: {:?}",
-        reachable.iter().map(|l| l.0).collect::<Vec<_>>()
-    );
-
-    let components = connected_components(&sim.world);
-    println!("Connected components: {} (largest: {} loci)", components.len(),
-        components.iter().map(Vec::len).max().unwrap_or(0));
     println!();
 
     // ── Phase 5: continue stepping every 5 steps, print table ────────────────
@@ -129,22 +134,26 @@ fn main() {
     };
     sim.recognize_entities(&ep);
 
-    println!("--- Relationships emerged ---");
-    for r in sim.world.relationships().iter() {
-        let (f, t) = match &r.endpoints {
-            graph_core::Endpoints::Directed { from, to } => (from.0, to.0),
-            _ => (0, 0),
-        };
-        println!("  L{}→L{}  activity={:.4}  weight={:.4}  touches={}",
-            f, t, r.activity(), r.weight(), r.lineage.change_count);
-    }
-    println!();
+    {
+        let wg = sim.world();
+        let w = &*wg;
+        println!("--- Relationships emerged ---");
+        for r in w.relationships().iter() {
+            let (f, t) = match &r.endpoints {
+                graph_core::Endpoints::Directed { from, to } => (from.0, to.0),
+                _ => (0, 0),
+            };
+            println!("  L{}→L{}  activity={:.4}  weight={:.4}  touches={}",
+                f, t, r.activity(), r.weight(), r.lineage.change_count);
+        }
+        println!();
 
-    println!("--- Entities ({} active) ---", sim.world.entities().active_count());
-    for e in sim.world.entities().active() {
-        let members: Vec<u64> = e.current.members.iter().map(|l| l.0).collect();
-        println!("  entity#{} members={members:?} coherence={:.3} layers={}",
-            e.id.0, e.current.coherence, e.layer_count());
+        println!("--- Entities ({} active) ---", w.entities().active_count());
+        for e in w.entities().active() {
+            let members: Vec<u64> = e.current.members.iter().map(|l| l.0).collect();
+            println!("  entity#{} members={members:?} coherence={:.3} layers={}",
+                e.id.0, e.current.coherence, e.layer_count());
+        }
     }
     println!();
 
@@ -153,7 +162,8 @@ fn main() {
         ..Default::default()
     };
     sim.extract_cohere(&cp);
-    let coheres = sim.world.coheres().get("default").unwrap_or(&[]);
+    let coheres_guard = sim.world();
+    let coheres = coheres_guard.coheres().get("default").unwrap_or(&[]);
     println!("--- Coheres ({}) ---", coheres.len());
     for c in coheres {
         let ms = match &c.members {

@@ -348,7 +348,8 @@ fn build_simulation() -> Setup {
 // ── Print helpers ─────────────────────────────────────────────────────────────
 
 fn print_relationships(sim: &graph_engine::Simulation) {
-    let mut rels: Vec<_> = sim.world.relationships().iter().collect();
+    let wg = sim.world();
+    let mut rels: Vec<_> = wg.relationships().iter().collect();
     rels.sort_by_key(|r| r.id);
     for r in rels {
         let (from, to) = match r.endpoints {
@@ -396,11 +397,11 @@ fn main() {
     ]);
     println!(
         "  batches={} changes={} relationships={}",
-        r1.tick.batches_committed, r1.tick.changes_committed, sim.world.relationships().len()
+        r1.tick.batches_committed, r1.tick.changes_committed, sim.world().relationships().len()
     );
-    let stock = sim.world.locus(WAREHOUSE).map(|l| l.state.as_slice()[0]).unwrap_or(0.0);
+    let stock = sim.world().locus(WAREHOUSE).map(|l| l.state.as_slice()[0]).unwrap_or(0.0);
     println!("  warehouse stock: {stock:.3}");
-    println!("  analyst subscriptions active: {}", sim.world.subscriptions().subscription_count());
+    println!("  analyst subscriptions active: {}", sim.world().subscriptions().subscription_count());
     print_relationships(&sim);
     println!();
 
@@ -422,12 +423,12 @@ fn main() {
     ]);
     println!(
         "  batches={} changes={} relationships={}",
-        r2.tick.batches_committed, r2.tick.changes_committed, sim.world.relationships().len()
+        r2.tick.batches_committed, r2.tick.changes_committed, sim.world().relationships().len()
     );
-    let stock = sim.world.locus(WAREHOUSE).map(|l| l.state.as_slice()[0]).unwrap_or(0.0);
+    let stock = sim.world().locus(WAREHOUSE).map(|l| l.state.as_slice()[0]).unwrap_or(0.0);
     println!("  warehouse stock: {stock:.3}");
-    println!("  SUPPLIER_B exists: {}", sim.world.locus(SUPPLIER_B).is_some());
-    println!("  analyst subscriptions active: {} (SUPPLIER_B edge cleaned up)", sim.world.subscriptions().subscription_count());
+    println!("  SUPPLIER_B exists: {}", sim.world().locus(SUPPLIER_B).is_some());
+    println!("  analyst subscriptions active: {} (SUPPLIER_B edge cleaned up)", sim.world().subscriptions().subscription_count());
     print_relationships(&sim);
     println!();
 
@@ -439,9 +440,9 @@ fn main() {
     ]);
     println!(
         "  batches={} changes={} relationships={}",
-        r3.tick.batches_committed, r3.tick.changes_committed, sim.world.relationships().len()
+        r3.tick.batches_committed, r3.tick.changes_committed, sim.world().relationships().len()
     );
-    let stock = sim.world.locus(WAREHOUSE).map(|l| l.state.as_slice()[0]).unwrap_or(0.0);
+    let stock = sim.world().locus(WAREHOUSE).map(|l| l.state.as_slice()[0]).unwrap_or(0.0);
     println!("  warehouse stock: {stock:.3}");
     print_relationships(&sim);
     println!();
@@ -460,16 +461,19 @@ fn main() {
         ..Default::default()
     };
     sim.recognize_entities(&ep);
-    println!("--- Entities ({} active) ---", sim.world.entities().active_count());
-    for e in sim.world.entities().active() {
-        let members: Vec<&str> = e.current.members.iter().map(|l| locus_label(*l)).collect();
-        println!(
-            "  entity#{} members=[{}] coherence={:.3} layers={}",
-            e.id.0,
-            members.join(", "),
-            e.current.coherence,
-            e.layer_count()
-        );
+    {
+        let wg = sim.world();
+        println!("--- Entities ({} active) ---", wg.entities().active_count());
+        for e in wg.entities().active() {
+            let members: Vec<&str> = e.current.members.iter().map(|l| locus_label(*l)).collect();
+            println!(
+                "  entity#{} members=[{}] coherence={:.3} layers={}",
+                e.id.0,
+                members.join(", "),
+                e.current.coherence,
+                e.layer_count()
+            );
+        }
     }
     println!();
 
@@ -477,29 +481,34 @@ fn main() {
 
     let cp = DefaultCoherePerspective { min_bridge_activity: 0.01, ..Default::default() };
     sim.extract_cohere(&cp);
-    let coheres = sim.world.coheres().get("default").unwrap_or(&[]);
-    println!("--- Coheres ({}) ---", coheres.len());
-    for c in coheres {
-        let ms = match &c.members {
-            graph_core::CohereMembers::Entities(ids) => {
-                ids.iter().map(|e| format!("entity#{}", e.0)).collect::<Vec<_>>().join(", ")
-            }
-            _ => "(mixed)".to_string(),
-        };
-        println!("  cohere#{} [{}]  strength={:.3}", c.id.0, ms, c.strength);
-    }
-    if coheres.is_empty() {
-        println!("  (none — single-supplier topology lacks bridging after disruption)");
+    {
+        let coheres_guard = sim.world();
+        let coheres = coheres_guard.coheres().get("default").unwrap_or(&[]);
+        println!("--- Coheres ({}) ---", coheres.len());
+        for c in coheres {
+            let ms = match &c.members {
+                graph_core::CohereMembers::Entities(ids) => {
+                    ids.iter().map(|e| format!("entity#{}", e.0)).collect::<Vec<_>>().join(", ")
+                }
+                _ => "(mixed)".to_string(),
+            };
+            println!("  cohere#{} [{}]  strength={:.3}", c.id.0, ms, c.strength);
+        }
+        if coheres.is_empty() {
+            println!("  (none — single-supplier topology lacks bridging after disruption)");
+        }
     }
     println!();
 
     // ── Change log summary ─────────────────────────────────────────────────────
     // Show the final causal picture: number of committed changes per subject.
 
-    println!("--- Change log summary ({} changes total) ---", sim.world.log().len());
+    {
+    let wg = sim.world();
+    println!("--- Change log summary ({} changes total) ---", wg.log().len());
     let mut locus_changes = 0u32;
     let mut rel_changes = 0u32;
-    for change in sim.world.log().iter() {
+    for change in wg.log().iter() {
         match change.subject {
             ChangeSubject::Locus(_)        => locus_changes += 1,
             ChangeSubject::Relationship(_) => rel_changes += 1,
@@ -510,6 +519,7 @@ fn main() {
     println!();
     println!("  {sup_a_rel:?} = SUPPLIER_A→FACTORY  (surviving edge)");
     println!("  {sup_b_rel:?} = SUPPLIER_B→FACTORY  (deleted in tick 2)");
+    } // end change log guard
 
     // ── Relationship profile: SUPPLIER_A→FACTORY coupling ─────────────────────
     //
@@ -518,7 +528,8 @@ fn main() {
     // profile_similarity with itself is 1.0 — meaningful with multi-kind topologies.
 
     println!("--- Relationship profile: SUPPLIER_A ↔ FACTORY ---");
-    let bundle = Q::relationship_profile(&sim.world, SUPPLIER_A, FACTORY);
+    let world_guard = sim.world();
+    let bundle = Q::relationship_profile(&*world_guard, SUPPLIER_A, FACTORY);
     println!(
         "  edges: {}  net_activity={:.3}  dominant_kind={:?}",
         bundle.len(),
@@ -539,8 +550,8 @@ fn main() {
 
     println!("--- Activity trend for SUPPLIER_A→FACTORY ---");
     let from_batch = graph_core::BatchId(0);
-    let to_batch   = sim.world.current_batch();
-    match Q::relationship_activity_trend(&sim.world, sup_a_rel, from_batch, to_batch) {
+    let to_batch = sim.world().current_batch();
+    match Q::relationship_activity_trend(&*sim.world(), sup_a_rel, from_batch, to_batch) {
         Some(Q::Trend::Rising { slope }) =>
             println!("  trend=Rising  slope={slope:+.4}/batch  (supply edge strengthening)"),
         Some(Q::Trend::Falling { slope }) =>

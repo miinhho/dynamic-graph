@@ -312,6 +312,7 @@ fn build_world(topo: Arc<NetworkTopology>) -> (World, LocusKindRegistry, Influen
                 learning_rate: 0.01,
                 weight_decay: 0.995,
                 max_weight: 2.0,
+                stdp: false,
             })
             .with_prune_threshold(0.001),
     );
@@ -378,10 +379,11 @@ fn run_phase(
         }
 
         if tick % 5 == 4 {
-            let active = sim.world.entities().active_count();
-            let dormant = sim.world.entities().iter()
+            let w = sim.world();
+            let active = w.entities().active_count();
+            let dormant = w.entities().iter()
                 .filter(|e| e.status == EntityStatus::Dormant).count();
-            let total = sim.world.entities().iter().count();
+            let total = w.entities().iter().count();
             println!(
                 "  tick {:>3}: rels={:<5} entities={}/{}/{} (active/dormant/total) regime={:?}",
                 tick, obs.relationships, active, dormant, total, obs.regime
@@ -414,7 +416,7 @@ fn main() {
 
     // Enable cohere history: retain last 10 snapshots per perspective
     // so we can observe cluster dynamics over time.
-    sim.world.coheres_mut().set_max_history(10);
+    sim.world_mut().coheres_mut().set_max_history(10);
 
     let build_ms = t0.elapsed().as_millis();
     println!("=== Neural Population Simulation ({TOTAL} neurons) ===\n");
@@ -489,37 +491,40 @@ fn main() {
     // ── Cohere extraction (final snapshot) ─────────────────────────────
 
     sim.extract_cohere(&cp);
-    let coheres = sim.world.coheres().get("default").unwrap_or(&[]);
-    println!("--- Cohere clusters (final): {} ---", coheres.len());
-    if coheres.is_empty() {
-        let active_count = sim.world.entities().active_count();
-        println!("  (no clusters — {} active entity/entities; cohere needs ≥2 active)", active_count);
-    }
-    for c in coheres.iter().take(5) {
-        let ms = match &c.members {
-            graph_core::CohereMembers::Entities(ids) => ids
-                .iter()
-                .map(|e| format!("e#{}", e.0))
-                .collect::<Vec<_>>()
-                .join(", "),
-            _ => "(mixed)".to_string(),
-        };
-        println!("  cohere#{} [{ms}] strength={:.3}", c.id.0, c.strength);
-    }
+    {
+        let world = sim.world();
+        let coheres = world.coheres().get("default").unwrap_or(&[]);
+        println!("--- Cohere clusters (final): {} ---", coheres.len());
+        if coheres.is_empty() {
+            let active_count = world.entities().active_count();
+            println!("  (no clusters — {} active entity/entities; cohere needs ≥2 active)", active_count);
+        }
+        for c in coheres.iter().take(5) {
+            let ms = match &c.members {
+                graph_core::CohereMembers::Entities(ids) => ids
+                    .iter()
+                    .map(|e| format!("e#{}", e.0))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                _ => "(mixed)".to_string(),
+            };
+            println!("  cohere#{} [{ms}] strength={:.3}", c.id.0, c.strength);
+        }
 
-    // ── Cohere history ──────────────────────────────────────────────────
+        // ── Cohere history ──────────────────────────────────────────────────
 
-    if let Some(history) = sim.world.coheres().history("default") {
-        println!("\n--- Cohere history ({} snapshots) ---", history.len());
-        for snap in history.iter() {
-            let entity_count: usize = snap.coheres.iter().map(|c| match &c.members {
-                graph_core::CohereMembers::Entities(ids) => ids.len(),
-                _ => 0,
-            }).sum();
-            println!(
-                "  batch {:>4}: {} clusters, {} entity memberships",
-                snap.batch.0, snap.coheres.len(), entity_count
-            );
+        if let Some(history) = world.coheres().history("default") {
+            println!("\n--- Cohere history ({} snapshots) ---", history.len());
+            for snap in history.iter() {
+                let entity_count: usize = snap.coheres.iter().map(|c| match &c.members {
+                    graph_core::CohereMembers::Entities(ids) => ids.len(),
+                    _ => 0,
+                }).sum();
+                println!(
+                    "  batch {:>4}: {} clusters, {} entity memberships",
+                    snap.batch.0, snap.coheres.len(), entity_count
+                );
+            }
         }
     }
     println!();
@@ -527,13 +532,15 @@ fn main() {
     // ── Entity lifecycle report ──────────────────────────────────────────
 
     println!("--- Entity lifecycle ---");
-    let active = sim.world.entities().active_count();
-    let dormant = sim.world.entities().iter()
+    {
+    let world = sim.world();
+    let active = world.entities().active_count();
+    let dormant = world.entities().iter()
         .filter(|e| e.status == graph_core::EntityStatus::Dormant).count();
-    let total_entities = sim.world.entities().iter().count();
+    let total_entities = world.entities().iter().count();
     println!("  active: {}  dormant: {}  total: {}", active, dormant, total_entities);
 
-    for e in sim.world.entities().iter().take(12) {
+    for e in world.entities().iter().take(12) {
         let members: Vec<u64> = e.current.members.iter().map(|l| l.0).collect();
         let member_summary = if members.len() > 6 {
             format!("[{}, {}, ... {} total]", members[0], members[1], members.len())
@@ -573,6 +580,7 @@ fn main() {
             println!("           transitions: {shown}");
         }
     }
+    } // end entity lifecycle guard
     println!();
 
     // ── Event stream summary ──────────────────────────────────────────────
@@ -607,22 +615,25 @@ fn main() {
     // ── Causal tracing (sample) ─────────────────────────────────────────
 
     println!("--- Causal tracing (first 5 dormant entities) ---");
-    let mut shown = 0;
-    for e in sim.world.entities().iter() {
-        if shown >= 5 { break; }
-        for layer in &e.layers {
-            if matches!(layer.transition, graph_core::LayerTransition::BecameDormant) {
-                let cause_str = match &layer.cause {
-                    LifecycleCause::RelationshipDecay { decayed_relationships } =>
-                        format!("RelationshipDecay({} rels)", decayed_relationships.len()),
-                    LifecycleCause::ComponentSplit { weak_bridges } =>
-                        format!("ComponentSplit({} bridges)", weak_bridges.len()),
-                    LifecycleCause::Unspecified => "Unspecified".to_string(),
-                    other => format!("{other:?}"),
-                };
-                println!("  entity#{} → Dormant@b{}: cause={cause_str}", e.id.0, layer.batch.0);
-                shown += 1;
-                break;
+    {
+        let mut shown = 0;
+        let causal_world = sim.world();
+        for e in causal_world.entities().iter() {
+            if shown >= 5 { break; }
+            for layer in &e.layers {
+                if matches!(layer.transition, graph_core::LayerTransition::BecameDormant) {
+                    let cause_str = match &layer.cause {
+                        LifecycleCause::RelationshipDecay { decayed_relationships } =>
+                            format!("RelationshipDecay({} rels)", decayed_relationships.len()),
+                        LifecycleCause::ComponentSplit { weak_bridges } =>
+                            format!("ComponentSplit({} bridges)", weak_bridges.len()),
+                        LifecycleCause::Unspecified => "Unspecified".to_string(),
+                        other => format!("{other:?}"),
+                    };
+                    println!("  entity#{} → Dormant@b{}: cause={cause_str}", e.id.0, layer.batch.0);
+                    shown += 1;
+                    break;
+                }
             }
         }
     }
@@ -632,7 +643,7 @@ fn main() {
 
     // Show entity landscape at mid-simulation (batch ~500).
     let mid_batch = BatchId(500);
-    let entities_then = sim.world.entities_at_batch(mid_batch);
+    let entities_then = sim.entities_at_batch(mid_batch);
     let active_then = entities_then.iter()
         .filter(|(_, layer)| !matches!(layer.transition, graph_core::LayerTransition::BecameDormant))
         .count();
@@ -650,14 +661,14 @@ fn main() {
 
     // ── Weathering + trim ────────────────────────────────────────────────
 
-    let pre_layers: usize = sim.world.entities().iter().map(|e| e.layers.len()).sum();
-    let pre_changes = sim.world.log().iter().count();
+    let pre_layers: usize = sim.world().entities().iter().map(|e| e.layers.len()).sum();
+    let pre_changes = sim.world().log().iter().count();
 
     sim.weather_entities(&graph_core::DefaultEntityWeathering::default());
     let trimmed = sim.trim_change_log(50);
 
-    let post_layers: usize = sim.world.entities().iter().map(|e| e.layers.len()).sum();
-    let post_changes = sim.world.log().iter().count();
+    let post_layers: usize = sim.world().entities().iter().map(|e| e.layers.len()).sum();
+    let post_changes = sim.world().log().iter().count();
 
     println!("--- Weathering + trim ---");
     println!("  entity layers: {} → {}", pre_layers, post_layers);
@@ -666,7 +677,10 @@ fn main() {
 
     // ── Relationship stats ───────────────────────────────────────────────
 
-    let rels: Vec<_> = sim.world.relationships().iter().collect();
+    {
+    let world_guard = sim.world();
+    let world = &*world_guard;
+    let rels: Vec<_> = world.relationships().iter().collect();
     let exc_rels = rels.iter().filter(|r| r.kind == INF_EXC).count();
     let inh_rels = rels.iter().filter(|r| r.kind == INF_INH).count();
     let active_rels = rels.iter().filter(|r| r.activity() > 0.01).count();
@@ -695,7 +709,7 @@ fn main() {
     let sample_a = LocusId(inh_count);     // first excitatory in Pop A
     let sample_b = LocusId(inh_count + 1); // second excitatory in Pop A
 
-    let bundle = Q::relationship_profile(&sim.world, sample_a, sample_b);
+    let bundle = Q::relationship_profile(world, sample_a, sample_b);
     if bundle.is_empty() {
         println!(
             "  L{} ↔ L{}: no relationships (sparse random topology — try other pairs)",
@@ -720,6 +734,7 @@ fn main() {
     let total_inh_act: f32 = rels.iter().filter(|r| r.kind == INF_INH).map(|r| r.activity()).sum();
     println!("  network-wide: total_exc_activity={:.1}  total_inh_activity={:.1}  balance={:.1}",
         total_exc_act, total_inh_act, total_exc_act + total_inh_act);
+    } // end relationship stats guard
     println!();
 
     // ── Performance summary ──────────────────────────────────────────────

@@ -32,10 +32,11 @@ fn bench_commit_batch(c: &mut Criterion) {
                     let path = dir.path().join("bench.redb");
                     let storage = Storage::open(&path).unwrap();
                     // Seed the file with a snapshot so commit_batch extends it.
-                    storage.save_world(&sim.world).unwrap();
+                    let world = sim.into_world();
+                    storage.save_world(&world).unwrap();
                     // commit_batch expects a batch index that was committed.
-                    let committed_batch = BatchId(sim.world.current_batch().0.saturating_sub(1));
-                    (storage, sim.world, committed_batch, dir)
+                    let committed_batch = BatchId(world.current_batch().0.saturating_sub(1));
+                    (storage, world, committed_batch, dir)
                 },
                 |(storage, world, batch, _dir)| {
                     storage.commit_batch(&world, batch).unwrap();
@@ -67,7 +68,7 @@ fn bench_save_load_world(c: &mut Criterion) {
                     }
                     let dir = tempfile::tempdir().unwrap();
                     let path = dir.path().join("bench.redb");
-                    (sim.world, path, dir)
+                    (sim.into_world(), path, dir)
                 },
                 |(world, path, _dir)| {
                     let storage = Storage::open(&path).unwrap();

@@ -18,6 +18,8 @@ graph-storage = { workspace = true, optional = true }
 
 [dev-dependencies]
 graph-testkit.workspace = true
+graph-schema.workspace = true
+graph-boundary.workspace = true
 criterion.workspace = true
 tempfile = "3"
 

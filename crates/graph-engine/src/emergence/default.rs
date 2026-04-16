@@ -223,9 +223,19 @@ struct CommunityResult {
 /// Weighted label propagation over the relationship graph.
 ///
 /// Each node starts with its own label. In each iteration, a node
-/// adopts the label with the highest total activity weight among its
-/// neighbors. Converges when no labels change, or after `max_iter`
-/// rounds.
+/// adopts the label with the highest total signed activity weight among
+/// its neighbors.  Positive-activity edges act as **attraction** (they
+/// pull nodes toward the same label), while negative-activity edges act
+/// as **repulsion** (they push nodes toward different labels).
+///
+/// Repulsion is implemented by treating a negative-weight neighbor's
+/// label as a negative vote: its contribution subtracts from the score
+/// of that label rather than adding to it.  The propagation step still
+/// picks the label with the highest net score — a node surrounded by
+/// strong positive neighbors clusters with them; a node connected to
+/// inhibitory edges tends to end up in a different community.
+///
+/// Converges when no labels change, or after `max_iter` rounds.
 fn find_communities(
     store: &RelationshipStore,
     threshold: f32,
@@ -234,11 +244,17 @@ fn find_communities(
 
     let mut adj: AdjMap = FxHashMap::default();
     for rel in store.iter() {
-        if rel.activity() < threshold {
+        // Include any relationship whose absolute activity meets the
+        // threshold — both excitatory (positive) and inhibitory (negative).
+        if rel.activity().abs() < threshold {
             continue;
         }
         let (a, b) = endpoints_pair(rel);
-        let w = rel.activity();
+        // Combine activity (instantaneous signal) and Hebbian weight
+        // (accumulated co-activation history). Weight is non-negative and
+        // zero by default, so this is a no-op when plasticity is disabled.
+        // Sign is preserved from activity so inhibitory edges still repel.
+        let w = rel.activity() + rel.weight();
         adj.entry(a).or_default().push((b, rel.id, w));
         adj.entry(b).or_default().push((a, rel.id, w));
     }
@@ -256,9 +272,23 @@ fn find_communities(
     all_loci.sort();
 
     let mut label_weight: FxHashMap<LocusId, f32> = FxHashMap::default();
+    // LCG state for deterministic per-iteration shuffling.
+    // Breaks the systematic small-ID-first bias without introducing
+    // a PRNG crate dependency. Seed is fixed for reproducibility.
+    let mut lcg_state: u64 = 0x517cc1b727220a95;
 
     const MAX_ITER: usize = 15;
     for _ in 0..MAX_ITER {
+        // Shuffle node order each pass (Fisher-Yates with inline LCG).
+        let n = all_loci.len();
+        for i in (1..n).rev() {
+            lcg_state = lcg_state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let j = (lcg_state >> 33) as usize % (i + 1);
+            all_loci.swap(i, j);
+        }
+
         let mut changed = false;
         for &node in &all_loci {
             let neighbors = match adj.get(&node) {
@@ -312,6 +342,23 @@ fn endpoints_pair(rel: &Relationship) -> (LocusId, LocusId) {
 
 /// Compute coherence and member relationship ids for a component using
 /// the pre-built adjacency list.
+///
+/// Coherence = `mean_activity × density`, where density uses a log-scaled
+/// reference that avoids the O(n²) penalty of the fully-connected baseline.
+///
+/// **Why not `n*(n-1)/2`?**  Real-world graphs (biological connectomes,
+/// social networks) are sparse: edge count grows as O(n) or O(n log n),
+/// not O(n²). Dividing by `n*(n-1)/2` makes any large sparse cluster
+/// score near 0 simply because it exists — which destroys the signal.
+///
+/// **Reference formula**: `n * ln(n+1) / 2`.
+/// - Grows sub-quadratically (≈ O(n log n)), matching empirical sparse
+///   graph densities.
+/// - For n=2 fully-connected (1 edge): `density ≈ 1/ln(3) ≈ 0.91` — close
+///   to 1.0, preserving the "tight pair" signal.
+/// - For n=84 with 300 active edges (biological connectome density):
+///   reference ≈ 186 → `density ≈ min(300/186, 1.0) = 1.0`.
+/// - For n=27 with 30 edges: reference ≈ 45 → `density ≈ 0.67`.
 fn component_stats(
     member_set: &rustc_hash::FxHashSet<LocusId>,
     adj: &AdjMap,
@@ -325,6 +372,9 @@ fn component_stats(
             for &(nb, rel_id, activity) in neighbors {
                 if nb > locus && member_set.contains(&nb) {
                     rel_ids.push(rel_id);
+                    // Only excitatory relationships contribute to coherence.
+                    // Inhibitory edges (negative activity) are part of the
+                    // topology but do not add to internal binding strength.
                     if activity >= threshold {
                         sum += activity;
                         active_count += 1;
@@ -333,7 +383,21 @@ fn component_stats(
             }
         }
     }
-    let coherence = if active_count == 0 { 0.0 } else { (sum / active_count as f32).min(1.0) };
+    let mean_activity = if active_count == 0 {
+        0.0
+    } else {
+        sum / active_count as f32
+    };
+    // Reference edge count: n * ln(n+1) / 2.
+    // Sub-quadratic so large sparse graphs score proportionally, not near 0.
+    let n = member_set.len();
+    let reference = if n <= 1 {
+        1.0f32
+    } else {
+        (n as f32) * ((n as f32 + 1.0).ln()) / 2.0
+    };
+    let density = (active_count as f32 / reference).min(1.0);
+    let coherence = mean_activity * density;
     (coherence, rel_ids)
 }
 
@@ -346,13 +410,21 @@ fn overlap(a: &rustc_hash::FxHashSet<LocusId>, b: &[LocusId]) -> f32 {
 
 /// Collect all entities (active and dormant) whose member overlap with
 /// `members` is at least `threshold`.
+///
+/// Uses the `by_member` reverse index on `EntityStore` to build a candidate
+/// set in O(|component|) before computing Jaccard scores, instead of
+/// scanning every entity unconditionally.
 fn all_matches(
     member_set: &rustc_hash::FxHashSet<LocusId>,
     existing: &EntityStore,
     threshold: f32,
 ) -> Vec<(EntityId, f32, bool)> {
-    let mut matches: Vec<(EntityId, f32, bool)> = existing
+    // Candidate set: entities that share at least one member with this
+    // component.  Entities with zero overlap are excluded for free.
+    let candidates = existing.candidates_for_members(member_set);
+    let mut matches: Vec<(EntityId, f32, bool)> = candidates
         .iter()
+        .filter_map(|&id| existing.get(id))
         .map(|e| {
             let score = overlap(member_set, &e.current.members);
             let active = e.status == EntityStatus::Active;
@@ -470,6 +542,99 @@ mod tests {
             .filter(|p| matches!(p, EmergenceProposal::Born { .. }))
             .count();
         assert_eq!(born_count, 0, "{proposals:?}");
+    }
+
+    #[test]
+    fn component_stats_triangle_graph() {
+        // Triangle: nodes 1, 2, 3 with three bidirectional adj entries.
+        // adj stores (neighbor, rel_id, signed_activity) per direction.
+        let r0 = RelationshipId(0);
+        let r1 = RelationshipId(1);
+        let r2 = RelationshipId(2);
+        let mut adj: AdjMap = rustc_hash::FxHashMap::default();
+        adj.entry(LocusId(1)).or_default().extend([(LocusId(2), r0, 0.8), (LocusId(3), r2, 0.7)]);
+        adj.entry(LocusId(2)).or_default().extend([(LocusId(1), r0, 0.8), (LocusId(3), r1, 0.6)]);
+        adj.entry(LocusId(3)).or_default().extend([(LocusId(2), r1, 0.6), (LocusId(1), r2, 0.7)]);
+
+        let member_set: rustc_hash::FxHashSet<LocusId> =
+            [LocusId(1), LocusId(2), LocusId(3)].iter().copied().collect();
+
+        let (coherence, rel_ids) = component_stats(&member_set, &adj, 0.1);
+
+        // 3 edges above threshold (1-2, 1-3, 2-3); nb > locus dedup gives
+        // visits for pairs (1,2), (1,3), (2,3) → active_count = 3.
+        // mean_activity = (0.8 + 0.7 + 0.6) / 3 = 0.7
+        // reference = 3 * ln(4) / 2 ≈ 2.079; density = 3/2.079 > 1.0 → 1.0
+        // coherence = 0.7 * 1.0 = 0.7
+        assert_eq!(rel_ids.len(), 3);
+        assert!((coherence - 0.7).abs() < 1e-4, "coherence = {coherence}");
+    }
+
+    #[test]
+    fn find_communities_two_disconnected_pairs() {
+        let mut store = RelationshipStore::new();
+        rel(&mut store, 1, 2, 1.0);
+        rel(&mut store, 3, 4, 1.0);
+
+        let result = find_communities(&store, 0.1);
+
+        assert_eq!(result.components.len(), 2);
+        for c in &result.components {
+            assert_eq!(c.len(), 2);
+        }
+    }
+
+    #[test]
+    fn all_matches_returns_overlapping_entities_sorted_by_score() {
+        let mut store = EntityStore::new();
+
+        // Entity A: members {1, 2, 3}
+        let ea = store.mint_id();
+        store.insert(Entity::born(ea, BatchId(0), EntitySnapshot {
+            members: vec![LocusId(1), LocusId(2), LocusId(3)],
+            member_relationships: vec![],
+            coherence: 1.0,
+        }));
+
+        // Entity B: members {3, 4, 5} — overlaps on node 3
+        let eb = store.mint_id();
+        store.insert(Entity::born(eb, BatchId(0), EntitySnapshot {
+            members: vec![LocusId(3), LocusId(4), LocusId(5)],
+            member_relationships: vec![],
+            coherence: 1.0,
+        }));
+
+        // query set {1, 2, 3}: overlap with A = 3/3 = 1.0, with B = 1/5 = 0.2
+        let query: rustc_hash::FxHashSet<LocusId> =
+            [LocusId(1), LocusId(2), LocusId(3)].iter().copied().collect();
+
+        // threshold 0.5 → only A qualifies
+        let matches = all_matches(&query, &store, 0.5);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].0, ea);
+        assert!((matches[0].1 - 1.0).abs() < 1e-6);
+
+        // threshold 0.1 → both qualify, sorted by descending score
+        let matches_all = all_matches(&query, &store, 0.1);
+        assert_eq!(matches_all.len(), 2);
+        assert_eq!(matches_all[0].0, ea, "highest score first");
+        assert!(matches_all[0].1 > matches_all[1].1);
+    }
+
+    #[test]
+    fn component_stats_high_activity_not_capped() {
+        // Activity > 1.0 should flow through without being capped.
+        let r0 = RelationshipId(0);
+        let mut adj: AdjMap = rustc_hash::FxHashMap::default();
+        adj.entry(LocusId(1)).or_default().push((LocusId(2), r0, 5.0));
+        adj.entry(LocusId(2)).or_default().push((LocusId(1), r0, 5.0));
+        let member_set: rustc_hash::FxHashSet<LocusId> =
+            [LocusId(1), LocusId(2)].iter().copied().collect();
+
+        let (coherence, _) = component_stats(&member_set, &adj, 0.1);
+
+        // mean_activity = 5.0; density ≤ 1.0 so coherence = 5.0 * density
+        assert!(coherence > 1.0, "coherence should exceed 1.0 when activity > 1.0, got {coherence}");
     }
 
     #[test]

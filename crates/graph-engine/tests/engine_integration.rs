@@ -316,13 +316,20 @@ fn cross_locus_change_lands_on_downstream_with_correct_predecessor() {
     assert_eq!(world.locus(LocusId(1)).unwrap().state.as_slice(), &[0.7, 0.0]);
 
     let log: Vec<&Change> = world.log().iter().collect();
-    assert_eq!(log.len(), 2);
+    // 2 locus changes + 1 relationship creation entry (auto-emerge writes an
+    // explicit ChangeSubject::Relationship log entry so causal queries can
+    // find the relationship without relying on the lineage.created_by backlink).
+    assert_eq!(log.len(), 3);
     assert_eq!(log[0].subject, ChangeSubject::Locus(LocusId(1)));
     assert_eq!(log[0].batch, BatchId(0));
     assert!(log[0].is_stimulus());
     assert_eq!(log[1].subject, ChangeSubject::Locus(LocusId(2)));
     assert_eq!(log[1].batch, BatchId(1));
     assert_eq!(log[1].predecessors, vec![log[0].id]);
+    // Relationship creation entry: appended after the batch commit.
+    assert!(matches!(log[2].subject, ChangeSubject::Relationship(_)));
+    assert_eq!(log[2].batch, BatchId(1));
+    assert_eq!(log[2].predecessors, vec![log[1].id]);
 }
 
 #[test]
@@ -361,7 +368,8 @@ fn cross_locus_flow_emerges_one_directed_relationship() {
     let rel = world.relationships().iter().next().unwrap();
     assert_eq!(rel.endpoints, Endpoints::Directed { from: LocusId(1), to: LocusId(2) });
     assert_eq!(rel.kind, InfluenceKindId(1));
-    assert!((rel.activity() - 1.0).abs() < 1e-6);
+    // activity = activity_contribution × |pre_signal| = 1.0 × 0.5 = 0.5
+    assert!((rel.activity() - 0.5).abs() < 1e-6);
     assert_eq!(rel.lineage.change_count, 1);
 }
 
@@ -374,7 +382,8 @@ fn repeated_cross_locus_flow_increments_activity_and_change_count() {
     }
     assert_eq!(world.relationships().len(), 1);
     let rel = world.relationships().iter().next().unwrap();
-    assert!((rel.activity() - 3.0).abs() < 1e-6);
+    // activity = Σ(1.0 × |signal|) = 0.1 + 0.2 + 0.3 = 0.6
+    assert!((rel.activity() - 0.6).abs() < 1e-5);
     assert_eq!(rel.lineage.change_count, 3);
 }
 
@@ -386,18 +395,20 @@ fn relationship_activity_decays_each_batch() {
     engine.flush_relationship_decay(&mut world, &influences);
 
     let rel = world.relationships().iter().next().unwrap();
+    // initial = 1.0 × 0.5 = 0.5, flush decay(0.5) → 0.5 × 0.5 = 0.25
     assert!(
-        (rel.activity() - 0.5).abs() < 1e-6,
-        "expected activity 0.5 after one decay tick, got {}",
+        (rel.activity() - 0.25).abs() < 1e-6,
+        "expected activity 0.25 after one decay tick, got {}",
         rel.activity()
     );
 
     engine.tick(&mut world, &loci, &influences, vec![fire_stimulus(0.5)]);
     engine.flush_relationship_decay(&mut world, &influences);
     let rel = world.relationships().iter().next().unwrap();
+    // lazy decay: 0.25 × 0.5 = 0.125, += 1.0 × 0.5 = 0.625, flush → 0.625 × 0.5 = 0.3125
     assert!(
-        (rel.activity() - 0.625).abs() < 1e-6,
-        "expected activity 0.625 after second tick, got {}",
+        (rel.activity() - 0.3125).abs() < 1e-6,
+        "expected activity 0.3125 after second tick, got {}",
         rel.activity()
     );
 }
@@ -423,10 +434,11 @@ fn recognize_entities_after_forwarding_tick_produces_one_entity() {
 fn entity_becomes_dormant_when_relationship_decays_below_threshold() {
     let (mut world, influences) = two_locus_world_after_forwarding_tick();
     let engine = Engine::default();
+    // activity = 1.0 × |0.5| = 0.5; threshold below 0.5 → emerges, above → dormant
     let perspective =
-        DefaultEmergencePerspective { min_activity_threshold: 0.8, ..Default::default() };
+        DefaultEmergencePerspective { min_activity_threshold: 0.3, ..Default::default() };
     let perspective_high =
-        DefaultEmergencePerspective { min_activity_threshold: 2.0, ..Default::default() };
+        DefaultEmergencePerspective { min_activity_threshold: 0.8, ..Default::default() };
     engine.recognize_entities(&mut world, &influences, &perspective);
     assert_eq!(world.entities().active_count(), 1);
     engine.recognize_entities(&mut world, &influences, &perspective_high);
@@ -709,6 +721,7 @@ fn two_locus_world_with_plasticity(
             learning_rate,
             weight_decay,
             max_weight: f32::MAX,
+            stdp: false,
         }),
     );
     (world, loci, inf)
@@ -790,6 +803,7 @@ fn hebbian_weight_decays_each_batch() {
             learning_rate: 1.0,
             weight_decay: 0.5,
             max_weight: f32::MAX,
+            stdp: false,
         }),
     );
     let engine = Engine::default();
@@ -824,6 +838,7 @@ fn hebbian_weight_clamped_by_max_weight() {
             learning_rate: 100.0,
             weight_decay: 1.0,
             max_weight: 2.0,
+            stdp: false,
         }),
     );
     let engine = Engine::default();
@@ -973,7 +988,9 @@ fn changes_to_relationship_query_returns_relationship_changes() {
     }
 
     let rel_changes: Vec<_> = world.log().changes_to_relationship(rel_id).collect();
-    assert_eq!(rel_changes.len(), 2);
+    // 1 auto-emerge creation entry + 2 explicit modifications = 3 total.
+    assert_eq!(rel_changes.len(), 3);
+    // Newest first: the last explicit change has value 3.0.
     assert!(
         (rel_changes[0].after.as_slice().first().copied().unwrap_or(0.0) - 3.0).abs() < 1e-5
     );

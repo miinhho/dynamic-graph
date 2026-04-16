@@ -25,7 +25,7 @@ fn star_step_produces_fan_out_relationships() {
     let (world, loci, influences) = star_world(4, 0.8);
     let mut sim = Simulation::new(world, loci, influences);
     sim.step(vec![stimulus(1.0)]);
-    assert_eq!(sim.world.relationships().len(), 4);
+    assert_eq!(sim.world().relationships().len(), 4);
 }
 
 // ── multi-step and WorldDiff ──────────────────────────────────────────────────
@@ -34,9 +34,9 @@ fn star_step_produces_fan_out_relationships() {
 fn worlddiff_captures_step_n_changes() {
     let (world, loci, influences) = chain_world(3, 0.9);
     let mut sim = Simulation::new(world, loci, influences);
-    let before = sim.world.current_batch();
+    let before = sim.world().current_batch();
     sim.step_n(5, vec![stimulus(1.0)]);
-    let diff = sim.world.diff_since(before);
+    let diff = sim.world().diff_since(before);
     assert!(!diff.change_ids.is_empty());
     assert!(!diff.relationships_created.is_empty());
 }
@@ -46,10 +46,10 @@ fn worlddiff_distinguishes_created_vs_updated() {
     let (world, loci, influences) = cyclic_pair_world(0.5);
     let mut sim = Simulation::new(world, loci, influences);
     sim.step(vec![stimulus(1.0)]);
-    let after_first = sim.world.current_batch();
+    let after_first = sim.world().current_batch();
     sim.step(vec![stimulus(0.5)]);
-    let after_second = sim.world.current_batch();
-    let diff = sim.world.diff_between(after_first, after_second);
+    let after_second = sim.world().current_batch();
+    let diff = sim.world().diff_between(after_first, after_second);
     assert!(diff.relationships_created.is_empty());
     assert!(!diff.relationships_updated.is_empty());
 }
@@ -59,9 +59,9 @@ fn worlddiff_empty_for_quiescent_range() {
     let (world, loci, influences) = chain_world(2, 0.5);
     let mut sim = Simulation::new(world, loci, influences);
     sim.step_n(20, vec![stimulus(1.0)]);
-    let before = sim.world.current_batch();
+    let before = sim.world().current_batch();
     sim.step(vec![]);
-    let diff = sim.world.diff_since(before);
+    let diff = sim.world().diff_since(before);
     assert!(diff.change_ids.is_empty());
 }
 
@@ -72,7 +72,7 @@ fn path_between_found_after_chain_emergence() {
     let (world, loci, influences) = chain_world(3, 0.9);
     let mut sim = Simulation::new(world, loci, influences);
     sim.step(vec![stimulus(1.0)]);
-    let path = path_between(&sim.world, LocusId(0), LocusId(2));
+    let path = path_between(&*sim.world(), LocusId(0), LocusId(2));
     assert!(path.is_some());
     assert!(path.unwrap().len() >= 2);
 }
@@ -82,7 +82,7 @@ fn reachable_from_covers_all_chain_loci() {
     let (world, loci, influences) = chain_world(4, 0.9);
     let mut sim = Simulation::new(world, loci, influences);
     sim.step(vec![stimulus(1.0)]);
-    let reachable = reachable_from(&sim.world, LocusId(0), 10);
+    let reachable = reachable_from(&*sim.world(), LocusId(0), 10);
     for i in 1..4u64 {
         assert!(reachable.contains(&LocusId(i)));
     }
@@ -93,7 +93,7 @@ fn connected_components_ring_is_one() {
     let (world, loci, influences) = ring_world(4, 0.8);
     let mut sim = Simulation::new(world, loci, influences);
     sim.step(vec![stimulus(1.0)]);
-    let components = connected_components(&sim.world);
+    let components = connected_components(&*sim.world());
     assert_eq!(components.len(), 1);
 }
 
@@ -120,7 +120,7 @@ fn step_until_stimuli_applied_only_on_first_step() {
     let (world, loci, influences) = chain_world(3, 0.9);
     let mut sim = Simulation::new(world, loci, influences);
     let (_, _) = sim.step_until(|_, _| false, 3, vec![stimulus(1.0)]);
-    let rel_count_before = sim.world.relationships().len();
+    let rel_count_before = sim.world().relationships().len();
     let (obs2, _) = sim.step_until(|_, _| false, 3, vec![]);
     assert_eq!(rel_count_before, obs2.last().unwrap().relationships);
 }
@@ -149,7 +149,7 @@ fn chain_activity_stays_bounded() {
     let (world, loci, influences) = chain_world(5, 0.9);
     let mut sim = Simulation::new(world, loci, influences);
     sim.step_n(30, vec![stimulus(1.0)]);
-    assert_bounded_activity(&sim.world, 2.0);
+    assert_bounded_activity(&*sim.world(), 2.0);
 }
 
 #[test]
@@ -157,7 +157,7 @@ fn change_log_forms_dag_after_ring_simulation() {
     let (world, loci, influences) = ring_world(4, 0.7);
     let mut sim = Simulation::new(world, loci, influences);
     sim.step_n(10, vec![stimulus(1.0)]);
-    assert_changes_form_dag(&sim.world);
+    assert_changes_form_dag(&*sim.world());
 }
 
 #[test]
@@ -194,7 +194,7 @@ mod storage {
             let (world, loci, influences) = chain_world(3, 0.9);
             let mut sim = Simulation::with_config(world, loci, influences, storage_config(&f));
             sim.step_n(5, vec![stimulus(1.0)]);
-            rel_count = sim.world.relationships().len();
+            rel_count = sim.world().relationships().len();
         }
 
         let (_, loci2, influences2) = chain_world(3, 0.9);
@@ -210,7 +210,7 @@ mod storage {
             let (world, loci, influences) = chain_world(2, 0.9);
             let mut sim = Simulation::with_config(world, loci, influences, storage_config(&f));
             sim.step_n(10, vec![stimulus(1.0)]);
-            final_batch = sim.world.current_batch();
+            final_batch = sim.world().current_batch();
         }
 
         let (_, loci2, influences2) = chain_world(2, 0.9);

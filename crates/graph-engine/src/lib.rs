@@ -24,5 +24,5 @@ pub use registry::{InfluenceKindConfig, InfluenceKindRegistry, LocusKindConfig, 
 pub use graph_core::RelationshipSlotDef;
 pub use graph_world::{SubscriptionStore, WorldDiff, WorldMetrics};
 pub use simulation::{
-    EventHistory, Simulation, SimulationBuilder, SimulationConfig, StepObservation, TickSummary,
+    EventHistory, IngestError, Simulation, SimulationBuilder, SimulationConfig, StepObservation, TickSummary,
 };

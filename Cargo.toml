@@ -6,6 +6,9 @@ members = [
     "crates/graph-engine",
     "crates/graph-testkit",
     "crates/graph-storage",
+    "crates/graph-schema",
+    "crates/graph-boundary",
+    "crates/graph-llm",
 ]
 resolver = "2"
 
@@ -21,6 +24,9 @@ graph-engine = { path = "crates/graph-engine" }
 graph-query = { path = "crates/graph-query" }
 graph-testkit = { path = "crates/graph-testkit" }
 graph-storage = { path = "crates/graph-storage" }
+graph-schema = { path = "crates/graph-schema" }
+graph-boundary = { path = "crates/graph-boundary" }
+graph-llm      = { path = "crates/graph-llm" }
 redb = "2"
 rustc-hash = "2.1.1"
 smallvec = { version = "1", features = ["union", "serde"] }

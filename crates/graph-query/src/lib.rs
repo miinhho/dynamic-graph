@@ -38,15 +38,31 @@
 //! ```
 
 mod causality;
+mod centrality;
+mod counterfactual;
 mod debug;
+mod deviation;
 mod entity_query;
 mod export;
 mod filter;
+mod labels;
+mod planner;
 mod profile;
 mod query;
+mod api_dogfood;
+mod query_api;
 mod temporal;
 mod traversal;
 
+pub use centrality::{
+    all_betweenness, all_closeness, all_constraints,
+    betweenness_centrality, closeness_centrality,
+    effective_network_size, structural_constraint,
+    louvain, louvain_with_resolution,
+    pagerank, pagerank_centrality,
+    TriangleBalance, all_triangles, balance_index, triangle_balance, unstable_triangles,
+    modularity,
+};
 pub use causality::{
     causal_ancestors, causal_depth, causal_descendants,
     changes_to_locus_in_range,
@@ -80,6 +96,7 @@ pub use filter::{
     dominant_flow_kind, kind_flow_diversity, kind_transition_rate,
 };
 pub use profile::{relationship_profile, RelationshipBundle};
+// `RelationshipBundle::profile_trend_similarity` is a method — no separate re-export needed.
 // `net_influence_between` is also re-exported via filter; callers that prefer
 // the bundle-first style should use `relationship_profile(...).net_activity_with_interactions(...)`.
 pub use query::{
@@ -97,18 +114,49 @@ pub use temporal::{
     loci_by_change_frequency, relationships_by_change_frequency,
     BatchStats,
 };
+pub use counterfactual::{
+    counterfactual, relationships_absent_without, relationships_caused_by,
+    CounterfactualQuery,
+};
 pub use debug::{causal_trace, CausalStep, CausalTrace};
+pub use deviation::{entity_diff, entity_deviations_since, EntityDiff};
 pub use export::{to_dot, to_dot_filtered};
+pub use labels::{
+    entities_summary, entity_summary, relationship_list,
+    to_dot_named, to_dot_named_filtered,
+    EntitySummary, NameMap,
+};
+/// Serializable query API — [`Query`], [`QueryResult`], [`api::execute`], and [`api::explain`].
+///
+/// Notable additions over the base traversal layer:
+/// - Active-traversal variants (`ReachableFromActive`, `DownstreamOfActive`,
+///   `UpstreamOfActive`, `PathBetweenActive`) that prune dormant edges during BFS.
+/// - `LocusPredicate::ReachableFromActive` / `DownstreamOfActive` / `UpstreamOfActive`
+///   for filtering loci in `FindLoci` using active-subgraph reachability.
+pub mod api {
+    pub use super::query_api::{
+        execute,
+        EntityPredicate, EntitySort, LocusPredicate, LocusSort, Query, QueryResult,
+        RelationshipPredicate, RelationshipProfileResult, RelSort,
+        RelationshipSummary, LocusSummary,
+        EntityDiffSummary, CohereResult, TrendResult,
+        WorldMetricsResult,
+    };
+    pub use super::planner::{explain, CostClass, PlanStep, QueryPlan};
+}
+
 pub use traversal::{
     connected_components, connected_components_of_kind,
     directed_path, directed_path_of_kind,
-    downstream_of, downstream_of_kind,
+    downstream_of, downstream_of_active, downstream_of_kind,
+    has_cycle,
     hub_loci, infer_transitive, isolated_loci,
     neighbors_of, neighbors_of_kind,
-    path_between, path_between_of_kind,
-    reachable_from, reachable_from_of_kind, reachable_matching,
+    path_between, path_between_active, path_between_of_kind,
+    reachable_from, reachable_from_active, reachable_from_of_kind, reachable_matching,
     reciprocal_of, reciprocal_pairs,
+    sink_loci, source_loci,
     strongest_path,
-    upstream_of, upstream_of_kind,
+    upstream_of, upstream_of_active, upstream_of_kind,
     TransitiveRule,
 };

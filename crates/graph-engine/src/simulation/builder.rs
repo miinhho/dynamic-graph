@@ -425,7 +425,7 @@ mod tests {
         let id = sim.ingest_named("Apple", "ORG", graph_core::props! {
             "confidence" => 0.92_f64,
         });
-        assert!(sim.world.locus(id).is_some());
+        assert!(sim.world().locus(id).is_some());
         assert_eq!(sim.resolve("Apple"), Some(id));
     }
 
@@ -460,7 +460,7 @@ mod tests {
         let id = sim.ingest_named("New York", "LOCATION", graph_core::props! {
             "confidence" => 0.85_f64,
         });
-        assert_eq!(sim.name_of(id), Some("New York"));
+        assert_eq!(sim.name_of(id).as_deref(), Some("New York"));
     }
 
     #[test]
@@ -529,9 +529,9 @@ mod tests {
         let sim = builder.build();
 
         // The subscription is already in place before the first tick.
-        assert_eq!(sim.world.subscriptions().subscription_count(), 1);
+        assert_eq!(sim.world().subscriptions().subscription_count(), 1);
         // The relationship exists.
-        assert!(sim.world.relationships().get(rel_id).is_some());
+        assert!(sim.world().relationships().get(rel_id).is_some());
     }
 
     /// `initial_subscriptions()` sets subscriptions in bulk before build.
@@ -559,6 +559,6 @@ mod tests {
             .initial_subscriptions(vec![(WATCHER, rel_id)])
             .build();
 
-        assert_eq!(sim.world.subscriptions().subscription_count(), 1);
+        assert_eq!(sim.world().subscriptions().subscription_count(), 1);
     }
 }

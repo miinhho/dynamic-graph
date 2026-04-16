@@ -126,8 +126,43 @@ impl World {
         &mut self.names
     }
 
+    /// Returns the batch ID that **will be used for the next commit** — i.e.
+    /// the batch the engine is currently building, not the last written batch.
+    ///
+    /// This is an "upcoming" pointer, not a "last written" pointer.  To get
+    /// the highest batch already committed, use [`last_committed_batch`].
+    ///
+    /// ## Engine invariant
+    ///
+    /// The engine reads `current_batch()` at the start of each iteration,
+    /// uses it for all `Change.batch` fields, then calls `advance_batch()` at
+    /// the end.  Between those two calls, `current_batch()` equals the batch
+    /// that is actively being assembled.
+    ///
+    /// [`last_committed_batch`]: World::last_committed_batch
     pub fn current_batch(&self) -> BatchId {
         self.current_batch
+    }
+
+    /// Returns the highest batch that has already been committed to the log,
+    /// or `None` if no changes have been committed yet.
+    ///
+    /// Use this when you need the last *written* batch — for example, to
+    /// capture a baseline before stimulating the world:
+    ///
+    /// ```ignore
+    /// let baseline = world.last_committed_batch();
+    /// sim.stimulate(changes);
+    /// sim.tick();
+    /// let root_changes = world.log().batch(world.last_committed_batch().unwrap())
+    ///     .map(|c| c.id).collect::<Vec<_>>();
+    /// ```
+    ///
+    /// Note: `current_batch()` returns the batch ID that will be used *next*,
+    /// which is one ahead of this value.
+    pub fn last_committed_batch(&self) -> Option<BatchId> {
+        let c = self.current_batch.0;
+        if c == 0 { None } else { Some(BatchId(c - 1)) }
     }
 
     /// Mint the next `ChangeId`. Engine-only — exposed on `World` so the

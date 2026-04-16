@@ -303,25 +303,9 @@ pub fn relationship_activity_trend_with_threshold(
         return None;
     }
 
-    // OLS: slope = (n·Σxy - Σx·Σy) / (n·Σx² - (Σx)²)
-    // x = change index (0..n-1), y = activity value
-    let nf = n as f32;
-    let activity = |c: &&Change| c.after.as_slice().first().copied().unwrap_or(0.0);
-
-    let sum_x = nf * (nf - 1.0) / 2.0;        // 0+1+…+(n-1)
-    let sum_x2 = nf * (nf - 1.0) * (2.0 * nf - 1.0) / 6.0;
-    let sum_y: f32 = changes.iter().map(activity).sum();
-    let sum_xy: f32 = changes
-        .iter()
-        .enumerate()
-        .map(|(i, c)| i as f32 * activity(c))
-        .sum();
-
-    let denom = nf * sum_x2 - sum_x * sum_x;
-    if denom.abs() < 1e-12 {
+    let Some(slope) = ols_activity_slope(&changes) else {
         return Some(Trend::Stable);
-    }
-    let slope = (nf * sum_xy - sum_x * sum_y) / denom;
+    };
 
     Some(if slope > stable_threshold {
         Trend::Rising { slope }
@@ -330,6 +314,37 @@ pub fn relationship_activity_trend_with_threshold(
     } else {
         Trend::Stable
     })
+}
+
+// ─── OLS helper ──────────────────────────────────────────────────────────────
+
+/// OLS linear regression slope over a sequence of `Change` activity values.
+///
+/// x = change index (0..n-1), y = `change.after[0]` (activity slot).
+///
+/// Returns `None` when the x-variance is near-zero (constant x, or n < 2).
+/// Used by both `relationship_activity_trend_with_threshold` and
+/// `profile::ols_slope_for_rel` to avoid duplicating the formula.
+pub(crate) fn ols_activity_slope(changes: &[&Change]) -> Option<f32> {
+    let n = changes.len();
+    if n < 2 {
+        return None;
+    }
+    let nf = n as f32;
+    let sum_x  = nf * (nf - 1.0) / 2.0;
+    let sum_x2 = nf * (nf - 1.0) * (2.0 * nf - 1.0) / 6.0;
+    let (sum_y, sum_xy) = changes.iter().enumerate().fold(
+        (0.0f32, 0.0f32),
+        |(sy, sxy), (i, c)| {
+            let a = c.after.as_slice().first().copied().unwrap_or(0.0);
+            (sy + a, sxy + i as f32 * a)
+        },
+    );
+    let denom = nf * sum_x2 - sum_x * sum_x;
+    if denom.abs() < 1e-12 {
+        return None;
+    }
+    Some((nf * sum_xy - sum_x * sum_y) / denom)
 }
 
 // ─── Ancestor queries ─────────────────────────────────────────────────────────

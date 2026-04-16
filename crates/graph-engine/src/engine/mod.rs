@@ -19,9 +19,9 @@ use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use graph_core::{
-    Change, ChangeId, InfluenceKindId, InteractionEffect,
-    LocusId, ProposedChange, Relationship, RelationshipId, StateVector, StructuralProposal,
-    WorldEvent,
+    Change, ChangeId, ChangeSubject, InfluenceKindId, KindObservation,
+    LocusId, ProposedChange, Relationship, RelationshipId, RelationshipLineage,
+    StateVector, StructuralProposal, WorldEvent,
 };
 use graph_world::World;
 
@@ -31,7 +31,7 @@ use crate::registry::{InfluenceKindRegistry, LocusKindRegistry};
 
 use batch::{
     build_computed_change, compute_pending_change, BuiltChange, ComputedChange, DispatchInput,
-    DispatchResult, PendingChange,
+    DispatchResult, EmergenceResolution, PendingChange, PlasticityObs, TimingOrder,
 };
 
 #[derive(Debug, Clone)]
@@ -118,7 +118,7 @@ impl Engine {
         let mut committed_ids_by_locus: FxHashMap<LocusId, Vec<ChangeId>> = FxHashMap::default();
         let mut affected_loci: Vec<LocusId> = Vec::new();
         let mut affected_loci_set: FxHashSet<LocusId> = FxHashSet::default();
-        let mut plasticity_obs: Vec<(graph_core::RelationshipId, graph_core::InfluenceKindId, f32, f32)> = Vec::new();
+        let mut plasticity_obs: Vec<PlasticityObs> = Vec::new();
         let mut structural_proposals: Vec<StructuralProposal> = Vec::new();
         // Per-batch kind-touch tracking for cross-kind interaction effects.
         // Keyed by endpoint pair (EndpointKey) rather than RelationshipId because
@@ -155,7 +155,7 @@ impl Engine {
             // Read the pre-batch world snapshot for every pending change and
             // produce a `ComputedChange` describing the required mutations.
             // No IDs are minted; no world state is modified here.
-            let pending_batch: Vec<PendingChange> = pending.drain(..).collect();
+            let pending_batch: Vec<PendingChange> = std::mem::take(&mut pending);
             let computed: Vec<ComputedChange> = pending_batch
                 .into_par_iter()
                 .map(|pc| compute_pending_change(pc, world, influence_registry))
@@ -242,6 +242,17 @@ impl Engine {
                 // `append_change` calls, reducing ChangeLog HashMap ops from
                 // O(3N) to O(n_unique_subjects + 1).
                 let mut batch_changes: Vec<Change> = Vec::with_capacity(n);
+                // Collect newly auto-emerged relationships so we can write
+                // explicit ChangeSubject::Relationship log entries after the
+                // main batch commit.  Without these entries, causal queries
+                // that walk ChangeSubject::Relationship log entries cannot
+                // find auto-emerged relationships — they would only be
+                // discoverable via the lineage.created_by backlink, which is
+                // an implicit side-channel rather than a first-class log fact.
+                // (rel_id, trigger_change_id, kind, initial_state)
+                // Carrying initial_state avoids a second relationship-store lookup in Pass B3.
+                let mut new_emerged_rels: Vec<(RelationshipId, ChangeId, InfluenceKindId, StateVector)> =
+                    Vec::new();
 
                 for bc in built {
                     match bc {
@@ -265,10 +276,17 @@ impl Engine {
                                         to_locus_kind: tk,
                                     });
                                 }
-                                let (rel_id, is_new) = batch::auto_emerge_relationship(
-                                    world, pred.from_locus, c.locus_id, c.kind, id, batch.0,
-                                    kind_cfg, &c.resolved_slots,
+                                // Apply phase: execute the pre-resolved emergence decision.
+                                // The endpoint-key lookup was pre-resolved in the parallel
+                                // compute phase; the apply phase uses the direct rel_id.
+                                let (rel_id, is_new, emerged_state) = apply_emergence(
+                                    world, pred.emergence, id, batch, c.kind,
+                                    pred.pre_signal, kind_cfg, &c.resolved_slots,
                                 );
+                                if rel_id == graph_core::RelationshipId(u64::MAX) {
+                                    // Blocked by min_emerge_activity.
+                                    continue;
+                                }
                                 // Back-fill rel_id into the SchemaViolation placeholder.
                                 if let Some(WorldEvent::SchemaViolation { relationship, .. }) =
                                     result.events.last_mut()
@@ -285,15 +303,34 @@ impl Engine {
                                         kind: c.kind,
                                         trigger_change_id: id,
                                     });
-                                }
-                                if c.plasticity_active {
-                                    plasticity_obs.push((
-                                        rel_id, c.kind, pred.pre_signal, c.post_signal,
+                                    new_emerged_rels.push((
+                                        rel_id, id, c.kind,
+                                        // emerged_state is Some only when is_new == true.
+                                        emerged_state.expect("new relationship must have initial state"),
                                     ));
                                 }
-                                if let Some(ep_key) =
-                                    world.relationships().get(rel_id).map(|r| r.endpoints.key())
+                                if c.plasticity_active {
+                                    let timing = if pred.pred_batch < batch {
+                                        TimingOrder::PreFirst
+                                    } else {
+                                        TimingOrder::Simultaneous
+                                    };
+                                    plasticity_obs.push(PlasticityObs {
+                                        rel_id,
+                                        kind: c.kind,
+                                        pre: pred.pre_signal,
+                                        post: c.post_signal,
+                                        timing,
+                                    });
+                                }
                                 {
+                                    // Build EndpointKey from known endpoints + kind config —
+                                    // avoids a second relationship store lookup.
+                                    let ep_key = if kind_cfg.map(|k| k.symmetric).unwrap_or(false) {
+                                        graph_core::Endpoints::symmetric(pred.from_locus, c.locus_id).key()
+                                    } else {
+                                        graph_core::Endpoints::directed(pred.from_locus, c.locus_id).key()
+                                    };
                                     let entry = batch_kind_touches.entry(ep_key).or_default();
                                     entry.0.insert(c.kind);
                                     entry.1.insert(rel_id);
@@ -325,6 +362,41 @@ impl Engine {
                 // Pass B2: bulk ChangeLog append — one grouping pass instead
                 // of N individual HashMap inserts.
                 world.extend_batch_changes(batch_changes);
+
+                // Pass B3: write ChangeSubject::Relationship entries for every
+                // relationship that auto-emerged in this batch.  These entries
+                // make emergence discoverable via standard log traversal
+                // (e.g. `relationships_caused_by` Category 1) without requiring
+                // callers to know about the lineage.created_by backlink.
+                //
+                // The new Change IDs are reserved here (after the main batch
+                // commit) so they don't interfere with the O(1) `get(id)`
+                // density invariant: the relationship entries are appended
+                // at the tail of the reserved-ID sequence for this batch.
+                if !new_emerged_rels.is_empty() {
+                    let n_new = new_emerged_rels.len();
+                    let emerge_base = world.reserve_change_ids(n_new);
+                    world.log_mut().reserve(n_new);
+                    let emerge_changes: Vec<Change> = new_emerged_rels
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (rel_id, trigger_id, kind, initial_state))| {
+                            let before = StateVector::zeros(initial_state.dim());
+                            Change {
+                                id: ChangeId(emerge_base.0 + i as u64),
+                                subject: ChangeSubject::Relationship(*rel_id),
+                                kind: *kind,
+                                predecessors: vec![*trigger_id],
+                                before,
+                                after: initial_state.clone(),
+                                batch,
+                                wall_time: None,
+                                metadata: None,
+                            }
+                        })
+                        .collect();
+                    world.extend_batch_changes(emerge_changes);
+                }
             }
 
             // Resolve relationship-change notifications to subscriber loci.
@@ -420,53 +492,10 @@ impl Engine {
             );
             pending.extend(tombstones);
 
-            // End-of-batch: apply Hebbian plasticity updates. Each
-            // observation (rel_id, kind, pre, post) contributes
-            // Δweight = η * pre * post, clamped to [0, max_weight].
-            for (rel_id, kind, pre, post) in plasticity_obs.drain(..) {
-                if let Some(cfg) = influence_registry.get(kind)
-                    && let Some(rel) = world.relationships_mut().get_mut(rel_id)
-                    && let Some(w) = rel.state.as_mut_slice().get_mut(Relationship::WEIGHT_SLOT)
-                {
-                    *w = (*w + cfg.plasticity.learning_rate * pre * post)
-                        .clamp(0.0, cfg.plasticity.max_weight);
-                }
-            }
-
-            // Apply cross-kind interaction effects for endpoint pairs touched
-            // by 2+ distinct influence kinds this batch. Pairs of kinds are
-            // enumerated; if a registered InteractionEffect exists for the
-            // pair, its multiplier is accumulated. All pair multipliers are
-            // composed multiplicatively into a single factor applied once to
-            // the activity slot of ALL relationships between those endpoints,
-            // making the result order-independent and kind-agnostic.
-            for (_ep_key, (touched_kinds, rel_ids)) in &batch_kind_touches {
-                if touched_kinds.len() < 2 {
-                    continue;
-                }
-                let kinds: Vec<InfluenceKindId> = touched_kinds.iter().copied().collect();
-                let mut multiplier = 1.0f32;
-                for i in 0..kinds.len() {
-                    for j in (i + 1)..kinds.len() {
-                        if let Some(effect) = influence_registry.interaction_between(kinds[i], kinds[j]) {
-                            multiplier *= match effect {
-                                InteractionEffect::Synergistic { boost } => *boost,
-                                InteractionEffect::Antagonistic { dampen } => *dampen,
-                                InteractionEffect::Neutral => 1.0,
-                            };
-                        }
-                    }
-                }
-                if (multiplier - 1.0).abs() > f32::EPSILON {
-                    for rel_id in rel_ids {
-                        if let Some(rel) = world.relationships_mut().get_mut(*rel_id) {
-                            if let Some(a) = rel.state.as_mut_slice().get_mut(Relationship::ACTIVITY_SLOT) {
-                                *a *= multiplier;
-                            }
-                        }
-                    }
-                }
-            }
+            // End-of-batch: apply Hebbian plasticity updates and cross-kind
+            // interaction effects (delegated to world_ops for testability).
+            world_ops::apply_hebbian_updates(world, &plasticity_obs, influence_registry);
+            world_ops::apply_interaction_effects(world, &batch_kind_touches, influence_registry);
 
             // Decay is now lazy: accumulated decay is applied in
             // auto_emerge_relationship (on touch) and flushed before entity
@@ -586,3 +615,121 @@ impl Engine {
     }
 }
 
+// ── Apply-phase helper ────────────────────────────────────────────────────────
+
+/// APPLY PHASE — execute a pre-resolved emergence decision.
+///
+/// Returns `(rel_id, is_new, initial_state)`:
+/// - `rel_id == RelationshipId(u64::MAX)` signals `Blocked` — caller skips.
+/// - `is_new == true` means a relationship was just created; `initial_state`
+///   will be `Some(...)` and the caller should emit `RelationshipEmerged`.
+/// - `is_new == false`: update path; `initial_state` is `None`.
+///
+/// ## Update path
+/// Decay and activity arithmetic are performed in-place on the existing
+/// relationship — no allocations.  `rel_id` was pre-resolved in the
+/// parallel compute phase, saving the 2-level endpoint-key lookup here.
+///
+/// ## Create path
+/// `initial_state` was pre-computed in the parallel compute phase.
+/// Concurrent-creation is handled: if another resolution in the same batch
+/// already inserted the same (endpoints, kind) pair, falls back to an
+/// activity touch.
+#[allow(clippy::too_many_arguments)]
+fn apply_emergence(
+    world: &mut World,
+    resolution: EmergenceResolution,
+    change_id: ChangeId,
+    batch: graph_core::BatchId,
+    kind: InfluenceKindId,
+    pre_signal: f32,
+    kind_cfg: Option<&crate::registry::InfluenceKindConfig>,
+    resolved_slots: &[graph_core::RelationshipSlotDef],
+) -> (RelationshipId, bool, Option<StateVector>) {
+    match resolution {
+        EmergenceResolution::Blocked => (RelationshipId(u64::MAX), false, None),
+
+        EmergenceResolution::Update { rel_id } => {
+            if let Some(rel) = world.relationships_mut().get_mut(rel_id) {
+                let activity_decay = kind_cfg.map(|c| c.decay_per_batch).unwrap_or(1.0);
+                let weight_decay   = kind_cfg.map(|c| c.plasticity.weight_decay).unwrap_or(1.0);
+                let delta = batch.0.saturating_sub(rel.last_decayed_batch);
+                if delta > 0 {
+                    let slots = rel.state.as_mut_slice();
+                    if let Some(a) = slots.get_mut(Relationship::ACTIVITY_SLOT) {
+                        *a *= activity_decay.powi(delta as i32);
+                    }
+                    if let Some(w) = slots.get_mut(Relationship::WEIGHT_SLOT) {
+                        *w *= weight_decay.powi(delta as i32);
+                    }
+                    for (i, slot_def) in resolved_slots.iter().enumerate() {
+                        if let Some(factor) = slot_def.decay {
+                            if let Some(v) = slots.get_mut(2 + i) {
+                                *v *= factor.powi(delta as i32);
+                            }
+                        }
+                    }
+                    rel.last_decayed_batch = batch.0;
+                }
+                let activity_contribution = kind_cfg.map(|c| c.activity_contribution).unwrap_or(1.0);
+                let max_activity = kind_cfg.and_then(|c| c.max_activity);
+                if let Some(slot) = rel.state.as_mut_slice().get_mut(Relationship::ACTIVITY_SLOT) {
+                    *slot += activity_contribution * pre_signal.abs();
+                    if let Some(cap) = max_activity {
+                        *slot = slot.clamp(-cap, cap);
+                    }
+                }
+                rel.lineage.last_touched_by = Some(change_id);
+                rel.lineage.change_count += 1;
+                rel.lineage.observe_kind(kind, batch);
+            }
+            (rel_id, false, None)
+        }
+
+        EmergenceResolution::Create {
+            endpoints, kind: rel_kind, initial_state,
+            pre_signal: create_pre_signal, activity_contribution, max_activity,
+        } => {
+            let store = world.relationships_mut();
+            let key = endpoints.key();
+            // Guard against concurrent creation within the same batch: two
+            // compute-phase resolutions may both see `lookup → None` for the
+            // same (endpoints, kind) when they are part of separate
+            // `PendingChange`s processed in parallel.  The second one falls
+            // back to an activity touch instead of a duplicate insert.
+            if let Some(existing_id) = store.lookup(&key, rel_kind) {
+                let rel = store.get_mut(existing_id).expect("indexed id must exist");
+                if let Some(slot) = rel.state.as_mut_slice().get_mut(Relationship::ACTIVITY_SLOT) {
+                    *slot += activity_contribution * create_pre_signal.abs();
+                    if let Some(cap) = max_activity {
+                        *slot = slot.clamp(-cap, cap);
+                    }
+                }
+                rel.lineage.last_touched_by = Some(change_id);
+                rel.lineage.change_count += 1;
+                rel.lineage.observe_kind(rel_kind, batch);
+                (existing_id, false, None)
+            } else {
+                let new_id = store.mint_id();
+                store.insert(Relationship {
+                    id: new_id,
+                    kind: rel_kind,
+                    endpoints,
+                    state: initial_state.clone(),
+                    lineage: RelationshipLineage {
+                        created_by: Some(change_id),
+                        last_touched_by: Some(change_id),
+                        change_count: 1,
+                        kinds_observed: smallvec::smallvec![
+                            KindObservation::once(rel_kind, batch)
+                        ],
+                    },
+                    created_batch: batch,
+                    last_decayed_batch: batch.0,
+                    metadata: None,
+                });
+                (new_id, true, Some(initial_state))
+            }
+        }
+    }
+}
