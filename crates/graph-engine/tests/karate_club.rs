@@ -391,7 +391,8 @@ fn dynamic_faction_convergence() {
     // Hebbian plasticity reinforces co-activated edges.
     let inf = make_inf_reg(
         0.98,
-        Some(PlasticityConfig { learning_rate: 0.1, max_weight: 10.0, weight_decay: 0.99, stdp: false }),
+        Some(PlasticityConfig { learning_rate: 0.1, max_weight: 10.0, weight_decay: 0.99, stdp: false,
+            ..Default::default() }),
     );
     populate_world(&mut world);
 
@@ -440,7 +441,8 @@ fn convergence_based_detection() {
     let mut world = World::new();
     let inf = make_inf_reg(
         0.98,
-        Some(PlasticityConfig { learning_rate: 0.1, max_weight: 10.0, weight_decay: 0.99, stdp: false }),
+        Some(PlasticityConfig { learning_rate: 0.1, max_weight: 10.0, weight_decay: 0.99, stdp: false,
+            ..Default::default() }),
     );
     populate_world(&mut world);
 
@@ -772,7 +774,8 @@ fn oracle_analysis() {
         let mut world = World::new();
         let inf = make_inf_reg(
             0.98,
-            Some(PlasticityConfig { learning_rate: 0.1, max_weight: 10.0, weight_decay: 0.99, stdp: false }),
+            Some(PlasticityConfig { learning_rate: 0.1, max_weight: 10.0, weight_decay: 0.99, stdp: false,
+            ..Default::default() }),
         );
         populate_world(&mut world);
 
@@ -813,7 +816,8 @@ fn oracle_analysis() {
         let mut world = World::new();
         let inf = make_inf_reg(
             0.98,
-            Some(PlasticityConfig { learning_rate: 0.1, max_weight: 10.0, weight_decay: 0.99, stdp: false }),
+            Some(PlasticityConfig { learning_rate: 0.1, max_weight: 10.0, weight_decay: 0.99, stdp: false,
+            ..Default::default() }),
         );
         populate_world(&mut world);
 
@@ -893,6 +897,218 @@ fn oracle_analysis() {
     println!("  from observed interactions. Zachary's 97% uses the declared");
     println!("  post-split affiliation — not the pre-split interaction record.");
     println!();
+}
+
+// ── Test 4: BCM enhanced faction detection ───────────────────────────────────
+
+/// Close the loop: BCM + alternating stimulation → recognize_entities → faction accuracy.
+///
+/// The BCM cross-faction suppression test proved that BCM's sliding threshold
+/// causes cross-faction edges to accumulate less weight than intra-faction edges
+/// (31% vs 45% Rising).  Since `recognize_entities` clusters with
+/// `activity + weight`, that weight differential should make the community
+/// boundary sharper — especially for structurally ambiguous border nodes.
+///
+/// This test measures whether the weight differentiation actually helps:
+///   - Passes `assert_oracle_strict` (≥ n-2 correct per faction).
+///   - Prints per-faction accuracy so the result can be compared with
+///     `dynamic_faction_convergence` (8 ticks, standard Hebbian).
+///
+/// If accuracy stays the same, BCM is a weight-analysis tool, not a detection
+/// enhancer; keep it opt-in.  If accuracy improves (one of the two ambiguous
+/// nodes — 8 or 16 — gets correctly assigned), BCM earns a broader role.
+#[test]
+fn bcm_enhanced_faction_detection() {
+    let mut world = World::new();
+    populate_world(&mut world);
+
+    let mut inf_reg = InfluenceKindRegistry::new();
+    inf_reg.insert(
+        SOCIAL_KIND,
+        InfluenceKindConfig::new("social_tie")
+            .with_symmetric(true)
+            .with_decay(0.99)
+            .with_plasticity(
+                PlasticityConfig {
+                    learning_rate: 0.5,
+                    max_weight:    10.0,
+                    weight_decay:  0.995,
+                    ..Default::default()
+                }
+                .with_bcm(3.0),
+            ),
+    );
+
+    let mut loci_reg = LocusKindRegistry::new();
+    loci_reg.insert(MEMBER_KIND, Box::new(SpreadProgram));
+    let engine      = Engine::new(EngineConfig { max_batches_per_tick: 3 });
+    let perspective = DefaultEmergencePerspective::default();
+
+    // Even ticks → Hi leader, odd ticks → Officer leader.
+    // Anti-correlated activation lets BCM suppress cross-faction edge weights.
+    for tick in 0..200u64 {
+        let leader = if tick % 2 == 0 { LocusId(0) } else { LocusId(33) };
+        engine.tick(
+            &mut world, &loci_reg, &inf_reg,
+            vec![ProposedChange::new(
+                ChangeSubject::Locus(leader),
+                SOCIAL_KIND,
+                StateVector::from_slice(&[1.0]),
+            )],
+        );
+    }
+
+    engine.recognize_entities(&mut world, &inf_reg, &perspective);
+
+    let (hi_correct, hi_total, off_correct, off_total) = faction_accuracy(&world);
+    println!(
+        "\nBCM enhanced detection (200 ticks alternating):\n  \
+         Mr.Hi  {hi_correct}/{} correctly placed  ({hi_total} in entity)\n  \
+         Officer {off_correct}/{} correctly placed  ({off_total} in entity)\n  \
+         Total: {}/{}\n  \
+         (baseline: dynamic_faction_convergence uses 8-tick Hebbian, same oracle)",
+        MR_HI.len(), OFFICER.len(), hi_correct + off_correct, 34,
+    );
+
+    assert_oracle_strict(&world);
+}
+
+// ── Test 4b: BCM cross-faction suppression ────────────────────────────────────
+
+/// Verify that BCM plasticity with alternating leader stimulation creates
+/// measurable differentiation between intra-faction and cross-faction edges.
+///
+/// Protocol:
+///   - Even ticks → stimulate locus 0 (Mr. Hi leader).
+///   - Odd  ticks → stimulate locus 33 (Officer leader).
+///
+/// The anti-correlated activation pattern gives BCM's sliding threshold (θ_M)
+/// an opportunity to suppress cross-faction connections:
+///   - Intra-faction: both endpoints are active in the *same* ticks
+///     → high pre × post → LTP dominates → Rising weight trend.
+///   - Cross-faction: endpoints peak in *different* ticks
+///     → when pre is large, post is small → θ_M rises above post → LTD fires
+///     → cross-faction edges accumulate less weight than intra-faction edges.
+///
+/// Oracle: `Rising%` for intra-faction > `Rising%` for cross-faction (both Hi and Officer).
+#[test]
+fn bcm_cross_faction_suppression() {
+    use graph_query::{relationship_weight_trend_delta, Trend};
+    use std::collections::HashMap;
+
+    let mut world = World::new();
+    populate_world(&mut world);
+
+    // BCM plasticity: η=0.5, bcm_tau=3.  Symmetric → both endpoints observe the update.
+    let mut inf_reg = InfluenceKindRegistry::new();
+    inf_reg.insert(
+        SOCIAL_KIND,
+        InfluenceKindConfig::new("social_tie")
+            .with_symmetric(true)
+            .with_decay(0.99)
+            .with_plasticity(
+                PlasticityConfig {
+                    learning_rate: 0.5,
+                    max_weight:    10.0,
+                    weight_decay:  0.995,
+                    ..Default::default()
+                }
+                .with_bcm(3.0),
+            ),
+    );
+
+    let mut loci_reg = LocusKindRegistry::new();
+    loci_reg.insert(MEMBER_KIND, Box::new(SpreadProgram));
+
+    let engine = Engine::new(EngineConfig { max_batches_per_tick: 3 });
+
+    // Build edge → RelationshipId index (edges are stored with smaller id first).
+    let edge_to_rel: HashMap<(u64, u64), graph_core::RelationshipId> = world
+        .relationships()
+        .iter()
+        .map(|rel| {
+            let (a, b) = match rel.endpoints {
+                Endpoints::Symmetric { a, b } => (a.0.min(b.0), a.0.max(b.0)),
+                Endpoints::Directed { from, to } => (from.0, to.0),
+            };
+            ((a, b), rel.id)
+        })
+        .collect();
+
+    let start_batch = world.current_batch();
+
+    // Alternate: even ticks → Hi leader, odd ticks → Officer leader.
+    for tick in 0..200u64 {
+        let leader = if tick % 2 == 0 { LocusId(0) } else { LocusId(33) };
+        engine.tick(
+            &mut world, &loci_reg, &inf_reg,
+            vec![ProposedChange::new(
+                ChangeSubject::Locus(leader),
+                SOCIAL_KIND,
+                StateVector::from_slice(&[1.0]),
+            )],
+        );
+    }
+
+    let end_batch = world.current_batch();
+
+    // Classify edge trends using ChangeLog first-vs-last weight delta.
+    let hi_set  = MR_HI_SET();
+    let off_set = OFFICER_SET();
+
+    // [Rising, Stable, Falling]
+    let mut intra_hi  = [0usize; 3];
+    let mut intra_off = [0usize; 3];
+    let mut cross     = [0usize; 3];
+
+    let trend_idx = |t: Trend| match t {
+        Trend::Rising { .. }  => 0,
+        Trend::Stable         => 1,
+        Trend::Falling { .. } => 2,
+    };
+
+    for &(a, b) in EDGES {
+        let Some(&rel_id) = edge_to_rel.get(&(a, b)) else { continue };
+        let trend = relationship_weight_trend_delta(
+                &world, rel_id, start_batch, end_batch, 0.003)
+            .unwrap_or(Trend::Stable);
+        let ti = trend_idx(trend);
+        match (hi_set.contains(&a) || hi_set.contains(&b),
+               off_set.contains(&a) || off_set.contains(&b)) {
+            (true,  false) => intra_hi[ti]  += 1,
+            (false, true)  => intra_off[ti] += 1,
+            _              => cross[ti]     += 1,
+        }
+    }
+
+    let pct = |counts: &[usize; 3]| -> f32 {
+        let total: usize = counts.iter().sum();
+        if total == 0 { return 0.0; }
+        100.0 * counts[0] as f32 / total as f32
+    };
+
+    let hi_rising    = pct(&intra_hi);
+    let off_rising   = pct(&intra_off);
+    let cross_rising = pct(&cross);
+
+    println!(
+        "\nBCM cross-faction suppression:\n  \
+         intra-Hi={:.0}%  intra-Off={:.0}%  cross={:.0}% Rising",
+        hi_rising, off_rising, cross_rising
+    );
+
+    // BCM must produce *some* strengthening within each faction.
+    assert!(hi_rising  > 0.0,
+        "Mr. Hi intra edges must have Rising trend (got {hi_rising:.0}%)");
+    assert!(off_rising > 0.0,
+        "Officer intra edges must have Rising trend (got {off_rising:.0}%)");
+
+    // Intra-faction edges must rise more than cross-faction edges.
+    let intra_avg = (hi_rising + off_rising) / 2.0;
+    assert!(
+        intra_avg > cross_rising,
+        "BCM should produce intra avg Rising ({intra_avg:.0}%) > cross Rising ({cross_rising:.0}%)"
+    );
 }
 
 // ── Test 5: boundary analysis ─────────────────────────────────────────────────
@@ -982,7 +1198,8 @@ fn boundary_analysis() {
         r.insert(MEMBER_KIND, Box::new(SpreadProgram));
         r
     };
-    let inf = make_inf_reg(0.05, Some(PlasticityConfig { learning_rate: 0.02, max_weight: 2.0, weight_decay: 1.0, stdp: false }));
+    let inf = make_inf_reg(0.05, Some(PlasticityConfig { learning_rate: 0.02, max_weight: 2.0, weight_decay: 1.0, stdp: false,
+            ..Default::default() }));
     let perspective = DefaultEmergencePerspective::default();
     let engine = Engine::new(EngineConfig::default());
 

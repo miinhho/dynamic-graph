@@ -117,6 +117,7 @@ impl Storage {
             let _ = txn.open_table(ALIASES)?;
             let _ = txn.open_multimap_table(SUBSCRIPTIONS)?;
             let _ = txn.open_multimap_table(REL_BY_LOCUS)?;
+            let _ = txn.open_table(BCM_THRESHOLDS)?;
             let mut meta = txn.open_table(META)?;
             let stored_version = meta.get(META_SCHEMA_VERSION)?.map(|v| v.value());
             match stored_version {
@@ -194,6 +195,7 @@ impl Storage {
                 let keys: Vec<u64> = { let mut k = Vec::new(); let mut it = t.iter()?; while let Some(e) = it.next() { k.push(e?.0.value()); } k };
                 for key in keys { t.remove_all(key)?; }
             }
+            { let mut t = txn.open_table(BCM_THRESHOLDS)?; while let Some(g) = t.pop_last()? { drop(g); } }
             let mut meta = txn.open_table(META)?;
             // Clear all meta keys.
             while let Some(g) = meta.pop_last()? { drop(g); }
@@ -366,6 +368,16 @@ impl Storage {
                 self.last_subscription_gen.set(world.subscriptions().generation());
             }
 
+            // Write BCM thresholds (clear then write all).
+            {
+                let mut t = txn.open_table(BCM_THRESHOLDS)?;
+                while let Some(g) = t.pop_last()? { drop(g); }
+                for (&id, &theta) in world.bcm_thresholds() {
+                    let bytes = postcard::to_allocvec(&theta)?;
+                    t.insert(id.0, bytes.as_slice())?;
+                }
+            }
+
             // Write meta counters.
             {
                 let meta = world.world_meta();
@@ -495,6 +507,17 @@ impl Storage {
             }
         }
 
+        // Read BCM thresholds (empty for non-BCM databases).
+        {
+            let t = txn.open_table(BCM_THRESHOLDS)?;
+            let mut iter = t.iter()?;
+            while let Some(entry) = iter.next() {
+                let (key, val) = entry?;
+                let theta: f32 = postcard::from_bytes(val.value())?;
+                world.bcm_thresholds_mut().insert(LocusId(key.value()), theta);
+            }
+        }
+
         // Sync generations so the first commit_batch() after load skips
         // tables that haven't changed.
         self.last_subscription_gen.set(world.subscriptions().generation());
@@ -611,6 +634,18 @@ impl Storage {
                 for &id in &touched_locus_ids {
                     if let Some(name) = world.names().name_of(id) {
                         t.insert(name, id.0)?;
+                    }
+                }
+            }
+
+            // Upsert BCM thresholds for touched loci.
+            // θ_M changes every tick for active loci; we write only what changed.
+            if !world.bcm_thresholds().is_empty() {
+                let mut t = txn.open_table(BCM_THRESHOLDS)?;
+                for &id in &touched_locus_ids {
+                    if let Some(&theta) = world.bcm_thresholds().get(&id) {
+                        let bytes = postcard::to_allocvec(&theta)?;
+                        t.insert(id.0, bytes.as_slice())?;
                     }
                 }
             }
@@ -1042,6 +1077,35 @@ mod tests {
         let restored = storage.load_world().unwrap();
         assert!(restored.subscriptions().is_empty());
         assert_eq!(restored.subscriptions().subscription_count(), 0);
+    }
+
+    #[test]
+    fn bcm_thresholds_round_trip_via_save_load() {
+        let (_f, storage) = temp_db();
+        let mut world = sample_world();
+
+        world.bcm_thresholds_mut().insert(LocusId(0), 0.42);
+        world.bcm_thresholds_mut().insert(LocusId(1), 1.23);
+
+        storage.save_world(&world).unwrap();
+
+        let restored = storage.load_world().unwrap();
+        assert!((restored.bcm_threshold(LocusId(0)) - 0.42).abs() < 1e-6);
+        assert!((restored.bcm_threshold(LocusId(1)) - 1.23).abs() < 1e-6);
+        // Non-BCM locus returns 0.
+        assert_eq!(restored.bcm_threshold(LocusId(99)), 0.0);
+    }
+
+    #[test]
+    fn bcm_thresholds_survive_snapshot_round_trip() {
+        use graph_world::WorldSnapshot;
+
+        let mut world = sample_world();
+        world.bcm_thresholds_mut().insert(LocusId(0), 0.5);
+
+        let snapshot = world.to_snapshot();
+        let restored = World::from_snapshot(snapshot);
+        assert!((restored.bcm_threshold(LocusId(0)) - 0.5).abs() < 1e-6);
     }
 
     #[test]

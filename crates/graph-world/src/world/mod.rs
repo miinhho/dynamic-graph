@@ -17,6 +17,7 @@ mod snapshot;
 pub use snapshot::{WorldMeta, WorldSnapshot};
 
 use graph_core::{BatchId, Change, ChangeId, Endpoints, KindObservation, Locus, LocusId, Relationship, RelationshipId, RelationshipKindId, RelationshipLineage, StateVector};
+use rustc_hash::FxHashMap;
 
 use crate::store::change_log::ChangeLog;
 use crate::store::cohere_store::CohereStore;
@@ -43,6 +44,9 @@ pub struct World {
     /// Each entry is `(relationship_id, batch_at_pruning_time)`.
     /// Trim via `trim_pruned_log_before` alongside `ChangeLog::trim_before_batch`.
     pruned_log: Vec<(RelationshipId, BatchId)>,
+    /// Per-locus BCM sliding threshold θ_M. Updated by `apply_hebbian_updates`
+    /// when `PlasticityConfig::bcm` is true. Empty for non-BCM simulations.
+    bcm_thresholds: FxHashMap<LocusId, f32>,
 }
 
 impl World {
@@ -230,6 +234,21 @@ impl World {
     /// `ChangeLog::trim_before_batch` to keep memory bounded.
     pub fn trim_pruned_log_before(&mut self, batch: BatchId) {
         self.pruned_log.retain(|(_, b)| b.0 >= batch.0);
+    }
+
+    /// Return the BCM sliding threshold θ_M for `id`, defaulting to `0.0`.
+    pub fn bcm_threshold(&self, id: LocusId) -> f32 {
+        self.bcm_thresholds.get(&id).copied().unwrap_or(0.0)
+    }
+
+    /// Read-only access to the full BCM threshold map.
+    pub fn bcm_thresholds(&self) -> &FxHashMap<LocusId, f32> {
+        &self.bcm_thresholds
+    }
+
+    /// Mutable access to the BCM threshold map.
+    pub fn bcm_thresholds_mut(&mut self) -> &mut FxHashMap<LocusId, f32> {
+        &mut self.bcm_thresholds
     }
 
     /// Insert a new relationship with `last_decayed_batch` pre-set to

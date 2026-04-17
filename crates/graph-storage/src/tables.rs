@@ -43,6 +43,10 @@ pub const SUBSCRIPTIONS: MultimapTableDefinition<u64, u64> =
 pub const REL_BY_LOCUS: MultimapTableDefinition<u64, u64> =
     MultimapTableDefinition::new("rel_by_locus");
 
+/// BCM sliding threshold θ_M per locus: `LocusId(u64)` → postcard `f32`.
+/// Only populated for simulations using BCM plasticity.
+pub const BCM_THRESHOLDS: TableDefinition<u64, &[u8]> = TableDefinition::new("bcm_thresholds");
+
 /// Metadata counters: string key → u64 value.
 /// Keys: "current_batch", "next_change_id", "next_relationship_id", "next_entity_id", "schema_version".
 pub const META: TableDefinition<&str, u64> = TableDefinition::new("meta");

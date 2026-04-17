@@ -10,6 +10,46 @@ use graph_world::World;
 
 use crate::registry::{InfluenceKindConfig, InfluenceKindRegistry};
 
+/// Maximum predecessor-DAG depth to search for feedback loops in STDP.
+/// Covers A→B→C→A (2-hop) plus one extra for robustness. Bounded to
+/// prevent O(log-size) traversal on deep DAGs.
+const STDP_MAX_FEEDBACK_HOPS: u32 = 3;
+
+/// Returns true when `target_locus` appears in the predecessor chain of
+/// `start_id` within `max_hops` steps. Uses iterative DFS with a visited
+/// set to avoid revisiting nodes in shared-predecessor DAGs.
+///
+/// Returns false immediately when `start_id` is not in the log (trimmed
+/// or not yet committed) or when no path reaches `target_locus` within
+/// the hop budget.
+fn is_feedback_in_dag(
+    log: &graph_world::ChangeLog,
+    start_id: ChangeId,
+    target_locus: LocusId,
+    max_hops: u32,
+) -> bool {
+    let Some(start) = log.get(start_id) else { return false };
+    let mut stack: Vec<(ChangeId, u32)> = start
+        .predecessors
+        .iter()
+        .map(|&id| (id, max_hops))
+        .collect();
+    let mut visited: rustc_hash::FxHashSet<ChangeId> = rustc_hash::FxHashSet::default();
+    while let Some((id, hops)) = stack.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        let Some(change) = log.get(id) else { continue };
+        if change.subject == ChangeSubject::Locus(target_locus) {
+            return true;
+        }
+        if hops > 1 {
+            stack.extend(change.predecessors.iter().map(|&pid| (pid, hops - 1)));
+        }
+    }
+    false
+}
+
 /// A change queued for the next batch: the user/program-supplied proposal
 /// plus any predecessor `ChangeId`s the engine derived from the previous
 /// batch's commits.
@@ -71,11 +111,13 @@ pub(crate) enum TimingOrder {
 /// One Hebbian/STDP plasticity observation collected during a batch.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PlasticityObs {
-    pub(crate) rel_id:  graph_core::RelationshipId,
-    pub(crate) kind:    graph_core::InfluenceKindId,
-    pub(crate) pre:     f32,
-    pub(crate) post:    f32,
-    pub(crate) timing:  TimingOrder,
+    pub(crate) rel_id:      graph_core::RelationshipId,
+    pub(crate) kind:        graph_core::InfluenceKindId,
+    pub(crate) pre:         f32,
+    pub(crate) post:        f32,
+    pub(crate) timing:      TimingOrder,
+    /// The postsynaptic locus — needed by the BCM rule to read/update θ_M.
+    pub(crate) post_locus:  graph_core::LocusId,
 }
 
 /// Pre-resolved emergence decision for one cross-locus predecessor.
@@ -120,6 +162,15 @@ pub(crate) struct CrossLocusPred {
     /// The batch in which the predecessor change was committed.
     /// Used to derive STDP timing order relative to the current batch.
     pub(crate) pred_batch: BatchId,
+    /// The ChangeId of the predecessor change.
+    /// Used by engine-native STDP to walk the causal DAG and detect
+    /// feedback loops (PostFirst classification).
+    pub(crate) pred_change_id: ChangeId,
+    /// True when the causal DAG reveals this is a feedback edge:
+    /// the post-locus appears within `STDP_MAX_FEEDBACK_HOPS` in the
+    /// predecessor chain of the pre-change.
+    /// Only set when STDP is active for the kind; always false otherwise.
+    pub(crate) is_feedback: bool,
     /// If the (from_kind, to_kind) pair violates `applies_between`, carries
     /// the endpoint kinds so the apply phase can emit a `SchemaViolation`
     /// event.  `None` means no violation.
@@ -379,7 +430,7 @@ fn compute_locus_change(
         return ComputedChange::Elided;
     };
     let before = locus.state.clone();
-    let cross_locus_pairs: Vec<(LocusId, f32, BatchId)> = predecessors
+    let cross_locus_pairs: Vec<(LocusId, f32, BatchId, ChangeId)> = predecessors
         .iter()
         .filter_map(|pid| world.log().get(*pid))
         .filter_map(|pred| match pred.subject {
@@ -387,7 +438,7 @@ fn compute_locus_change(
                 if pl != locus_id && world.locus(pl).is_some() =>
             {
                 let pre = pred.after.as_slice().first().copied().unwrap_or(0.0);
-                Some((pl, pre, pred.batch))
+                Some((pl, pre, pred.batch, pred.id))
             }
             _ => None,
         })
@@ -429,7 +480,7 @@ fn compute_locus_change(
     // safe here in the parallel compute phase.
     let cross_locus_preds: Vec<CrossLocusPred> = cross_locus_pairs
         .into_iter()
-        .map(|(from_locus, pre_signal, pred_batch)| {
+        .map(|(from_locus, pre_signal, pred_batch, pred_change_id)| {
             let schema_violation = if let Some(cfg) = kind_cfg
                 && !cfg.applies_between.is_empty()
             {
@@ -448,7 +499,11 @@ fn compute_locus_change(
                 world, from_locus, locus_id, kind,
                 kind_cfg, &resolved_slots, pre_signal,
             );
-            CrossLocusPred { from_locus, pre_signal, pred_batch, schema_violation, emergence }
+            let is_feedback = kind_cfg
+                .map(|k| k.plasticity.stdp && k.plasticity.is_active())
+                .unwrap_or(false)
+                && is_feedback_in_dag(world.log(), pred_change_id, locus_id, STDP_MAX_FEEDBACK_HOPS);
+            CrossLocusPred { from_locus, pre_signal, pred_batch, pred_change_id, is_feedback, schema_violation, emergence }
         })
         .collect();
     ComputedChange::Locus(ComputedLocusChange {
@@ -658,6 +713,7 @@ pub(crate) fn apply_structural_proposals(
                 world.subscriptions_mut().remove_anchor_locus(locus_id);
                 world.properties_mut().remove(locus_id);
                 world.names_mut().remove(locus_id);
+                world.bcm_thresholds_mut().remove(&locus_id);
                 world.loci_mut().remove(locus_id);
             }
             StructuralProposal::CreateLocus { locus_id, kind, state, name, properties } => {

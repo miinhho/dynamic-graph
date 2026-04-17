@@ -722,6 +722,7 @@ fn two_locus_world_with_plasticity(
             weight_decay,
             max_weight: f32::MAX,
             stdp: false,
+            ..Default::default()
         }),
     );
     (world, loci, inf)
@@ -804,6 +805,7 @@ fn hebbian_weight_decays_each_batch() {
             weight_decay: 0.5,
             max_weight: f32::MAX,
             stdp: false,
+            ..Default::default()
         }),
     );
     let engine = Engine::default();
@@ -839,6 +841,7 @@ fn hebbian_weight_clamped_by_max_weight() {
             weight_decay: 1.0,
             max_weight: 2.0,
             stdp: false,
+            ..Default::default()
         }),
     );
     let engine = Engine::default();
@@ -1838,5 +1841,201 @@ fn single_kind_no_interaction_applied() {
         (rel.activity() - 1.0).abs() < 1e-4,
         "expected activity ≈ 1.0 (no interaction), got {}",
         rel.activity()
+    );
+}
+
+// ─── Hebbian ChangeLog entries ────────────────────────────────────────────────
+
+/// Pre-inserted relationships must get ChangeSubject::Relationship ChangeLog
+/// entries after Hebbian plasticity fires, so that `relationship_weight_trend`
+/// can report meaningful trends.
+#[test]
+fn hebbian_updates_emit_changelog_entries_for_preinserted_rels() {
+    use graph_core::{Relationship, RelationshipLineage};
+
+    const SOCIAL: InfluenceKindId = InfluenceKindId(1);
+    const MEMBER: LocusKindId     = LocusKindId(1);
+
+    struct SpreadProgram;
+    impl LocusProgram for SpreadProgram {
+        fn process(
+            &self,
+            locus: &Locus,
+            incoming: &[&Change],
+            ctx: &dyn graph_core::LocusContext,
+        ) -> Vec<ProposedChange> {
+            use graph_core::Endpoints;
+            let signal: f32 = incoming.iter().filter_map(|c| match c.subject {
+                ChangeSubject::Locus(_) => c.after.as_slice().first().copied(),
+                _ => None,
+            }).sum();
+            if signal.abs() < 0.001 { return Vec::new(); }
+            ctx.relationships_for(locus.id).filter_map(|rel| {
+                let neighbor = match rel.endpoints {
+                    Endpoints::Symmetric { a, b } => if a == locus.id { b } else { a },
+                    _ => return None,
+                };
+                Some(ProposedChange::new(
+                    ChangeSubject::Locus(neighbor),
+                    SOCIAL,
+                    StateVector::from_slice(&[signal * 0.05]),
+                ))
+            }).collect()
+        }
+    }
+
+    let mut world = World::new();
+    for i in 0..4u64 {
+        world.insert_locus(Locus::new(LocusId(i), MEMBER, StateVector::zeros(1)));
+    }
+    // Pre-insert 4 relationships
+    let edges = [(0u64, 1u64), (0, 2), (1, 3), (2, 3)];
+    let rel_ids: Vec<_> = edges.iter().map(|&(a, b)| {
+        let id = world.relationships_mut().mint_id();
+        world.relationships_mut().insert(graph_core::Relationship {
+            id, kind: SOCIAL,
+            endpoints: graph_core::Endpoints::Symmetric { a: LocusId(a), b: LocusId(b) },
+            state: StateVector::from_slice(&[1.0, 0.0]),
+            lineage: RelationshipLineage::new_synthetic(SOCIAL),
+            created_batch: BatchId(0), last_decayed_batch: 0, metadata: None,
+        });
+        id
+    }).collect();
+
+    let mut loci_reg = LocusKindRegistry::new();
+    loci_reg.insert(MEMBER, Box::new(SpreadProgram));
+    let mut inf_reg = InfluenceKindRegistry::new();
+    inf_reg.insert(SOCIAL, InfluenceKindConfig::new("s")
+        .with_symmetric(true)
+        .with_decay(0.98)
+        .with_plasticity(PlasticityConfig { learning_rate: 0.1, max_weight: 10.0, weight_decay: 0.99, stdp: false,
+            ..Default::default() }));
+
+    let engine = Engine::new(EngineConfig { max_batches_per_tick: 3 });
+    for _ in 0..5 {
+        engine.tick(&mut world, &loci_reg, &inf_reg, vec![
+            ProposedChange::new(ChangeSubject::Locus(LocusId(0)), SOCIAL, StateVector::from_slice(&[1.0])),
+        ]);
+    }
+
+    let total_rel_entries: usize = rel_ids.iter().map(|&rid| {
+        world.changes_to_relationship(rid).count()
+    }).sum();
+    assert!(
+        total_rel_entries > 0,
+        "Expected Hebbian ChangeLog entries for pre-inserted relationships, got 0. \
+         Check that apply_hebbian_updates returns changes and mod.rs emits them."
+    );
+
+    // Also verify weights actually changed
+    let any_nonzero_weight = rel_ids.iter().any(|&rid| {
+        world.relationships().get(rid).map(|r| r.weight() > 1e-9).unwrap_or(false)
+    });
+    assert!(any_nonzero_weight, "Expected Hebbian plasticity to update at least one weight");
+}
+
+/// Engine-native STDP: causal DAG feedback detection.
+///
+/// Topology: A → B → A (feedback ring).
+/// A is the initial stimulus source; B re-activates A.
+///
+/// After several ticks:
+/// - A→B relationship: A consistently causes B (PreFirst) → weight strengthens.
+/// - B→A relationship: B's change has A's change as direct predecessor
+///   → detected as feedback (PostFirst) → weight weakens or stays near 0.
+///
+/// This verifies that the engine-native STDP correctly uses the causal DAG
+/// to distinguish true causation from feedback, without relying on timing alone.
+#[test]
+fn stdp_causal_dag_detects_feedback_loop() {
+    const SIGNAL: InfluenceKindId = InfluenceKindId(1);
+    const NODE: LocusKindId = LocusKindId(1);
+
+    const A: LocusId = LocusId(1);
+    const B: LocusId = LocusId(2);
+
+    // A: when it receives a signal (from B or stimulus), re-fires toward B.
+    // Quiesces when signal is too weak (prevents infinite amplification).
+    struct RelayProgram { target: LocusId }
+    impl LocusProgram for RelayProgram {
+        fn process(&self, locus: &Locus, incoming: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+            let signal: f32 = incoming.iter()
+                .filter_map(|c| c.after.as_slice().first().copied())
+                .sum();
+            // Attenuate per hop to ensure quiescence.
+            let next = signal * 0.7;
+            if next.abs() < 0.01 { return Vec::new(); }
+            vec![ProposedChange::new(
+                ChangeSubject::Locus(self.target),
+                SIGNAL,
+                StateVector::from_slice(&[next]),
+            )]
+        }
+    }
+
+    use graph_engine::LocusKindRegistry;
+    use graph_engine::InfluenceKindRegistry;
+
+    let mut loci_reg = LocusKindRegistry::new();
+    loci_reg.insert(NODE, Box::new(RelayProgram { target: B })); // A → B
+
+    // B uses a different LocusKindId so it can relay back to A.
+    const NODE_B: LocusKindId = LocusKindId(2);
+    loci_reg.insert(NODE_B, Box::new(RelayProgram { target: A })); // B → A
+
+    let mut inf_reg = InfluenceKindRegistry::new();
+    inf_reg.insert(
+        SIGNAL,
+        InfluenceKindConfig::new("signal")
+            .with_plasticity(PlasticityConfig {
+                learning_rate: 0.2,
+                weight_decay: 1.0,
+                max_weight: 5.0,
+                stdp: true,          // engine-native STDP enabled
+                ..Default::default()
+            }),
+    );
+
+    let engine = Engine::default();
+    let mut world = World::default();
+    world.loci_mut().insert(Locus::new(A, NODE,   StateVector::from_slice(&[1.0])));
+    world.loci_mut().insert(Locus::new(B, NODE_B, StateVector::from_slice(&[0.0])));
+
+    // Run 6 ticks; A fires first each time, creating A→B and B→A relationships.
+    for _ in 0..6 {
+        let stimulus = ProposedChange::new(
+            ChangeSubject::Locus(A),
+            SIGNAL,
+            StateVector::from_slice(&[1.0]),
+        );
+        engine.tick(&mut world, &loci_reg, &inf_reg, vec![stimulus]);
+    }
+
+    // Find A→B and B→A relationships.
+    let ab_weight = world.relationships().iter()
+        .find(|r| {
+            use graph_core::Endpoints;
+            matches!(r.endpoints, Endpoints::Directed { from, to } if from == A && to == B)
+        })
+        .map(|r| r.weight())
+        .unwrap_or(0.0);
+
+    let ba_weight = world.relationships().iter()
+        .find(|r| {
+            use graph_core::Endpoints;
+            matches!(r.endpoints, Endpoints::Directed { from, to } if from == B && to == A)
+        })
+        .map(|r| r.weight())
+        .unwrap_or(0.0);
+
+    assert!(
+        ab_weight > ba_weight,
+        "STDP should strengthen A→B (causal) more than B→A (feedback). \
+         A→B weight={ab_weight:.4}, B→A weight={ba_weight:.4}"
+    );
+    // A→B should have accumulated meaningful weight.
+    assert!(
+        ab_weight > 0.01,
+        "A→B (causal direction) should have non-trivial weight, got {ab_weight:.4}"
     );
 }

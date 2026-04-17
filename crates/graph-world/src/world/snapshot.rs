@@ -40,6 +40,10 @@ pub struct WorldSnapshot {
     /// Alias → LocusId mappings.
     #[cfg_attr(feature = "serde", serde(default))]
     pub aliases: Vec<(String, LocusId)>,
+    /// BCM sliding threshold θ_M per locus. Empty for non-BCM simulations.
+    /// Serialised so θ_M survives save/load without needing to re-warm.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub bcm_thresholds: Vec<(LocusId, f32)>,
 }
 
 impl World {
@@ -81,6 +85,7 @@ impl World {
             properties: self.properties.iter().map(|(id, p)| (id, p.clone())).collect(),
             names: self.names.iter().map(|(n, id)| (n.to_owned(), id)).collect(),
             aliases: self.names.aliases().map(|(a, id)| (a.to_owned(), id)).collect(),
+            bcm_thresholds: self.bcm_thresholds().iter().map(|(&id, &v)| (id, v)).collect(),
         }
     }
 
@@ -108,6 +113,9 @@ impl World {
         }
         world.properties = PropertyStore::from_entries(snapshot.properties);
         world.names = NameIndex::from_entries(snapshot.names, snapshot.aliases);
+        for (id, theta) in snapshot.bcm_thresholds {
+            world.bcm_thresholds_mut().insert(id, theta);
+        }
         world.restore_meta(&snapshot.meta);
         world
     }
