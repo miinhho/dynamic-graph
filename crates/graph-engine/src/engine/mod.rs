@@ -302,32 +302,23 @@ impl Engine {
                                         emerge_ops_cross += 1;
                                     }
                                 }
+                                // Apply phase: execute the pre-resolved emergence decision.
+                                // The endpoint-key lookup was pre-resolved in the parallel
+                                // compute phase; the apply phase uses the direct rel_id.
+                                let Some((rel_id, is_new, emerged_state)) = apply_emergence(
+                                    world, pred.emergence, id, batch, c.kind,
+                                    pred.pre_signal, kind_cfg, &c.resolved_slots,
+                                ) else {
+                                    // Blocked by min_emerge_activity.
+                                    continue;
+                                };
                                 if let Some((fk, tk)) = pred.schema_violation {
                                     result.events.push(WorldEvent::SchemaViolation {
-                                        relationship: graph_core::RelationshipId(u64::MAX),
+                                        relationship: rel_id,
                                         kind: c.kind,
                                         from_locus_kind: fk,
                                         to_locus_kind: tk,
                                     });
-                                }
-                                // Apply phase: execute the pre-resolved emergence decision.
-                                // The endpoint-key lookup was pre-resolved in the parallel
-                                // compute phase; the apply phase uses the direct rel_id.
-                                let (rel_id, is_new, emerged_state) = apply_emergence(
-                                    world, pred.emergence, id, batch, c.kind,
-                                    pred.pre_signal, kind_cfg, &c.resolved_slots,
-                                );
-                                if rel_id == graph_core::RelationshipId(u64::MAX) {
-                                    // Blocked by min_emerge_activity.
-                                    continue;
-                                }
-                                // Back-fill rel_id into the SchemaViolation placeholder.
-                                if let Some(WorldEvent::SchemaViolation { relationship, .. }) =
-                                    result.events.last_mut()
-                                {
-                                    if *relationship == graph_core::RelationshipId(u64::MAX) {
-                                        *relationship = rel_id;
-                                    }
                                 }
                                 if is_new {
                                     result.events.push(WorldEvent::RelationshipEmerged {
@@ -773,9 +764,9 @@ fn apply_emergence(
     pre_signal: f32,
     kind_cfg: Option<&crate::registry::InfluenceKindConfig>,
     resolved_slots: &[graph_core::RelationshipSlotDef],
-) -> (RelationshipId, bool, Option<StateVector>) {
+) -> Option<(RelationshipId, bool, Option<StateVector>)> {
     match resolution {
-        EmergenceResolution::Blocked => (RelationshipId(u64::MAX), false, None),
+        EmergenceResolution::Blocked => None,
 
         EmergenceResolution::Update { rel_id } => {
             // Hoist all config reads out of the hot get_mut path.
@@ -823,7 +814,7 @@ fn apply_emergence(
                 rel.lineage.change_count += 1;
                 rel.lineage.observe_kind(kind, batch);
             }
-            (rel_id, false, None)
+            Some((rel_id, false, None))
         }
 
         EmergenceResolution::Create {
@@ -848,7 +839,7 @@ fn apply_emergence(
                 rel.lineage.last_touched_by = Some(change_id);
                 rel.lineage.change_count += 1;
                 rel.lineage.observe_kind(rel_kind, batch);
-                (existing_id, false, None)
+                Some((existing_id, false, None))
             } else {
                 let new_id = store.mint_id();
                 store.insert(Relationship {
@@ -868,7 +859,7 @@ fn apply_emergence(
                     last_decayed_batch: batch.0,
                     metadata: None,
                 });
-                (new_id, true, Some(initial_state))
+                Some((new_id, true, Some(initial_state)))
             }
         }
     }
