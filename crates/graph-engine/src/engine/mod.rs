@@ -16,14 +16,14 @@ pub(crate) mod batch;
 pub(crate) mod world_ops;
 
 use rayon::prelude::*;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 
 use graph_core::{
     Change, ChangeId, ChangeSubject, InfluenceKindId, KindObservation,
     LocusId, ProposedChange, Relationship, RelationshipId, RelationshipLineage,
     StateVector, StructuralProposal, WorldEvent,
 };
-use graph_world::World;
+use graph_world::{RelationshipStore, World};
 
 use crate::cohere::CoherePerspective;
 use crate::emergence::EmergencePerspective;
@@ -272,7 +272,7 @@ impl Engine {
                                 // The endpoint-key lookup was pre-resolved in the parallel
                                 // compute phase; the apply phase uses the direct rel_id.
                                 let Some((rel_id, is_new, emerged_state)) = apply_emergence(
-                                    world, pred.emergence, id, batch, c.kind,
+                                    world.relationships_mut(), pred.emergence, id, batch, c.kind,
                                     pred.pre_signal, kind_cfg, &c.resolved_slots,
                                 ) else {
                                     // Blocked by min_emerge_activity.
@@ -723,7 +723,7 @@ impl Engine {
 /// activity touch.
 #[allow(clippy::too_many_arguments)]
 fn apply_emergence(
-    world: &mut World,
+    store: &mut RelationshipStore,
     resolution: EmergenceResolution,
     change_id: ChangeId,
     batch: graph_core::BatchId,
@@ -743,7 +743,7 @@ fn apply_emergence(
             let max_activity          = kind_cfg.and_then(|c| c.max_activity);
             let abs_signal            = pre_signal.abs();
 
-            if let Some(rel) = world.relationships_mut().get_mut(rel_id) {
+            if let Some(rel) = store.get_mut(rel_id) {
                 let delta = batch.0.saturating_sub(rel.last_decayed_batch);
                 if delta > 0 {
                     // delta==1 is the common case; skip powi for a direct multiply.
@@ -788,7 +788,6 @@ fn apply_emergence(
             endpoints, kind: rel_kind, initial_state,
             pre_signal: create_pre_signal, activity_contribution, max_activity,
         } => {
-            let store = world.relationships_mut();
             let key = endpoints.key();
             // Guard against concurrent creation within the same batch: two
             // compute-phase resolutions may both see `lookup → None` for the
