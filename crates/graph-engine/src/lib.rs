@@ -6,8 +6,10 @@
 //! emergence / cohere perspectives.
 
 mod cohere;
+mod controller;
 mod emergence;
 mod engine;
+mod handle;
 mod regime;
 mod registry;
 mod simulation;
@@ -24,5 +26,8 @@ pub use registry::{InfluenceKindConfig, InfluenceKindRegistry, LocusKindConfig, 
 pub use graph_core::RelationshipSlotDef;
 pub use graph_world::{SubscriptionStore, WorldDiff, WorldMetrics};
 pub use simulation::{
-    EventHistory, IngestError, Simulation, SimulationBuilder, SimulationConfig, StepObservation, TickSummary,
+    BackpressurePolicy, EventHistory, IngestError,
+    Simulation, SimulationBuilder, SimulationConfig, StepObservation, TickSummary,
 };
+pub use handle::{EngineHandle, LocalHandle};
+pub use controller::{EngineController, TickPolicy};

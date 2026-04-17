@@ -38,6 +38,8 @@
 //! ```
 
 mod causality;
+pub mod causal_strength;
+mod entity_causality;
 mod centrality;
 mod counterfactual;
 mod debug;
@@ -54,6 +56,10 @@ mod query_api;
 mod temporal;
 mod traversal;
 
+pub use causal_strength::{
+    causal_direction, causal_in_strength, causal_out_strength,
+    dominant_causes, dominant_effects, feedback_pairs,
+};
 pub use centrality::{
     all_betweenness, all_closeness, all_constraints,
     betweenness_centrality, closeness_centrality,
@@ -69,7 +75,9 @@ pub use causality::{
     changes_to_relationship_in_range, common_ancestors, committed_batches,
     is_ancestor_of, last_change_to_locus, last_change_to_relationship,
     loci_changed_in_batch, relationship_volatility, relationship_volatility_all,
-    relationship_activity_trend, relationship_activity_trend_with_threshold, Trend,
+    relationship_activity_trend, relationship_activity_trend_with_threshold,
+    relationship_weight_delta, relationship_weight_trend,
+    relationship_weight_trend_delta, relationship_weight_trend_with_threshold, Trend,
     relationships_changed_in_batch, root_stimuli, root_stimuli_for_relationship,
 };
 pub use filter::{
@@ -120,6 +128,10 @@ pub use counterfactual::{
 };
 pub use debug::{causal_trace, CausalStep, CausalTrace};
 pub use deviation::{entity_diff, entity_deviations_since, EntityDiff};
+pub use entity_causality::{
+    cause_seed_changes, entity_layers_in_range, entity_transition_cause,
+    entity_upstream_transitions,
+};
 pub use export::{to_dot, to_dot_filtered};
 pub use labels::{
     entities_summary, entity_summary, relationship_list,
@@ -141,6 +153,7 @@ pub mod api {
         RelationshipSummary, LocusSummary,
         EntityDiffSummary, CohereResult, TrendResult,
         WorldMetricsResult,
+        FindRelationshipsBuilder, FindLociBuilder, FindEntitiesBuilder,
     };
     pub use super::planner::{explain, CostClass, PlanStep, QueryPlan};
 }

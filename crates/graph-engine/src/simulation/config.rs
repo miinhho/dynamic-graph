@@ -34,6 +34,23 @@ pub struct StepObservation {
     pub summary: super::observability::TickSummary,
 }
 
+/// What to do when `pending_stimuli` is full and a new stimulus arrives.
+///
+/// Configured via [`SimulationConfig::pending_stimuli_capacity`] and
+/// [`SimulationConfig::backpressure_policy`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BackpressurePolicy {
+    /// Silently drop the incoming stimulus. The locus is still created/merged;
+    /// its change is just not queued this cycle. This is the default.
+    #[default]
+    Reject,
+    /// Remove the oldest queued stimulus to make room for the new one.
+    DropOldest,
+    /// Discard the incoming stimulus (same observable effect as `Reject`,
+    /// but signals intentional newest-first priority rather than arrival-first).
+    DropNewest,
+}
+
 /// Configuration for `Simulation`.
 #[derive(Debug, Clone)]
 pub struct SimulationConfig {
@@ -84,6 +101,19 @@ pub struct SimulationConfig {
     /// `Simulation::history()` returns an `EventHistory` with the last N
     /// summaries, accessible for trend analysis across steps.
     pub event_history_len: usize,
+    /// Maximum number of stimuli that may be queued in `pending_stimuli`
+    /// between `step()` calls. `0` means unbounded (the default).
+    ///
+    /// When the queue is full and a new ingest arrives, [`backpressure_policy`]
+    /// determines what happens.
+    ///
+    /// [`backpressure_policy`]: SimulationConfig::backpressure_policy
+    pub pending_stimuli_capacity: usize,
+    /// What to do when `pending_stimuli` is at capacity.
+    /// Only meaningful when [`pending_stimuli_capacity`] is non-zero.
+    ///
+    /// [`pending_stimuli_capacity`]: SimulationConfig::pending_stimuli_capacity
+    pub backpressure_policy: BackpressurePolicy,
 }
 
 impl Default for SimulationConfig {
@@ -101,6 +131,8 @@ impl Default for SimulationConfig {
             #[cfg(feature = "storage")]
             auto_commit: true,
             event_history_len: 0,
+            pending_stimuli_capacity: 0,
+            backpressure_policy: BackpressurePolicy::default(),
         }
     }
 }

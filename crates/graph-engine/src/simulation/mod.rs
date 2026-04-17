@@ -23,7 +23,7 @@ pub mod observability;
 mod watch;
 
 pub use builder::SimulationBuilder;
-pub use config::{SimulationConfig, StepObservation};
+pub use config::{BackpressurePolicy, SimulationConfig, StepObservation};
 pub use ingest::IngestError;
 pub use observability::{EventHistory, TickSummary};
 
@@ -112,6 +112,10 @@ pub struct Simulation {
     /// Stimuli queued by `ingest()`, drained on the next `step()` or
     /// `flush_ingested()` call.
     pub(crate) pending_stimuli: Vec<ProposedChange>,
+    /// Capacity limit for `pending_stimuli`. 0 = unbounded.
+    pending_stimuli_capacity: usize,
+    /// Policy applied when `pending_stimuli` is at capacity.
+    backpressure_policy: config::BackpressurePolicy,
     /// Monotone counter of `step()` calls. Used for auto-weathering cadence
     /// and as the `tick_id` in [`TickSummary`].
     tick_count: u64,
@@ -257,6 +261,8 @@ impl Simulation {
             cold_relationship_threshold: config.cold_relationship_threshold,
             cold_relationship_min_idle_batches: config.cold_relationship_min_idle_batches,
             pending_stimuli: Vec::new(),
+            pending_stimuli_capacity: config.pending_stimuli_capacity,
+            backpressure_policy: config.backpressure_policy,
             tick_count: 0,
             event_history: if config.event_history_len > 0 {
                 Some(EventHistory::new(config.event_history_len))

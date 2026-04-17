@@ -543,6 +543,30 @@ pub enum Query {
         lag_batches: u64,
         n: usize,
     },
+
+    // ── D4: Entity-level causality ───────────────────────────────────────
+
+    /// Get the lifecycle cause for `entity_id`'s layer at `at_batch`.
+    /// Returns `QueryResult::EntityCause`.
+    EntityTransitionCause {
+        entity_id: EntityId,
+        at_batch: BatchId,
+    },
+
+    /// Find upstream entity transitions that caused `entity_id`'s transition at `at_batch`.
+    /// Returns `QueryResult::EntityTransitions`.
+    EntityUpstreamTransitions {
+        entity_id: EntityId,
+        at_batch: BatchId,
+    },
+
+    /// List all lifecycle layers of `entity_id` in the batch range `[from, to)`.
+    /// Returns `QueryResult::EntityLayers`.
+    EntityLayersInRange {
+        entity_id: EntityId,
+        from: BatchId,
+        to: BatchId,
+    },
 }
 
 // ─── Result enum ─────────────────────────────────────────────────────────────
@@ -610,6 +634,16 @@ pub enum QueryResult {
 
     /// Feedback-loop pairs: `(locus_a, locus_b, balance_ratio)` sorted by balance descending.
     FeedbackPairs(Vec<(LocusId, LocusId, f32)>),
+
+    /// A lifecycle cause for an entity transition. `None` when entity or layer not found.
+    EntityCause(Option<graph_core::LifecycleCause>),
+
+    /// Upstream entity transitions: `(entity_id, batch_id)` pairs.
+    EntityTransitions(Vec<(EntityId, BatchId)>),
+
+    /// Entity lifecycle layers in a batch range:
+    /// `(batch, transition, cause)` tuples.
+    EntityLayers(Vec<(BatchId, graph_core::LayerTransition, graph_core::LifecycleCause)>),
 }
 
 /// Owned snapshot of key relationship profile fields.
@@ -985,6 +1019,18 @@ pub fn execute(world: &World, query: &Query) -> QueryResult {
         }
         Query::GrangerDominantEffects { source, kind, lag_batches, n } => {
             QueryResult::LocusScores(crate::causal_strength::granger_dominant_effects(world, *source, *kind, *lag_batches, *n))
+        }
+
+        // ── D4: Entity-level causality ───────────────────────────────────────
+
+        Query::EntityTransitionCause { entity_id, at_batch } => {
+            QueryResult::EntityCause(crate::entity_causality::entity_transition_cause(world, *entity_id, *at_batch))
+        }
+        Query::EntityUpstreamTransitions { entity_id, at_batch } => {
+            QueryResult::EntityTransitions(crate::entity_causality::entity_upstream_transitions(world, *entity_id, *at_batch))
+        }
+        Query::EntityLayersInRange { entity_id, from, to } => {
+            QueryResult::EntityLayers(crate::entity_causality::entity_layers_in_range(world, *entity_id, *from, *to))
         }
 
         // ── Metrics ──────────────────────────────────────────────────────────

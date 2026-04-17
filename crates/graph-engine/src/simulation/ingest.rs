@@ -15,7 +15,7 @@
 use graph_core::ProposedChange;
 
 use super::Simulation;
-use super::config::StepObservation;
+use super::config::{BackpressurePolicy, StepObservation};
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
@@ -55,6 +55,27 @@ impl std::fmt::Display for IngestError {
 impl std::error::Error for IngestError {}
 
 impl Simulation {
+    /// Push a stimulus onto `pending_stimuli`, applying backpressure if at capacity.
+    ///
+    /// Returns `true` when the stimulus was queued, `false` when it was dropped
+    /// (`Reject` / `DropNewest` policy). The locus is always created/updated
+    /// before this is called, so a dropped stimulus does not roll back the locus.
+    pub(crate) fn push_pending_stimulus(&mut self, stimulus: ProposedChange) -> bool {
+        let cap = self.pending_stimuli_capacity;
+        if cap == 0 || self.pending_stimuli.len() < cap {
+            self.pending_stimuli.push(stimulus);
+            return true;
+        }
+        match self.backpressure_policy {
+            BackpressurePolicy::Reject | BackpressurePolicy::DropNewest => false,
+            BackpressurePolicy::DropOldest => {
+                self.pending_stimuli.remove(0);
+                self.pending_stimuli.push(stimulus);
+                true
+            }
+        }
+    }
+
     /// Ingest a named entity with domain properties.
     ///
     /// - If `name` is new: creates a `Locus`, stores properties, registers
@@ -95,7 +116,7 @@ impl Simulation {
             }
         };
 
-        self.pending_stimuli.push(ProposedChange::new(
+        self.push_pending_stimulus(ProposedChange::new(
             graph_core::ChangeSubject::Locus(locus_id),
             influence,
             state,
@@ -510,5 +531,64 @@ mod tests {
         ]).unwrap_err();
         assert_eq!(err, IngestError::UnknownLocusKind { name: "TYPO".to_owned() });
         assert_eq!(sim.world().loci().len(), 0);
+    }
+
+    fn make_sim_with_capacity(cap: usize, policy: BackpressurePolicy) -> crate::simulation::Simulation {
+        SimulationBuilder::new()
+            .locus_kind("NODE", NoopProgram)
+            .influence("sig", |c: InfluenceKindConfig| c.with_decay(0.9).symmetric())
+            .default_influence("sig")
+            .backpressure(cap, policy)
+            .build()
+    }
+
+    #[test]
+    fn backpressure_reject_drops_excess_stimuli() {
+        let mut sim = make_sim_with_capacity(2, BackpressurePolicy::Reject);
+        // First two ingests fit; third is rejected.
+        sim.ingest_named("a", "NODE", props! {});
+        sim.ingest_named("b", "NODE", props! {});
+        sim.ingest_named("c", "NODE", props! {});
+        assert_eq!(sim.pending_stimuli.len(), 2);
+    }
+
+    #[test]
+    fn backpressure_drop_newest_same_as_reject() {
+        let mut sim = make_sim_with_capacity(2, BackpressurePolicy::DropNewest);
+        sim.ingest_named("a", "NODE", props! {});
+        sim.ingest_named("b", "NODE", props! {});
+        sim.ingest_named("c", "NODE", props! {});
+        assert_eq!(sim.pending_stimuli.len(), 2);
+    }
+
+    #[test]
+    fn backpressure_drop_oldest_rotates_queue() {
+        let mut sim = make_sim_with_capacity(2, BackpressurePolicy::DropOldest);
+        let id_a = sim.ingest_named("a", "NODE", props! {});
+        let _id_b = sim.ingest_named("b", "NODE", props! {});
+        let id_c = sim.ingest_named("c", "NODE", props! {});
+        // Queue should now have b, c (a was dropped).
+        assert_eq!(sim.pending_stimuli.len(), 2);
+        assert!(
+            sim.pending_stimuli.iter().any(|s| {
+                if let graph_core::ChangeSubject::Locus(lid) = s.subject { lid == id_c } else { false }
+            }),
+            "newest stimulus (c) should be in the queue"
+        );
+        assert!(
+            !sim.pending_stimuli.iter().any(|s| {
+                if let graph_core::ChangeSubject::Locus(lid) = s.subject { lid == id_a } else { false }
+            }),
+            "oldest stimulus (a) should have been dropped"
+        );
+    }
+
+    #[test]
+    fn unbounded_capacity_never_drops() {
+        let mut sim = make_sim(); // capacity = 0 = unbounded
+        for i in 0..100 {
+            sim.ingest_named(&format!("n{i}"), "NODE", props! {});
+        }
+        assert_eq!(sim.pending_stimuli.len(), 100);
     }
 }

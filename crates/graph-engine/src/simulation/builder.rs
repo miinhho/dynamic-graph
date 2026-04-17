@@ -25,6 +25,7 @@ use crate::registry::{
     InfluenceKindConfig, InfluenceKindRegistry, LocusKindConfig, LocusKindRegistry,
 };
 use super::{Simulation, SimulationConfig};
+use super::config::BackpressurePolicy;
 use crate::engine::EngineConfig;
 use crate::regime::AdaptiveConfig;
 
@@ -292,6 +293,19 @@ impl SimulationBuilder {
     /// Set the history window for regime classification.
     pub fn history_window(mut self, window: usize) -> Self {
         self.config.history_window = window;
+        self
+    }
+
+    /// Set a capacity limit and backpressure policy on the pending-stimuli queue.
+    ///
+    /// When `capacity` is 0 (the default) the queue is unbounded.
+    /// When non-zero, `policy` controls what happens when the queue is full:
+    /// [`BackpressurePolicy::Reject`] / [`BackpressurePolicy::DropNewest`] drop
+    /// the incoming stimulus; [`BackpressurePolicy::DropOldest`] evicts the
+    /// front of the queue.
+    pub fn backpressure(mut self, capacity: usize, policy: BackpressurePolicy) -> Self {
+        self.config.pending_stimuli_capacity = capacity;
+        self.config.backpressure_policy = policy;
         self
     }
 

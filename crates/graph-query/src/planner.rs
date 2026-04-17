@@ -146,6 +146,23 @@ pub fn explain(world: &World, query: &Query) -> QueryPlan {
             Some(*n),
         ),
 
+        // D4: Entity-level causality — O(layers + ancestors).
+        Query::EntityTransitionCause { .. } => single_scan_plan(
+            world.entities().len(),
+            "entity_transition_cause: O(entity layers)",
+            None,
+        ),
+        Query::EntityUpstreamTransitions { .. } => single_scan_plan(
+            world.log().len() + world.entities().len(),
+            "entity_upstream_transitions: O(ChangeLog ancestors + entity scan)",
+            None,
+        ),
+        Query::EntityLayersInRange { entity_id, .. } => single_scan_plan(
+            world.entities().get(*entity_id).map_or(0, |e| e.layers.len()),
+            "entity_layers_in_range: O(entity layer count)",
+            None,
+        ),
+
         Query::AllBetweenness { limit } => single_traversal_plan(
             world.relationships().len(),
             "Brandes betweenness centrality over all loci",
