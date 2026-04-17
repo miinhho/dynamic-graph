@@ -276,6 +276,7 @@ fn build_world() -> (World, LocusKindRegistry, InfluenceKindRegistry) {
                 weight_decay: 0.99,
                 max_weight: 2.0,
                 stdp: false,
+            ..Default::default()
             }),
     );
     influences.insert(

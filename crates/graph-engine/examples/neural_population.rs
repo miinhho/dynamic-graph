@@ -313,6 +313,7 @@ fn build_world(topo: Arc<NetworkTopology>) -> (World, LocusKindRegistry, Influen
                 weight_decay: 0.995,
                 max_weight: 2.0,
                 stdp: false,
+            ..Default::default()
             })
             .with_prune_threshold(0.001),
     );
@@ -749,6 +750,39 @@ fn main() {
     println!("  total:   {total_ms:>6}ms  (100 ticks)");
     let ms_per_tick = total_ms as f64 / 100.0;
     println!("  ~{ms_per_tick:.1}ms/tick avg");
+
+    // Partition within/cross ratio — E4 feasibility check.
+    {
+        let world = sim.world();
+        let n = TOTAL as usize;
+        for p in [4usize, 10usize] {
+            let mut within_edges: usize = 0;
+            let mut cross_edges: usize = 0;
+            let mut within_touches: u64 = 0;
+            let mut cross_touches: u64 = 0;
+            for rel in world.relationships().iter() {
+                let (a, b) = match &rel.endpoints {
+                    Endpoints::Directed { from, to } => (*from, *to),
+                    Endpoints::Symmetric { a, b } => (*a, *b),
+                };
+                let pa = (a.0 as usize).saturating_mul(p) / n;
+                let pb = (b.0 as usize).saturating_mul(p) / n;
+                let touches = rel.lineage.change_count as u64;
+                if pa == pb {
+                    within_edges += 1;
+                    within_touches += touches;
+                } else {
+                    cross_edges += 1;
+                    cross_touches += touches;
+                }
+            }
+            let total_edges = within_edges + cross_edges;
+            let total_touches = within_touches + cross_touches;
+            let edge_pct = if total_edges > 0 { within_edges * 100 / total_edges } else { 0 };
+            let touch_pct = if total_touches > 0 { within_touches * 100 / total_touches } else { 0 };
+            println!("partition(P={p},N={n}): edges within%={edge_pct}% touches within%={touch_pct}% (edges={total_edges} touches={total_touches})");
+        }
+    }
 
     println!("\nDone.");
 }

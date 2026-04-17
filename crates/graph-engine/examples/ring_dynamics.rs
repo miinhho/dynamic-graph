@@ -30,6 +30,7 @@ fn main() {
             weight_decay: 0.98,
             max_weight: 1.0,
             stdp: false,
+            ..Default::default()
         };
     }
 

@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use graph_core::{
     BatchId, Change, ChangeSubject, Endpoints, InfluenceKindId, KindObservation, Locus,
     LocusContext, LocusId, LocusKindId, LocusProgram, ProposedChange, Relationship,
@@ -813,6 +813,60 @@ fn bench_large_scale_star(c: &mut Criterion) {
     group.finish();
 }
 
+// ── Phase 1 E1 scaling curves ─────────────────────────────────────────────────
+
+/// ring_scaling: N ∈ [16, 64, 256, 1024] — signals circulate a ring topology.
+/// 10 steps per iteration so we measure steady propagation, not just emergence.
+fn bench_ring_scaling(c: &mut Criterion) {
+    let mut group = c.benchmark_group("ring_scaling");
+    group.sample_size(50);
+
+    for n in [16u64, 64, 256, 1024] {
+        group.bench_with_input(BenchmarkId::new("ring_scaling", n), &n, |b, &n| {
+            b.iter_batched(
+                || {
+                    let (world, loci, influences) = ring_world(n, 0.9);
+                    Simulation::new(world, loci, influences)
+                },
+                |mut sim| {
+                    sim.step(vec![stimulus(1.0)]);
+                    for _ in 0..9 {
+                        sim.step(vec![]);
+                    }
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    group.finish();
+}
+
+/// neural_scaling: N ∈ [100, 500, 2000] — dense star-like topology proxy.
+/// 10 steps per iteration. gain=0.8 matches neural_population example.
+fn bench_neural_scaling(c: &mut Criterion) {
+    let mut group = c.benchmark_group("neural_scaling");
+    group.sample_size(30);
+
+    for n in [100u64, 500, 2000] {
+        group.bench_with_input(BenchmarkId::new("neural_scaling", n), &n, |b, &n| {
+            b.iter_batched(
+                || {
+                    let (world, loci, influences) = star_world(n, 0.8);
+                    Simulation::new(world, loci, influences)
+                },
+                |mut sim| {
+                    sim.step(vec![stimulus(1.0)]);
+                    for _ in 0..9 {
+                        sim.step(vec![]);
+                    }
+                },
+                BatchSize::LargeInput,
+            );
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_chain,
@@ -837,5 +891,7 @@ criterion_group!(
     bench_subscriber_fanout,
     bench_subscriber_cold_path,
     bench_extra_slot_decay_flush,
+    bench_ring_scaling,
+    bench_neural_scaling,
 );
 criterion_main!(benches);

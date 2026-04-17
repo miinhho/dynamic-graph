@@ -39,9 +39,9 @@ use graph_core::{
     LocusProgram, ProposedChange, StateVector, StructuralProposal,
 };
 use graph_engine::{
-    DefaultCoherePerspective, DefaultEmergencePerspective, EngineConfig, InfluenceKindConfig,
-    InfluenceKindRegistry, LocusKindConfig, LocusKindRegistry, PlasticityConfig, Simulation,
-    SimulationConfig,
+    DefaultCoherePerspective, DefaultEmergencePerspective, DemotionPolicy, EngineConfig,
+    InfluenceKindConfig, InfluenceKindRegistry, LocusKindConfig, LocusKindRegistry,
+    PlasticityConfig, Simulation, SimulationConfig,
 };
 use graph_world::World;
 
@@ -204,6 +204,7 @@ impl LocusProgram for NodeProgram {
 fn build_world_and_registries(
     n: usize,
     topo: Arc<Topology>,
+    demotion: Option<DemotionPolicy>,
 ) -> (World, LocusKindRegistry, InfluenceKindRegistry) {
     let mut world = World::new();
     for i in 0..n {
@@ -221,19 +222,20 @@ fn build_world_and_registries(
     });
 
     let mut influences = InfluenceKindRegistry::new();
-    influences.insert(
-        INF_EXCITE,
-        InfluenceKindConfig::new("excitatory")
-            .with_decay(0.80)
-            .with_plasticity(PlasticityConfig {
-                learning_rate: 0.02,
-                weight_decay: 0.990,
-                max_weight: 3.0,
-                stdp: false,
-                ..Default::default()
-            })
-            .with_prune_threshold(PRUNE_WEIGHT),
-    );
+    let mut cfg = InfluenceKindConfig::new("excitatory")
+        .with_decay(0.80)
+        .with_plasticity(PlasticityConfig {
+            learning_rate: 0.02,
+            weight_decay: 0.990,
+            max_weight: 3.0,
+            stdp: false,
+            ..Default::default()
+        })
+        .with_prune_threshold(PRUNE_WEIGHT);
+    if let Some(policy) = demotion {
+        cfg = cfg.with_demotion(policy);
+    }
+    influences.insert(INF_EXCITE, cfg);
 
     (world, loci, influences)
 }
@@ -288,12 +290,20 @@ fn phase_stimulus(rng: &mut Rng, n: usize, batch: usize, count: usize) -> Vec<Pr
 struct Args {
     size: usize,
     batches: usize,
+    /// None = no demotion (baseline); Some = ActivityFloor policy with given floor value.
+    demotion_floor: Option<f32>,
+    /// Burst-quiet mode: stimulate for `burst_on` batches then go silent for `burst_off` batches.
+    burst_on: Option<usize>,
+    burst_off: Option<usize>,
 }
 
 fn parse_args() -> Args {
     let args: Vec<String> = std::env::args().collect();
     let mut size = 100usize;
     let mut batches = 20usize;
+    let mut demotion_floor: Option<f32> = None;
+    let mut burst_on: Option<usize> = None;
+    let mut burst_off: Option<usize> = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -305,13 +315,25 @@ fn parse_args() -> Args {
                 batches = args[i + 1].parse().expect("--batches must be a positive integer");
                 i += 2;
             }
+            "--demotion-floor" if i + 1 < args.len() => {
+                demotion_floor = Some(args[i + 1].parse().expect("--demotion-floor must be a float"));
+                i += 2;
+            }
+            "--burst-on" if i + 1 < args.len() => {
+                burst_on = Some(args[i + 1].parse().expect("--burst-on must be a positive integer"));
+                i += 2;
+            }
+            "--burst-off" if i + 1 < args.len() => {
+                burst_off = Some(args[i + 1].parse().expect("--burst-off must be a positive integer"));
+                i += 2;
+            }
             other => {
                 eprintln!("Unknown argument: {other}");
                 std::process::exit(1);
             }
         }
     }
-    Args { size, batches }
+    Args { size, batches, demotion_floor, burst_on, burst_off }
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -321,9 +343,11 @@ fn main() {
     let n = args.size.max(3); // need at least 3 nodes
     let num_batches = args.batches;
 
+    let demotion_policy = args.demotion_floor.map(DemotionPolicy::ActivityFloor);
+
     let t_build = Instant::now();
     let topo = Arc::new(build_topology(n, 42));
-    let (world, loci, influences) = build_world_and_registries(n, Arc::clone(&topo));
+    let (world, loci, influences) = build_world_and_registries(n, Arc::clone(&topo), demotion_policy);
 
     let mut sim = Simulation::with_config(
         world,
@@ -338,8 +362,18 @@ fn main() {
     );
 
     let build_ms = t_build.elapsed().as_millis();
+    let demotion_label = match demotion_policy {
+        Some(DemotionPolicy::ActivityFloor(f)) => format!("ActivityFloor({f:.3})"),
+        Some(DemotionPolicy::IdleBatches(n)) => format!("IdleBatches({n})"),
+        Some(DemotionPolicy::LruCapacity(c)) => format!("LruCapacity({c})"),
+        None => "none".to_string(),
+    };
+    let burst_label = match (args.burst_on, args.burst_off) {
+        (Some(on), Some(off)) => format!("on={on}/off={off}"),
+        _ => "continuous".to_string(),
+    };
     eprintln!(
-        "stress_emergence: N={n} batches={num_batches} build={build_ms}ms"
+        "stress_emergence: N={n} batches={num_batches} demotion={demotion_label} stimulus={burst_label} build={build_ms}ms"
     );
 
     // Emergence perspective: lower threshold so relationships emerge quickly
@@ -363,7 +397,19 @@ fn main() {
     for batch_idx in 0..num_batches {
         let t_start = Instant::now();
 
-        let stimuli = phase_stimulus(&mut rng, n, batch_idx, stim_count);
+        // Burst-quiet mode: silent during the "off" phase of each cycle.
+        let stimuli = match (args.burst_on, args.burst_off) {
+            (Some(on), Some(off)) => {
+                let cycle = on + off;
+                let pos = batch_idx % cycle;
+                if pos < on {
+                    phase_stimulus(&mut rng, n, batch_idx, stim_count)
+                } else {
+                    vec![]
+                }
+            }
+            _ => phase_stimulus(&mut rng, n, batch_idx, stim_count),
+        };
         let _obs = sim.step(stimuli);
 
         // Recognize entities every batch to maximise split/merge events.
@@ -411,5 +457,39 @@ fn main() {
             }
         }
         eprintln!("lifecycle: born={born} splits={splits} merges={merges} dormant={dormant}");
+    }
+
+    // Partition within/cross ratio — E4 feasibility check.
+    // Measures both edge count and touch-weighted (change_count) locality.
+    {
+        let world = sim.world();
+        let p = 10usize;
+        let mut within_edges: usize = 0;
+        let mut cross_edges: usize = 0;
+        let mut within_touches: u64 = 0;
+        let mut cross_touches: u64 = 0;
+        for rel in world.relationships().iter() {
+            let (a, b) = match &rel.endpoints {
+                graph_core::Endpoints::Directed { from, to } => (*from, *to),
+                graph_core::Endpoints::Symmetric { a, b } => (*a, *b),
+            };
+            let pa = (a.0 as usize).saturating_mul(p) / n;
+            let pb = (b.0 as usize).saturating_mul(p) / n;
+            let touches = rel.lineage.change_count as u64;
+            if pa == pb {
+                within_edges += 1;
+                within_touches += touches;
+            } else {
+                cross_edges += 1;
+                cross_touches += touches;
+            }
+        }
+        let total_edges = within_edges + cross_edges;
+        let total_touches = within_touches + cross_touches;
+        let edge_pct = if total_edges > 0 { within_edges * 100 / total_edges } else { 0 };
+        let touch_pct = if total_touches > 0 { within_touches * 100 / total_touches } else { 0 };
+        eprintln!(
+            "partition(P={p},N={n}): edges within%={edge_pct}% touches within%={touch_pct}% (edges={total_edges} touches={total_touches})"
+        );
     }
 }

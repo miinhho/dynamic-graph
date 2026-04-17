@@ -153,6 +153,7 @@ fn main() {
                     weight_decay: 0.005,
                     max_weight: 5.0,
                     stdp: false,
+            ..Default::default()
                 })
         })
         .default_influence("cooccurrence")
