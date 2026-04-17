@@ -40,6 +40,7 @@
 mod causality;
 pub mod causal_strength;
 mod entity_causality;
+mod time_travel;
 mod centrality;
 mod counterfactual;
 mod debug;
@@ -133,6 +134,7 @@ pub use entity_causality::{
     cause_seed_changes, entity_layers_in_range, entity_transition_cause,
     entity_upstream_transitions,
 };
+pub use time_travel::{time_travel, TimeTravelResult};
 pub use export::{to_dot, to_dot_filtered};
 pub use labels::{
     entities_summary, entity_summary, relationship_list,

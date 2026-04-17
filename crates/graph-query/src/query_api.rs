@@ -544,6 +544,14 @@ pub enum Query {
         n: usize,
     },
 
+    // ── B3: Time-travel queries ───────────────────────────────────────────
+
+    /// Reconstruct the structural inverse diff to reach `target_batch`.
+    /// Returns `QueryResult::TimeTravelResult`.
+    TimeTravel {
+        target_batch: BatchId,
+    },
+
     // ── D3: Structural counterfactual replay ─────────────────────────────
 
     /// Compute the structural impact of removing `remove_changes` from the world.
@@ -642,6 +650,9 @@ pub enum QueryResult {
 
     /// Feedback-loop pairs: `(locus_a, locus_b, balance_ratio)` sorted by balance descending.
     FeedbackPairs(Vec<(LocusId, LocusId, f32)>),
+
+    /// Time-travel inverse diff result.
+    TimeTravelResult(crate::TimeTravelResult),
 
     /// Counterfactual structural impact.
     Counterfactual(crate::CounterfactualDiff),
@@ -1030,6 +1041,12 @@ pub fn execute(world: &World, query: &Query) -> QueryResult {
         }
         Query::GrangerDominantEffects { source, kind, lag_batches, n } => {
             QueryResult::LocusScores(crate::causal_strength::granger_dominant_effects(world, *source, *kind, *lag_batches, *n))
+        }
+
+        // ── B3: Time-travel queries ───────────────────────────────────────────
+
+        Query::TimeTravel { target_batch } => {
+            QueryResult::TimeTravelResult(crate::time_travel::time_travel(world, *target_batch))
         }
 
         // ── D3: Structural counterfactual replay ─────────────────────────────

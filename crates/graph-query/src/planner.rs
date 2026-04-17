@@ -146,6 +146,13 @@ pub fn explain(world: &World, query: &Query) -> QueryPlan {
             Some(*n),
         ),
 
+        // B3: Time-travel — O(k + R + E·L_avg), same as WorldDiff::compute.
+        Query::TimeTravel { .. } => single_scan_plan(
+            world.log().len() + world.relationships().len() + world.entities().len(),
+            "time_travel: O(changes + R + E·layers) — WorldDiff inversion",
+            None,
+        ),
+
         // D3: Structural counterfactual replay — O(D×descendants + R).
         Query::CounterfactualReplay { remove_changes } => single_scan_plan(
             world.log().len() + world.relationships().len(),
