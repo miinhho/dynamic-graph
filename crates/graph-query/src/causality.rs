@@ -7,9 +7,9 @@
 //!
 //! All queries are read-only over `&World`.
 
-use graph_core::{BatchId, Change, ChangeId, ChangeSubject, LocusId, RelationshipId};
+use graph_core::{BatchId, Change, ChangeId, ChangeSubject, LocusId, Relationship, RelationshipId, TrimSummary};
 use graph_world::World;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 // ─── Latest-change convenience ───────────────────────────────────────────────
 
@@ -316,16 +316,208 @@ pub fn relationship_activity_trend_with_threshold(
     })
 }
 
+// ─── Weight trend ─────────────────────────────────────────────────────────────
+
+/// Directional trend of a relationship's **weight** (slot 1) over explicit
+/// Hebbian/STDP change history.
+///
+/// Hebbian plasticity updates emit `ChangeSubject::Relationship` entries whose
+/// `after` state carries the full relationship `StateVector` (`[activity,
+/// weight, …]`). This function reads slot 1 (the weight slot) from those
+/// entries to compute the OLS slope.
+///
+/// Returns `None` when there are fewer than two Hebbian log entries in the
+/// range (insufficient data for regression). Auto-emerged relationships that
+/// were not subject to any Hebbian updates will return `None`.
+///
+/// # Contrast with `relationship_activity_trend`
+///
+/// `relationship_activity_trend` reads `after[0]` (the activity slot) and is
+/// intended for subscription-observer changes. This function reads `after[1]`
+/// (the weight slot) and is intended for Hebbian plasticity changes.
+pub fn relationship_weight_trend(
+    world: &World,
+    rel: RelationshipId,
+    from_batch: BatchId,
+    to_batch: BatchId,
+) -> Option<Trend> {
+    relationship_weight_trend_with_threshold(world, rel, from_batch, to_batch, 0.05)
+}
+
+/// Net weight change of `rel` over `[from_batch, to_batch]`.
+///
+/// Computes `newest_weight − oldest_weight` using the first and last
+/// `ChangeSubject::Relationship` entries in the range (slot 1 = weight slot).
+/// Unlike `relationship_weight_trend` (which uses OLS), this directly measures
+/// the **total accumulated change** — useful for signals that saturate quickly
+/// and would register a near-zero OLS slope even after significant net growth.
+///
+/// Returns `None` when there are fewer than two ChangeLog entries in the range.
+pub fn relationship_weight_delta(
+    world: &World,
+    rel: RelationshipId,
+    from_batch: BatchId,
+    to_batch: BatchId,
+) -> Option<f32> {
+    let changes = changes_to_relationship_in_range(world, rel, from_batch, to_batch);
+    if changes.len() < 2 {
+        return None;
+    }
+    let newest = changes.first()?.after.as_slice().get(Relationship::WEIGHT_SLOT).copied()?;
+    let oldest = changes.last()?.after.as_slice().get(Relationship::WEIGHT_SLOT).copied()?;
+    Some(newest - oldest)
+}
+
+/// Classify the weight trend of `rel` using first-vs-last entry comparison.
+///
+/// Unlike `relationship_weight_trend` (OLS regression), this is robust to
+/// **fast-saturating** Hebbian signals that plateau after a few ticks and
+/// would register a near-zero OLS slope despite a large net weight gain.
+///
+/// Returns `None` when there are fewer than two ChangeLog entries in the
+/// range. Returns `Trend::Stable` when the delta is within `±stable_threshold`.
+pub fn relationship_weight_trend_delta(
+    world: &World,
+    rel: RelationshipId,
+    from_batch: BatchId,
+    to_batch: BatchId,
+    stable_threshold: f32,
+) -> Option<Trend> {
+    let delta = relationship_weight_delta(world, rel, from_batch, to_batch)?;
+    Some(if delta > stable_threshold {
+        Trend::Rising { slope: delta }
+    } else if delta < -stable_threshold {
+        Trend::Falling { slope: delta }
+    } else {
+        Trend::Stable
+    })
+}
+
+/// Like [`relationship_weight_trend`] but with an explicit `stable_threshold`.
+pub fn relationship_weight_trend_with_threshold(
+    world: &World,
+    rel: RelationshipId,
+    from_batch: BatchId,
+    to_batch: BatchId,
+    stable_threshold: f32,
+) -> Option<Trend> {
+    let changes = changes_to_relationship_in_range(world, rel, from_batch, to_batch);
+    let n = changes.len();
+    if n < 2 {
+        return None;
+    }
+
+    let Some(slope) = ols_slot_slope(&changes, 1) else {
+        return Some(Trend::Stable);
+    };
+
+    Some(if slope > stable_threshold {
+        Trend::Rising { slope }
+    } else if slope < -stable_threshold {
+        Trend::Falling { slope }
+    } else {
+        Trend::Stable
+    })
+}
+
+// ─── Coarse trail (E2) ───────────────────────────────────────────────────────
+
+/// Result of a causal walk that crossed a trim boundary.
+///
+/// `causal_coarse_trail` walks the predecessor DAG as far as the log allows
+/// (populating `fine`), then collects `TrimSummary` entries for every locus
+/// whose causal chain was cut by `trim_before_batch` (populating `coarse`).
+///
+/// This lets callers answer "why did X happen?" even when the raw early history
+/// was discarded — the coarse trail gives aggregate counts, net state deltas,
+/// and the influence kinds that were active in the trimmed window.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoarseTrail {
+    /// Fine-grained ancestor `ChangeId`s still present in the log.
+    pub fine: Vec<ChangeId>,
+    /// Coarse summaries from `ChangeLog::trim_summaries_for_locus` for every
+    /// locus whose causal predecessor was trimmed away.
+    pub coarse: Vec<TrimSummary>,
+}
+
+impl CoarseTrail {
+    /// `true` when no fine ancestors and no coarse summaries — the target has
+    /// no causal context at all (root stimulus or not in the log).
+    pub fn is_empty(&self) -> bool {
+        self.fine.is_empty() && self.coarse.is_empty()
+    }
+
+    /// `true` when the coarse trail is complete — no coarse summaries were
+    /// needed (causal history is fully available in the log).
+    pub fn is_exact(&self) -> bool {
+        self.coarse.is_empty()
+    }
+}
+
+/// Walk the predecessor DAG from `target`, returning both fine-grained
+/// ancestors still in the log and coarse summaries for any trimmed ranges
+/// that were crossed.
+///
+/// **Algorithm:**
+/// 1. Run the normal BFS ancestor walk (collecting `fine`).
+/// 2. For each change in `fine` (and `target` itself) that has a predecessor
+///    ID below the log's earliest retained ID, record the change's subject locus.
+/// 3. Fetch `trim_summaries_for_locus` for each such locus and flatten into
+///    `coarse`.
+///
+/// Deduplicates coarse summaries — each locus contributes at most one
+/// contiguous batch-range summary per `trim_before_batch` call.
+///
+/// Returns an empty `CoarseTrail` when `target` is not in the log.
+pub fn causal_coarse_trail(world: &World, target: ChangeId) -> CoarseTrail {
+    let log = world.log();
+
+    // The first retained ID; anything strictly below was trimmed.
+    let first_retained = log.iter().next().map(|c| c.id.0).unwrap_or(u64::MAX);
+
+    let fine_changes = log.causal_ancestors(target);
+    let fine: Vec<ChangeId> = fine_changes.iter().map(|c| c.id).collect();
+
+    // Collect loci whose changes were trimmed and are referenced as predecessors.
+    // Use `trimmed_locus_for` to resolve each trimmed predecessor ID back to its locus.
+    let mut trimmed_loci: FxHashMap<LocusId, ()> = FxHashMap::default();
+
+    let mut check_preds = |preds: &[ChangeId]| {
+        for &pred in preds {
+            if pred.0 < first_retained {
+                if let Some(lid) = log.trimmed_locus_for(pred) {
+                    trimmed_loci.insert(lid, ());
+                }
+            }
+        }
+    };
+
+    if let Some(root) = log.get(target) {
+        check_preds(&root.predecessors);
+    }
+    for c in &fine_changes {
+        check_preds(&c.predecessors);
+    }
+
+    let coarse: Vec<TrimSummary> = trimmed_loci
+        .keys()
+        .flat_map(|&lid| log.trim_summaries_for_locus(lid))
+        .cloned()
+        .collect();
+
+    CoarseTrail { fine, coarse }
+}
+
 // ─── OLS helper ──────────────────────────────────────────────────────────────
 
-/// OLS linear regression slope over a sequence of `Change` activity values.
+/// OLS linear regression slope over a sequence of `Change` values for a
+/// given `StateVector` slot index.
 ///
-/// x = change index (0..n-1), y = `change.after[0]` (activity slot).
+/// x = change index (0..n-1), y = `change.after[slot_idx]`.
 ///
-/// Returns `None` when the x-variance is near-zero (constant x, or n < 2).
-/// Used by both `relationship_activity_trend_with_threshold` and
-/// `profile::ols_slope_for_rel` to avoid duplicating the formula.
-pub(crate) fn ols_activity_slope(changes: &[&Change]) -> Option<f32> {
+/// Returns `None` when the x-variance is near-zero (constant x, or n < 2),
+/// or when `slot_idx` is out of bounds for the changes.
+pub(crate) fn ols_slot_slope(changes: &[&Change], slot_idx: usize) -> Option<f32> {
     let n = changes.len();
     if n < 2 {
         return None;
@@ -336,7 +528,7 @@ pub(crate) fn ols_activity_slope(changes: &[&Change]) -> Option<f32> {
     let (sum_y, sum_xy) = changes.iter().enumerate().fold(
         (0.0f32, 0.0f32),
         |(sy, sxy), (i, c)| {
-            let a = c.after.as_slice().first().copied().unwrap_or(0.0);
+            let a = c.after.as_slice().get(slot_idx).copied().unwrap_or(0.0);
             (sy + a, sxy + i as f32 * a)
         },
     );
@@ -345,6 +537,17 @@ pub(crate) fn ols_activity_slope(changes: &[&Change]) -> Option<f32> {
         return None;
     }
     Some((nf * sum_xy - sum_x * sum_y) / denom)
+}
+
+/// OLS linear regression slope over a sequence of `Change` activity values.
+///
+/// x = change index (0..n-1), y = `change.after[0]` (activity slot).
+///
+/// Returns `None` when the x-variance is near-zero (constant x, or n < 2).
+/// Used by both `relationship_activity_trend_with_threshold` and
+/// `profile::ols_slope_for_rel` to avoid duplicating the formula.
+pub(crate) fn ols_activity_slope(changes: &[&Change]) -> Option<f32> {
+    ols_slot_slope(changes, 0)
 }
 
 // ─── Ancestor queries ─────────────────────────────────────────────────────────
@@ -789,6 +992,43 @@ mod tests {
 
         let common = common_ancestors(&w, ChangeId(1), ChangeId(3));
         assert!(common.is_empty());
+    }
+
+    // ── causal_coarse_trail ─────────────────────────────────────────────────
+
+    #[test]
+    fn coarse_trail_exact_when_no_trim() {
+        let w = chain_world();
+        let trail = causal_coarse_trail(&w, ChangeId(2));
+        assert!(trail.is_exact(), "no trim → should be exact");
+        assert!(!trail.fine.is_empty(), "should have fine ancestors");
+    }
+
+    #[test]
+    fn coarse_trail_contains_summary_after_trim() {
+        let mut w = World::new();
+        // c0 (batch 0, locus 0) → c1 (batch 1) → c2 (batch 2)
+        push_change(&mut w, 0, 0, vec![], 0);
+        push_change(&mut w, 1, 1, vec![0], 1);
+        push_change(&mut w, 2, 2, vec![1], 2);
+
+        // Trim everything before batch 1 — c0 becomes a summary for locus 0.
+        w.log_mut().trim_before_batch(BatchId(1));
+
+        let trail = causal_coarse_trail(&w, ChangeId(2));
+        // c1 is in fine (batch 1 was kept); c0 is trimmed.
+        assert!(trail.fine.contains(&ChangeId(1)));
+        // Coarse should contain the summary for locus 0 (c0's locus).
+        // c1's subject is locus 1, and its predecessor c0 is trimmed → locus 1 gets a summary.
+        assert!(!trail.coarse.is_empty(), "should have coarse summaries for the trimmed locus");
+        assert!(!trail.is_exact(), "trim boundary was crossed → not exact");
+    }
+
+    #[test]
+    fn coarse_trail_empty_for_unknown_change() {
+        let w = chain_world();
+        let trail = causal_coarse_trail(&w, ChangeId(999));
+        assert!(trail.is_empty());
     }
 
     // ── causal_depth ────────────────────────────────────────────────────────

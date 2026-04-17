@@ -5,7 +5,7 @@
 
 use graph_core::{
     BatchId, Change, ChangeId, Entity, EntityId, EntityLayer, Locus, LocusId,
-    Relationship, RelationshipId, RelationshipKindId, StateVector,
+    Relationship, RelationshipId, RelationshipKindId, StateVector, TrimSummary,
 };
 use rustc_hash::FxHashSet;
 
@@ -42,6 +42,15 @@ impl World {
     /// Delegates to `ChangeLog::is_ancestor_of`.
     pub fn is_ancestor_of(&self, ancestor: ChangeId, descendant: ChangeId) -> bool {
         self.log.is_ancestor_of(ancestor, descendant)
+    }
+
+    /// Trim summaries for `locus`, oldest first (E2).
+    ///
+    /// Non-empty after `trim_before_batch` has been called and the locus had
+    /// changes in the trimmed range. Use `causal_coarse_trail` in `graph-query`
+    /// to follow these summaries across the trim boundary.
+    pub fn trim_summaries_for_locus(&self, locus: LocusId) -> &[TrimSummary] {
+        self.log.trim_summaries_for_locus(locus)
     }
 
     // ── Relationship queries ─────────────────────────────────────────────

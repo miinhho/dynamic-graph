@@ -11,6 +11,7 @@ pub mod metrics;
 pub mod world;
 
 pub use store::change_log::ChangeLog;
+pub use graph_core::TrimSummary;
 pub use store::cohere_store::{CohereSnapshot, CohereStore};
 pub use store::entity_store::EntityStore;
 pub use store::locus_store::LocusStore;

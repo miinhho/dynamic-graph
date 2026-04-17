@@ -22,6 +22,30 @@ use crate::property::Properties;
 use crate::relationship::RelationshipId;
 use crate::state::StateVector;
 
+/// Per-locus summary of a trimmed batch range — produced by
+/// `ChangeLog::trim_before_batch` before discarding raw changes.
+///
+/// Acts as a "coarse trail" node: `causal_coarse_trail` returns these when
+/// a causal BFS walk hits the trim boundary, giving callers aggregate context
+/// instead of a dead end.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct TrimSummary {
+    /// Locus this summary covers.
+    pub locus: LocusId,
+    /// First batch in the trimmed range (inclusive).
+    pub batch_from: BatchId,
+    /// Exclusive upper bound of the trimmed range (= `retain_from_batch`).
+    pub batch_to: BatchId,
+    /// Number of raw changes that were discarded.
+    pub change_count: u32,
+    /// Net state change: `Σ(after) − Σ(before)` over all trimmed changes.
+    /// Represents the aggregate "push" applied to this locus in the range.
+    pub net_delta_state: StateVector,
+    /// Distinct influence kinds observed in the trimmed range.
+    pub kinds_observed: Vec<InfluenceKindId>,
+}
+
 /// What a change is *about*.
 ///
 /// - `Locus`: modifies a locus's state and may trigger its program.

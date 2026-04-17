@@ -71,7 +71,7 @@ pub use centrality::{
     modularity,
 };
 pub use causality::{
-    causal_ancestors, causal_depth, causal_descendants,
+    causal_ancestors, causal_coarse_trail, causal_depth, causal_descendants,
     changes_to_locus_in_range,
     changes_to_relationship_in_range, common_ancestors, committed_batches,
     is_ancestor_of, last_change_to_locus, last_change_to_relationship,
@@ -80,6 +80,7 @@ pub use causality::{
     relationship_weight_delta, relationship_weight_trend,
     relationship_weight_trend_delta, relationship_weight_trend_with_threshold, Trend,
     relationships_changed_in_batch, root_stimuli, root_stimuli_for_relationship,
+    CoarseTrail,
 };
 pub use filter::{
     active_entities, entities_matching, entities_with_coherence, entities_with_member,

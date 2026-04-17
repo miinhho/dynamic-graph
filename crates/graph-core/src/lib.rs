@@ -24,7 +24,7 @@ pub mod stabilization;
 pub mod state;
 pub mod weathering;
 
-pub use change::{Change, ChangeSubject};
+pub use change::{Change, ChangeSubject, TrimSummary};
 pub use ids::{BatchId, ChangeId, InfluenceKindId, LocusId, LocusKindId, RelationshipKindId};
 pub use locus::Locus;
 pub use program::{
