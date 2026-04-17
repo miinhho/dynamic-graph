@@ -6,6 +6,8 @@ version.workspace = true
 
 [features]
 storage = ["dep:graph-storage"]
+tokio = ["dep:tokio"]
+perf-timing = []
 
 [dependencies]
 graph-core.workspace = true
@@ -15,6 +17,7 @@ rustc-hash.workspace = true
 smallvec.workspace = true
 rayon = "1"
 graph-storage = { workspace = true, optional = true }
+tokio = { version = "1", features = ["macros", "sync", "time", "rt"], optional = true }
 
 [dev-dependencies]
 graph-testkit.workspace = true
@@ -40,6 +43,9 @@ name = "neural_population"
 
 [[example]]
 name = "supply_chain"
+
+[[example]]
+name = "stress_emergence"
 
 [[bench]]
 name = "engine"

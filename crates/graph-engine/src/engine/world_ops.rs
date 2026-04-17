@@ -9,7 +9,7 @@
 use graph_core::{
     apply_skeleton, BatchId, EmergenceProposal, EndpointKey, Entity, EntityLayer, EntityLineage,
     EntitySnapshot, EntityStatus, EntityWeatheringPolicy, InfluenceKindId, InteractionEffect,
-    LayerTransition, LifecycleCause, Relationship, RelationshipId,
+    LayerTransition, LifecycleCause, Relationship, RelationshipId, StateVector,
     WeatheringEffect, WorldEvent,
 };
 use graph_world::World;
@@ -153,11 +153,36 @@ pub(crate) fn recognize_entities(
     influence_registry: &InfluenceKindRegistry,
     perspective: &dyn EmergencePerspective,
 ) -> Vec<WorldEvent> {
+    #[cfg(feature = "perf-timing")]
+    let t0 = std::time::Instant::now();
+
     let (_, mut events) = flush_relationship_decay(world, influence_registry);
+
+    #[cfg(feature = "perf-timing")]
+    let flush_us = t0.elapsed().as_micros();
+    #[cfg(feature = "perf-timing")]
+    let t1 = std::time::Instant::now();
+
     let batch = world.current_batch();
     let proposals = perspective.recognize(world.relationships(), world.entities(), batch);
+
+    #[cfg(feature = "perf-timing")]
+    let recognize_us = t1.elapsed().as_micros();
+    #[cfg(feature = "perf-timing")]
+    let t2 = std::time::Instant::now();
+
     let proposal_events = apply_proposals(world, proposals, batch);
     events.extend(proposal_events);
+
+    #[cfg(feature = "perf-timing")]
+    {
+        let apply_us = t2.elapsed().as_micros();
+        let rel_count = world.relationships().iter().count();
+        eprintln!(
+            "[perf-timing] recognize_entities: flush={flush_us}µs recognize={recognize_us}µs apply={apply_us}µs rels={rel_count}"
+        );
+    }
+
     events
 }
 
@@ -215,27 +240,67 @@ pub(crate) fn trim_change_log(world: &mut World, retention_batches: u64) -> usiz
 /// When `cfg.plasticity.stdp` is true, timing-dependent rule:
 ///   - `PreFirst` or `Simultaneous`: `Δweight = +η × pre × post`  (LTP)
 ///   - `PostFirst`: `Δweight = -η × pre × post`  (LTD)
+///
+/// When `cfg.plasticity.bcm_tau` is set, BCM rule instead of plain Hebbian:
+///   `θ_M += (post² − θ_M) / τ` then `Δw = η × pre × post × (post − θ_M)`.
+///
+/// Returns one entry per relationship whose weight actually changed:
+/// `(rel_id, kind, state_before, state_after)`. Only entries where the weight
+/// delta exceeds `1e-9` are included, so callers can safely emit ChangeLog
+/// entries without generating no-op noise.
 pub(crate) fn apply_hebbian_updates(
     world: &mut World,
     obs: &[PlasticityObs],
     influence_registry: &InfluenceKindRegistry,
-) {
-    for &PlasticityObs { rel_id, kind, pre, post, timing } in obs {
-        if let Some(cfg) = influence_registry.get(kind)
-            && let Some(rel) = world.relationships_mut().get_mut(rel_id)
-            && let Some(w) = rel.state.as_mut_slice().get_mut(Relationship::WEIGHT_SLOT)
-        {
+) -> Vec<(RelationshipId, InfluenceKindId, StateVector, StateVector)> {
+    let mut changed: Vec<(RelationshipId, InfluenceKindId, StateVector, StateVector)> = Vec::new();
+
+    for &PlasticityObs { rel_id, kind, pre, post, timing, post_locus } in obs {
+        let Some(cfg) = influence_registry.get(kind) else { continue };
+        let eta = cfg.plasticity.learning_rate;
+        let max_w = cfg.plasticity.max_weight;
+
+        if let Some(bcm_tau) = cfg.plasticity.bcm_tau {
+            // BCM (Bienenstock-Cooper-Munro) rule — timing order is not used;
+            // only signal magnitudes drive plasticity direction.
+            //   θ_M += (post² − θ_M) / τ   (update threshold FIRST)
+            //   Δw   = η × pre × post × (post − θ_M)
+            // When post > θ_M → LTP (weight up); post < θ_M → LTD (weight down).
+            let tau = bcm_tau.max(1.0);
+            let entry = world.bcm_thresholds_mut().entry(post_locus).or_insert(0.0);
+            let theta = *entry;
+            *entry = theta + (post * post - theta) / tau;
+
+            if let Some(rel) = world.relationships_mut().get_mut(rel_id) {
+                let cur_w = rel.state.as_slice().get(Relationship::WEIGHT_SLOT).copied().unwrap_or(0.0);
+                let new_w = (cur_w + eta * pre * post * (post - theta)).clamp(0.0, max_w);
+                if (new_w - cur_w).abs() > 1e-9 {
+                    let before = rel.state.clone();
+                    rel.state.as_mut_slice()[Relationship::WEIGHT_SLOT] = new_w;
+                    changed.push((rel_id, kind, before, rel.state.clone()));
+                }
+            }
+        } else if let Some(rel) = world.relationships_mut().get_mut(rel_id) {
+            let cur_w = rel.state.as_slice().get(Relationship::WEIGHT_SLOT).copied().unwrap_or(0.0);
             // STDP: PostFirst → LTD (negative delta); otherwise LTP.
             // When stdp is false, sign is always +1 (standard Hebbian).
-            let sign: f32 = if cfg.plasticity.stdp && timing == TimingOrder::PostFirst {
-                -1.0
+            let sign: f32 = if cfg.plasticity.stdp && timing == TimingOrder::PostFirst { -1.0 } else { 1.0 };
+            // Use ltd_rate for the LTD direction when explicitly set (asymmetric rates).
+            let effective_eta = if sign < 0.0 && cfg.plasticity.ltd_rate > 0.0 {
+                cfg.plasticity.ltd_rate
             } else {
-                1.0
+                eta
             };
-            *w = (*w + sign * cfg.plasticity.learning_rate * pre * post)
-                .clamp(0.0, cfg.plasticity.max_weight);
+            let new_w = (cur_w + sign * effective_eta * pre * post).clamp(0.0, max_w);
+            if (new_w - cur_w).abs() > 1e-9 {
+                let before = rel.state.clone();
+                rel.state.as_mut_slice()[Relationship::WEIGHT_SLOT] = new_w;
+                changed.push((rel_id, kind, before, rel.state.clone()));
+            }
         }
     }
+
+    changed
 }
 
 /// Apply cross-kind interaction effects for endpoint pairs touched by 2+
@@ -460,11 +525,12 @@ mod tests {
         let (mut world, rel_id) = make_world_with_rel(1.0, 0.0);
         let mut reg = InfluenceKindRegistry::new();
         reg.insert(InfluenceKindId(1), InfluenceKindConfig::new("t").with_plasticity(
-            PlasticityConfig { learning_rate: 0.1, weight_decay: 1.0, max_weight: 10.0, stdp: false },
+            PlasticityConfig { learning_rate: 0.1, weight_decay: 1.0, max_weight: 10.0, stdp: false,
+            ..Default::default() },
         ));
 
         // Δw = 0.1 × 0.8 × 0.9 = 0.072
-        apply_hebbian_updates(&mut world, &[PlasticityObs { rel_id, kind: InfluenceKindId(1), pre: 0.8, post: 0.9, timing: TimingOrder::Simultaneous }], &reg);
+        let _ = apply_hebbian_updates(&mut world, &[PlasticityObs { rel_id, kind: InfluenceKindId(1), pre: 0.8, post: 0.9, timing: TimingOrder::Simultaneous, post_locus: LocusId(2) }], &reg);
 
         let w = world.relationships().get(rel_id).unwrap().weight();
         assert!((w - 0.072).abs() < 1e-6, "weight = {w}");
@@ -475,10 +541,11 @@ mod tests {
         let (mut world, rel_id) = make_world_with_rel(1.0, 9.9);
         let mut reg = InfluenceKindRegistry::new();
         reg.insert(InfluenceKindId(1), InfluenceKindConfig::new("t").with_plasticity(
-            PlasticityConfig { learning_rate: 1.0, weight_decay: 1.0, max_weight: 10.0, stdp: false },
+            PlasticityConfig { learning_rate: 1.0, weight_decay: 1.0, max_weight: 10.0, stdp: false,
+            ..Default::default() },
         ));
 
-        apply_hebbian_updates(&mut world, &[PlasticityObs { rel_id, kind: InfluenceKindId(1), pre: 1.0, post: 1.0, timing: TimingOrder::Simultaneous }], &reg);
+        apply_hebbian_updates(&mut world, &[PlasticityObs { rel_id, kind: InfluenceKindId(1), pre: 1.0, post: 1.0, timing: TimingOrder::Simultaneous, post_locus: LocusId(2) }], &reg);
 
         let w = world.relationships().get(rel_id).unwrap().weight();
         assert!((w - 10.0).abs() < 1e-6, "weight = {w}");
@@ -490,7 +557,7 @@ mod tests {
         let mut reg = InfluenceKindRegistry::new();
         reg.insert(InfluenceKindId(1), InfluenceKindConfig::new("t"));
 
-        apply_hebbian_updates(&mut world, &[PlasticityObs { rel_id, kind: InfluenceKindId(1), pre: 1.0, post: 1.0, timing: TimingOrder::Simultaneous }], &reg);
+        apply_hebbian_updates(&mut world, &[PlasticityObs { rel_id, kind: InfluenceKindId(1), pre: 1.0, post: 1.0, timing: TimingOrder::Simultaneous, post_locus: LocusId(2) }], &reg);
 
         let w = world.relationships().get(rel_id).unwrap().weight();
         assert!((w - 3.0).abs() < 1e-6, "weight should be unchanged, got {w}");
@@ -505,6 +572,7 @@ mod tests {
                 weight_decay: 1.0,
                 max_weight: 10.0,
                 stdp: true,
+            ..Default::default()
             }),
         );
         reg
@@ -514,7 +582,7 @@ mod tests {
     fn stdp_causal_strengthens() {
         let (mut world, rel_id) = make_world_with_rel(1.0, 0.0);
         let reg = make_stdp_reg();
-        apply_hebbian_updates(&mut world, &[PlasticityObs { rel_id, kind: InfluenceKindId(1), pre: 0.8, post: 0.9, timing: TimingOrder::PreFirst }], &reg);
+        apply_hebbian_updates(&mut world, &[PlasticityObs { rel_id, kind: InfluenceKindId(1), pre: 0.8, post: 0.9, timing: TimingOrder::PreFirst, post_locus: LocusId(2) }], &reg);
         let w = world.relationships().get(rel_id).unwrap().weight();
         assert!(w > 0.0, "causal STDP should increase weight, got {w}");
         assert!((w - 0.072).abs() < 1e-6, "expected 0.072, got {w}");
@@ -525,7 +593,7 @@ mod tests {
         let (mut world, rel_id) = make_world_with_rel(1.0, 0.5);
         let reg = make_stdp_reg();
         // Δw = -0.1 × 1.0 × 1.0 = -0.1  → 0.5 - 0.1 = 0.4
-        apply_hebbian_updates(&mut world, &[PlasticityObs { rel_id, kind: InfluenceKindId(1), pre: 1.0, post: 1.0, timing: TimingOrder::PostFirst }], &reg);
+        apply_hebbian_updates(&mut world, &[PlasticityObs { rel_id, kind: InfluenceKindId(1), pre: 1.0, post: 1.0, timing: TimingOrder::PostFirst, post_locus: LocusId(2) }], &reg);
         let w = world.relationships().get(rel_id).unwrap().weight();
         assert!(w < 0.5, "anti-causal STDP should decrease weight, got {w}");
         assert!((w - 0.4).abs() < 1e-6, "expected 0.4, got {w}");
@@ -535,7 +603,7 @@ mod tests {
     fn stdp_anticausal_clamps_at_zero() {
         let (mut world, rel_id) = make_world_with_rel(1.0, 0.0);
         let reg = make_stdp_reg();
-        apply_hebbian_updates(&mut world, &[PlasticityObs { rel_id, kind: InfluenceKindId(1), pre: 1.0, post: 1.0, timing: TimingOrder::PostFirst }], &reg);
+        apply_hebbian_updates(&mut world, &[PlasticityObs { rel_id, kind: InfluenceKindId(1), pre: 1.0, post: 1.0, timing: TimingOrder::PostFirst, post_locus: LocusId(2) }], &reg);
         let w = world.relationships().get(rel_id).unwrap().weight();
         assert!((w - 0.0).abs() < 1e-6, "weight should be clamped at 0, got {w}");
     }
@@ -544,9 +612,46 @@ mod tests {
     fn stdp_simultaneous_strengthens() {
         let (mut world, rel_id) = make_world_with_rel(1.0, 0.0);
         let reg = make_stdp_reg();
-        apply_hebbian_updates(&mut world, &[PlasticityObs { rel_id, kind: InfluenceKindId(1), pre: 0.8, post: 0.9, timing: TimingOrder::Simultaneous }], &reg);
+        apply_hebbian_updates(&mut world, &[PlasticityObs { rel_id, kind: InfluenceKindId(1), pre: 0.8, post: 0.9, timing: TimingOrder::Simultaneous, post_locus: LocusId(2) }], &reg);
         let w = world.relationships().get(rel_id).unwrap().weight();
         assert!(w > 0.0, "simultaneous STDP should increase weight, got {w}");
         assert!((w - 0.072).abs() < 1e-6, "expected 0.072, got {w}");
     }
+
+    #[test]
+    fn bcm_ltp_when_post_above_threshold() {
+        // With θ_M = 0.0 (initial), post=0.9 > θ_M → LTP: Δw = η×pre×post×(post−θ) > 0.
+        let (mut world, rel_id) = make_world_with_rel(1.0, 0.0);
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(InfluenceKindId(1), InfluenceKindConfig::new("bcm").with_plasticity(
+            PlasticityConfig { learning_rate: 0.1, weight_decay: 1.0, max_weight: 10.0,
+                ..Default::default() }.with_bcm(10.0),
+        ));
+        apply_hebbian_updates(&mut world, &[PlasticityObs { rel_id, kind: InfluenceKindId(1),
+            pre: 1.0, post: 0.9, timing: TimingOrder::Simultaneous, post_locus: LocusId(2) }], &reg);
+        let w = world.relationships().get(rel_id).unwrap().weight();
+        // Δw = 0.1 × 1.0 × 0.9 × (0.9 − 0.0) = 0.081
+        assert!((w - 0.081).abs() < 1e-6, "expected 0.081, got {w}");
+        // θ_M should now be non-zero
+        assert!(world.bcm_threshold(LocusId(2)) > 0.0);
+    }
+
+    #[test]
+    fn bcm_ltd_when_post_below_threshold() {
+        // Pre-seed θ_M = 0.5, then post=0.2 < 0.5 → LTD: Δw < 0.
+        let (mut world, rel_id) = make_world_with_rel(1.0, 0.5);
+        world.bcm_thresholds_mut().insert(LocusId(2), 0.5f32);
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(InfluenceKindId(1), InfluenceKindConfig::new("bcm").with_plasticity(
+            PlasticityConfig { learning_rate: 0.1, weight_decay: 1.0, max_weight: 10.0,
+                ..Default::default() }.with_bcm(10.0),
+        ));
+        apply_hebbian_updates(&mut world, &[PlasticityObs { rel_id, kind: InfluenceKindId(1),
+            pre: 1.0, post: 0.2, timing: TimingOrder::Simultaneous, post_locus: LocusId(2) }], &reg);
+        let w = world.relationships().get(rel_id).unwrap().weight();
+        // Δw = 0.1 × 1.0 × 0.2 × (0.2 − 0.5) = -0.006 → 0.5 - 0.006 = 0.494
+        assert!(w < 0.5, "LTD: weight should decrease below 0.5, got {w}");
+        assert!((w - 0.494).abs() < 1e-6, "expected 0.494, got {w}");
+    }
+
 }

@@ -77,35 +77,42 @@ impl CoherePerspective for DefaultCoherePerspective {
             return Vec::new();
         }
 
-        // Build bridge map: entity_id -> Vec<entity_id> with
-        // total cross-entity activity >= threshold.
+        // Build locus → entity index once: O(E × avg_members).
+        // Avoids O(E² × R) inner scan — instead scan relationships once O(R)
+        // and look up which entity pair each relationship bridges.
+        let mut locus_to_entity: FxHashMap<graph_core::LocusId, EntityId> =
+            FxHashMap::default();
+        for &eid in &active {
+            if let Some(e) = entities.get(eid) {
+                for &locus in &e.current.members {
+                    locus_to_entity.insert(locus, eid);
+                }
+            }
+        }
+
+        // Single O(R) pass: accumulate bridge activity per (ea, eb) pair.
+        // Key is (min(ea,eb), max(ea,eb)) to avoid double-counting.
+        let mut pair_activity: FxHashMap<(EntityId, EntityId), f32> = FxHashMap::default();
+        for rel in relationships.iter() {
+            let (from, to) = match &rel.endpoints {
+                Endpoints::Directed { from, to } => (*from, *to),
+                Endpoints::Symmetric { a, b } => (*a, *b),
+            };
+            let Some(&ea) = locus_to_entity.get(&from) else { continue };
+            let Some(&eb) = locus_to_entity.get(&to) else { continue };
+            if ea == eb {
+                continue;
+            }
+            let key = if ea < eb { (ea, eb) } else { (eb, ea) };
+            *pair_activity.entry(key).or_default() += rel.activity();
+        }
+
+        // Build bridge adjacency from pairs above threshold.
         let mut bridges: FxHashMap<EntityId, Vec<EntityId>> = FxHashMap::default();
-
-        for &ea in &active {
-            for &eb in &active {
-                if ea >= eb {
-                    continue;
-                }
-                let members_a = &entities.get(ea).unwrap().current.members;
-                let members_b = &entities.get(eb).unwrap().current.members;
-
-                let bridge_activity: f32 = relationships
-                    .iter()
-                    .filter(|r| {
-                        let (from, to) = match &r.endpoints {
-                            Endpoints::Directed { from, to } => (*from, *to),
-                            Endpoints::Symmetric { a, b } => (*a, *b),
-                        };
-                        (members_a.contains(&from) && members_b.contains(&to))
-                            || (members_a.contains(&to) && members_b.contains(&from))
-                    })
-                    .map(|r| r.activity())
-                    .sum();
-
-                if bridge_activity >= self.min_bridge_activity {
-                    bridges.entry(ea).or_default().push(eb);
-                    bridges.entry(eb).or_default().push(ea);
-                }
+        for ((ea, eb), activity) in &pair_activity {
+            if *activity >= self.min_bridge_activity {
+                bridges.entry(*ea).or_default().push(*eb);
+                bridges.entry(*eb).or_default().push(*ea);
             }
         }
 

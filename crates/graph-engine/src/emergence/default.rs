@@ -236,24 +236,24 @@ struct CommunityResult {
 /// inhibitory edges tends to end up in a different community.
 ///
 /// Converges when no labels change, or after `max_iter` rounds.
+///
+/// Implementation note: label propagation uses dense `Vec` storage
+/// (local index → label index) rather than `HashMap` to eliminate
+/// per-edge hash lookups in the hot inner loop.
 fn find_communities(
     store: &RelationshipStore,
     threshold: f32,
 ) -> CommunityResult {
     use rustc_hash::FxHashMap;
 
+    // Phase 1: build LocusId adjacency map (returned in CommunityResult
+    // for reuse by component_stats — do not change the output type).
     let mut adj: AdjMap = FxHashMap::default();
     for rel in store.iter() {
-        // Include any relationship whose absolute activity meets the
-        // threshold — both excitatory (positive) and inhibitory (negative).
         if rel.activity().abs() < threshold {
             continue;
         }
         let (a, b) = endpoints_pair(rel);
-        // Combine activity (instantaneous signal) and Hebbian weight
-        // (accumulated co-activation history). Weight is non-negative and
-        // zero by default, so this is a no-op when plasticity is disabled.
-        // Sign is preserved from activity so inhibitory edges still repel.
         let w = rel.activity() + rel.weight();
         adj.entry(a).or_default().push((b, rel.id, w));
         adj.entry(b).or_default().push((a, rel.id, w));
@@ -263,56 +263,88 @@ fn find_communities(
         return CommunityResult { components: Vec::new(), adj };
     }
 
-    let mut labels: FxHashMap<LocusId, LocusId> = adj
-        .keys()
-        .map(|&id| (id, id))
-        .collect();
-
+    // Phase 2: assign each LocusId a dense local index so label propagation
+    // can use Vec<usize> instead of FxHashMap<LocusId, LocusId>.
+    // all_loci is sorted so index 0 = smallest LocusId (tie-break matches old behavior).
     let mut all_loci: Vec<LocusId> = adj.keys().copied().collect();
     all_loci.sort();
+    let n = all_loci.len();
 
-    let mut label_weight: FxHashMap<LocusId, f32> = FxHashMap::default();
-    // LCG state for deterministic per-iteration shuffling.
-    // Breaks the systematic small-ID-first bias without introducing
-    // a PRNG crate dependency. Seed is fixed for reproducibility.
+    let mut locus_to_idx: FxHashMap<LocusId, usize> =
+        FxHashMap::with_capacity_and_hasher(n, Default::default());
+    for (i, &id) in all_loci.iter().enumerate() {
+        locus_to_idx.insert(id, i);
+    }
+
+    // Convert adjacency to local-index form: (neighbor_idx, rel_id, weight).
+    // Stored as flat Vec<Vec<(usize, RelationshipId, f32)>> indexed by local idx.
+    let local_adj: Vec<Vec<(usize, RelationshipId, f32)>> = all_loci
+        .iter()
+        .map(|id| {
+            adj[id]
+                .iter()
+                .map(|&(nb, rid, w)| (locus_to_idx[&nb], rid, w))
+                .collect()
+        })
+        .collect();
+
+    // Phase 3: label propagation with Vec scratch buffers.
+    // labels[i] = local label index for node i.
+    // label_weight[l] = accumulated vote weight for label l (zeroed between nodes).
+    // seen[l] = true if label_weight[l] was written (avoids scanning full Vec to reset).
+    let mut labels: Vec<usize> = (0..n).collect();
+    let mut label_weight: Vec<f32> = vec![0.0; n];
+    let mut seen: Vec<bool> = vec![false; n];
+    let mut dirty_labels: Vec<usize> = Vec::new(); // labels touched this node
+
+    let mut order: Vec<usize> = (0..n).collect();
     let mut lcg_state: u64 = 0x517cc1b727220a95;
 
     const MAX_ITER: usize = 15;
     for _ in 0..MAX_ITER {
-        // Shuffle node order each pass (Fisher-Yates with inline LCG).
-        let n = all_loci.len();
         for i in (1..n).rev() {
             lcg_state = lcg_state
                 .wrapping_mul(6364136223846793005)
                 .wrapping_add(1442695040888963407);
             let j = (lcg_state >> 33) as usize % (i + 1);
-            all_loci.swap(i, j);
+            order.swap(i, j);
         }
 
         let mut changed = false;
-        for &node in &all_loci {
-            let neighbors = match adj.get(&node) {
-                Some(ns) => ns,
-                None => continue,
-            };
-            label_weight.clear();
+        for &node in &order {
+            let neighbors = &local_adj[node];
+            dirty_labels.clear();
+
             for &(nb, _, w) in neighbors {
-                let nb_label = labels[&nb];
-                *label_weight.entry(nb_label).or_default() += w;
-            }
-            if let Some((&best_label, _)) = label_weight
-                .iter()
-                .max_by(|(la, wa), (lb, wb)| {
-                    wa.partial_cmp(wb)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                        .then_with(|| lb.0.cmp(&la.0))
-                })
-            {
-                let current = labels.get_mut(&node).unwrap();
-                if *current != best_label {
-                    *current = best_label;
-                    changed = true;
+                let lbl = labels[nb];
+                if !seen[lbl] {
+                    seen[lbl] = true;
+                    dirty_labels.push(lbl);
                 }
+                label_weight[lbl] += w;
+            }
+
+            // Tie-break: prefer smaller local index (= smaller LocusId, matching old behavior).
+            let best_label = dirty_labels
+                .iter()
+                .copied()
+                .max_by(|&a, &b| {
+                    label_weight[a]
+                        .partial_cmp(&label_weight[b])
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then(b.cmp(&a))
+                })
+                .unwrap_or(labels[node]);
+
+            // Reset scratch.
+            for &lbl in &dirty_labels {
+                label_weight[lbl] = 0.0;
+                seen[lbl] = false;
+            }
+
+            if labels[node] != best_label {
+                labels[node] = best_label;
+                changed = true;
             }
         }
         if !changed {
@@ -320,9 +352,10 @@ fn find_communities(
         }
     }
 
-    let mut groups: rustc_hash::FxHashMap<LocusId, Vec<LocusId>> = FxHashMap::default();
-    for (&node, &label) in &labels {
-        groups.entry(label).or_default().push(node);
+    // Phase 4: group nodes by label → LocusId components.
+    let mut groups: FxHashMap<usize, Vec<LocusId>> = FxHashMap::default();
+    for (i, &lbl) in labels.iter().enumerate() {
+        groups.entry(lbl).or_default().push(all_loci[i]);
     }
     let mut components: Vec<Vec<LocusId>> = groups.into_values().collect();
     for c in &mut components {
