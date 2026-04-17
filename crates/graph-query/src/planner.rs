@@ -102,6 +102,50 @@ pub fn explain(world: &World, query: &Query) -> QueryPlan {
         Query::FindEntities { predicates, sort_by, limit } => {
             explain_find_entities(world, predicates.len(), sort_by.is_some(), *limit)
         }
+        // Causal-strength queries: O(R) scan over all directed relationships of the kind.
+        Query::CausalDirection { kind, .. } => single_scan_plan(
+            world.relationships().len(),
+            &format!("causal_direction scan over relationships of kind {:?}", kind),
+            Some(1),
+        ),
+        Query::DominantCauses { kind, n, .. } => single_scan_plan(
+            world.relationships().len(),
+            &format!("dominant_causes scan for kind {:?}, top {}", kind, n),
+            Some(*n),
+        ),
+        Query::DominantEffects { kind, n, .. } => single_scan_plan(
+            world.relationships().len(),
+            &format!("dominant_effects scan for kind {:?}, top {}", kind, n),
+            Some(*n),
+        ),
+        Query::CausalInStrength { kind, .. } | Query::CausalOutStrength { kind, .. } => single_scan_plan(
+            world.relationships().len(),
+            &format!("causal strength scan over relationships of kind {:?}", kind),
+            Some(1),
+        ),
+        Query::FeedbackPairs { kind, .. } => single_scan_plan(
+            world.relationships().len(),
+            &format!("feedback_pairs scan for kind {:?} (two passes)", kind),
+            None,
+        ),
+
+        // D2: Granger-style causality — O(ChangeLog) scan per locus pair.
+        Query::GrangerScore { kind, .. } => single_scan_plan(
+            world.log().len(),
+            &format!("granger_score ChangeLog scan for kind {:?}", kind),
+            Some(1),
+        ),
+        Query::GrangerDominantCauses { kind, n, .. } => single_scan_plan(
+            world.log().len(),
+            &format!("granger_dominant_causes ChangeLog scan for kind {:?}, top {}", kind, n),
+            Some(*n),
+        ),
+        Query::GrangerDominantEffects { kind, n, .. } => single_scan_plan(
+            world.log().len(),
+            &format!("granger_dominant_effects ChangeLog scan for kind {:?}, top {}", kind, n),
+            Some(*n),
+        ),
+
         Query::AllBetweenness { limit } => single_traversal_plan(
             world.relationships().len(),
             "Brandes betweenness centrality over all loci",
@@ -443,6 +487,19 @@ fn explain_find_entities(
         steps.push(PlanStep { description: format!("limit {}", n), cost_class: CostClass::Scan, estimated_output: est });
     }
     QueryPlan { steps, estimated_candidates_initial: total, estimated_output: est }
+}
+
+fn single_scan_plan(initial: usize, desc: &str, limit: Option<usize>) -> QueryPlan {
+    let est = limit.map_or(initial, |n| n.min(initial));
+    QueryPlan {
+        steps: vec![PlanStep {
+            description: desc.to_string(),
+            cost_class: CostClass::Scan,
+            estimated_output: est,
+        }],
+        estimated_candidates_initial: initial,
+        estimated_output: est,
+    }
 }
 
 fn single_traversal_plan(initial: usize, desc: &str, limit: Option<usize>) -> QueryPlan {
