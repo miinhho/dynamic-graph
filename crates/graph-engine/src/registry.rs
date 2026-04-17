@@ -46,21 +46,39 @@ pub struct PlasticityConfig {
     pub weight_decay: f32,
     /// Maximum weight value. Weights are clamped to `[0, max_weight]`.
     pub max_weight: f32,
-    /// When true, use STDP rule:
-    ///   - causal (pre fired before post): Δw = +η × pre × post
-    ///   - anti-causal (post fired before pre): Δw = -η × pre × post  (weight decrease)
-    ///   - simultaneous (same batch): Δw = +η × pre × post  (standard Hebbian)
+    /// LTD (Long-Term Depression) rate for anti-causal STDP (PostFirst).
+    /// When > 0, overrides `learning_rate` for weight-decrease updates.
+    /// `0.0` (default) means use `learning_rate` for both LTP and LTD —
+    /// symmetric rates. Set higher than `learning_rate` to make suppression
+    /// faster than potentiation (common in biological STDP).
+    pub ltd_rate: f32,
+    /// When true, use STDP rule with engine-native causal DAG timing:
+    ///   - PreFirst (pre caused post): Δw = +η × pre × post  (LTP)
+    ///   - PostFirst (feedback loop detected): Δw = -ltd_rate × pre × post  (LTD)
+    ///   - Simultaneous (same batch): Δw = +η × pre × post  (standard Hebbian)
+    /// Feedback is detected via bounded multi-hop DAG traversal in the
+    /// compute phase — no extra cost in the apply phase.
     /// When false (default), use standard symmetric Hebbian.
     pub stdp: bool,
+    /// When `Some(τ)`, use BCM (Bienenstock-Cooper-Munro) rule instead of plain Hebbian.
+    ///   `Δw = η × pre × post × (post − θ_M)`
+    /// where θ_M is a per-locus sliding threshold stored in `World::bcm_thresholds`.
+    /// θ_M adapts each batch: `θ_M += (post² − θ_M) / τ`.
+    /// When `post > θ_M` → LTP (weight up); when `post < θ_M` → LTD (weight down).
+    /// Mutually exclusive with `stdp` — `with_bcm` clears `stdp`.
+    /// `None` (default) disables BCM.
+    pub bcm_tau: Option<f32>,
 }
 
 impl Default for PlasticityConfig {
     fn default() -> Self {
         Self {
             learning_rate: 0.0,
+            ltd_rate: 0.0,
             weight_decay: 1.0,
             max_weight: f32::MAX,
             stdp: false,
+            bcm_tau: None,
         }
     }
 }
@@ -68,19 +86,46 @@ impl Default for PlasticityConfig {
 impl PlasticityConfig {
     /// True when plasticity is effectively enabled for this config.
     pub(crate) fn is_active(&self) -> bool {
-        self.learning_rate > 0.0
+        self.learning_rate > 0.0 || self.bcm_tau.is_some()
     }
 
     /// Enable STDP (Spike-Timing Dependent Plasticity).
     ///
     /// When enabled:
     /// - causal flow (pre before post): weight increases (`+η × pre × post`)
-    /// - anti-causal flow (post before pre): weight decreases (`-η × pre × post`)
+    /// - anti-causal flow (post before pre): weight decreases (`-ltd_rate × pre × post`)
     /// - simultaneous (same batch): same as standard Hebbian
+    ///
+    /// Clears `bcm_tau` (mutually exclusive with BCM).
     pub fn with_stdp(mut self) -> Self {
         self.stdp = true;
+        self.bcm_tau = None;
         self
     }
+
+    /// Set a separate LTD rate for anti-causal (PostFirst) STDP weight decreases.
+    ///
+    /// When `0.0` (default), `learning_rate` is used for both LTP and LTD.
+    /// Setting `ltd_rate > learning_rate` makes suppression faster than
+    /// potentiation — causes the engine to more aggressively prune
+    /// feedback paths relative to how quickly it strengthens causal ones.
+    pub fn with_ltd_rate(mut self, rate: f32) -> Self {
+        self.ltd_rate = rate.max(0.0);
+        self
+    }
+
+    /// Enable BCM (Bienenstock-Cooper-Munro) plasticity rule.
+    ///
+    /// `Δw = η × pre × post × (post − θ_M)` where θ_M is a per-locus sliding
+    /// threshold that adapts as `θ_M += (post² − θ_M) / tau`.
+    ///
+    /// Clears `stdp` (mutually exclusive).
+    pub fn with_bcm(mut self, tau: f32) -> Self {
+        self.bcm_tau = Some(tau);
+        self.stdp = false;
+        self
+    }
+
 }
 
 /// Per-influence-kind configuration held by `InfluenceKindRegistry`.
@@ -111,6 +156,16 @@ pub struct InfluenceKindConfig {
     /// decay are automatically removed during `flush_relationship_decay`.
     /// `0.0` disables auto-pruning (default).
     pub prune_activity_threshold: f32,
+    /// Relationships whose Hebbian/BCM weight falls at or below this threshold
+    /// after a plasticity update are automatically deleted at the end of that
+    /// batch. Subscribers receive a tombstone notification in the next batch,
+    /// identical to an explicit `DeleteRelationship` proposal.
+    ///
+    /// `0.0` disables weight-based pruning (default). A typical value is `0.0`
+    /// (prune when fully suppressed) or a small positive value like `0.05`
+    /// (prune when nearly suppressed). Only meaningful when plasticity is active
+    /// (`learning_rate > 0`).
+    pub prune_weight_threshold: f32,
     /// User-defined extra slots appended to the relationship `StateVector`
     /// beyond the built-in activity (slot 0) and weight (slot 1).
     ///
@@ -190,6 +245,31 @@ pub struct InfluenceKindConfig {
     ///
     /// `None` (default) — no cap applied.
     pub max_activity: Option<f32>,
+    /// Automatic relationship demotion policy (E3).
+    ///
+    /// When set, the engine evaluates this policy at the end of each tick
+    /// (after decay) and evicts matching relationships to cold storage.
+    /// Evicted relationships remain in the persistent storage backend and
+    /// are promoted back on demand via `Simulation::promote_relationship`.
+    ///
+    /// `None` (default) — no automatic demotion.
+    pub demotion_policy: Option<DemotionPolicy>,
+}
+
+/// Condition under which a relationship is automatically demoted to cold storage (E3).
+///
+/// Evaluated after per-batch decay. A relationship is demoted when it satisfies
+/// the condition AND has been idle for at least `min_idle_batches` since it was
+/// last touched by the engine.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DemotionPolicy {
+    /// Demote when `activity < threshold`.
+    ActivityFloor(f32),
+    /// Demote when the relationship has not been touched for `N` batches.
+    IdleBatches(u64),
+    /// Demote when the in-memory relationship count for this kind exceeds
+    /// `capacity`, keeping the `capacity` most recently touched.
+    LruCapacity(usize),
 }
 
 impl InfluenceKindConfig {
@@ -200,6 +280,7 @@ impl InfluenceKindConfig {
             stabilization: StabilizationConfig::default(),
             plasticity: PlasticityConfig::default(),
             prune_activity_threshold: 0.0,
+            prune_weight_threshold: 0.0,
             extra_slots: Vec::new(),
             activity_contribution: 1.0,
             parent: None,
@@ -207,11 +288,23 @@ impl InfluenceKindConfig {
             applies_between: Vec::new(),
             min_emerge_activity: 0.0,
             max_activity: None,
+            demotion_policy: None,
         }
     }
 
     pub fn with_decay(mut self, decay_per_batch: f32) -> Self {
         self.decay_per_batch = decay_per_batch;
+        self
+    }
+
+    /// Mark relationships of this kind as symmetric (undirected).
+    ///
+    /// When `true`, auto-emerged relationships use `Endpoints::Symmetric`
+    /// and the lookup key matches pre-inserted symmetric relationships.
+    /// Set this when pre-inserting `Endpoints::Symmetric` relationships so that
+    /// Hebbian plasticity can find and update them via the emergence path.
+    pub fn with_symmetric(mut self, symmetric: bool) -> Self {
+        self.symmetric = symmetric;
         self
     }
 
@@ -235,13 +328,25 @@ impl InfluenceKindConfig {
             learning_rate: rate,
             weight_decay: 0.99,
             max_weight: 1.0,
-            stdp: false,
+            ..Default::default()
         };
         self
     }
 
     pub fn with_prune_threshold(mut self, threshold: f32) -> Self {
         self.prune_activity_threshold = threshold;
+        self
+    }
+
+    /// Delete relationships whose Hebbian/BCM weight falls at or below
+    /// `threshold` after a plasticity update.
+    ///
+    /// Subscribers receive a tombstone notification in the next batch.
+    /// Only meaningful when plasticity is active (`learning_rate > 0`).
+    /// Typical values: `0.0` (prune when fully suppressed) or `0.05`
+    /// (prune when nearly suppressed).
+    pub fn with_prune_weight_threshold(mut self, threshold: f32) -> Self {
+        self.prune_weight_threshold = threshold.max(0.0);
         self
     }
 
@@ -284,6 +389,18 @@ impl InfluenceKindConfig {
     /// The cap is applied to the absolute value: `activity.clamp(-cap, cap)`.
     pub fn with_max_activity(mut self, cap: f32) -> Self {
         self.max_activity = Some(cap);
+        self
+    }
+
+    /// Enable automatic relationship demotion for this kind (E3).
+    ///
+    /// When set, the engine evaluates `policy` at the end of each tick (after
+    /// decay) and evicts qualifying relationships to cold storage. Demoted
+    /// relationships can be promoted back on demand.
+    ///
+    /// See [`DemotionPolicy`] for available policies.
+    pub fn with_demotion(mut self, policy: DemotionPolicy) -> Self {
+        self.demotion_policy = Some(policy);
         self
     }
 
@@ -527,6 +644,11 @@ impl InfluenceKindRegistry {
             config.name, config.plasticity.learning_rate
         );
         assert!(
+            config.plasticity.ltd_rate >= 0.0,
+            "InfluenceKindConfig '{}': plasticity.ltd_rate must be >= 0, got {}",
+            config.name, config.plasticity.ltd_rate
+        );
+        assert!(
             config.plasticity.weight_decay > 0.0 && config.plasticity.weight_decay <= 1.0,
             "InfluenceKindConfig '{}': plasticity.weight_decay must be in (0.0, 1.0], got {}",
             config.name, config.plasticity.weight_decay
@@ -540,6 +662,11 @@ impl InfluenceKindRegistry {
             config.prune_activity_threshold >= 0.0,
             "InfluenceKindConfig '{}': prune_activity_threshold must be >= 0, got {}",
             config.name, config.prune_activity_threshold
+        );
+        assert!(
+            config.prune_weight_threshold >= 0.0,
+            "InfluenceKindConfig '{}': prune_weight_threshold must be >= 0, got {}",
+            config.name, config.prune_weight_threshold
         );
         assert!(
             config.activity_contribution.is_finite(),
@@ -924,6 +1051,7 @@ mod tests {
                 weight_decay: 1.0,
                 max_weight: 1.0,
                 stdp: false,
+            ..Default::default()
             }),
         );
     }
@@ -939,6 +1067,7 @@ mod tests {
                 weight_decay: 1.0,
                 max_weight: 0.0,
                 stdp: false,
+            ..Default::default()
             }),
         );
     }

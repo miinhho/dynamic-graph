@@ -17,7 +17,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::cohere::CoherePerspective;
 use crate::emergence::EmergencePerspective;
-use crate::registry::InfluenceKindRegistry;
+use crate::registry::{DemotionPolicy, InfluenceKindRegistry};
 use crate::engine::batch::{PlasticityObs, TimingOrder};
 
 /// Flush all pending lazy decay for every relationship.
@@ -230,6 +230,70 @@ pub(crate) fn trim_change_log(world: &mut World, retention_batches: u64) -> usiz
     let current = world.current_batch().0;
     let retain_from = graph_core::BatchId(current.saturating_sub(retention_batches));
     world.log_mut().trim_before_batch(retain_from)
+}
+
+/// Apply per-kind demotion policies after decay, removing qualifying relationships
+/// from hot memory.
+///
+/// Evicted relationships remain in storage (if a backend is configured) and can
+/// be promoted back via `Simulation::promote_relationship`. Three policies:
+///
+/// - `ActivityFloor(f)`: evict when `activity < f`
+/// - `IdleBatches(n)`: evict when `current_batch - last_decayed_batch > n`
+/// - `LruCapacity(cap)`: keep only the `cap` most recently touched per kind;
+///   evict the oldest beyond that cap.
+///
+/// Returns the IDs of all evicted relationships.
+pub(crate) fn apply_demotion_policies(
+    world: &mut World,
+    influence_registry: &InfluenceKindRegistry,
+    current_batch: BatchId,
+) -> Vec<RelationshipId> {
+    let mut to_evict: FxHashSet<RelationshipId> = FxHashSet::default();
+
+    for kind in influence_registry.kinds() {
+        let Some(cfg) = influence_registry.get(kind) else { continue };
+        let Some(policy) = cfg.demotion_policy else { continue };
+
+        match policy {
+            DemotionPolicy::ActivityFloor(floor) => {
+                for rel in world.relationships().iter() {
+                    if rel.kind == kind && rel.activity() < floor {
+                        to_evict.insert(rel.id);
+                    }
+                }
+            }
+            DemotionPolicy::IdleBatches(n) => {
+                for rel in world.relationships().iter() {
+                    if rel.kind == kind
+                        && current_batch.0.saturating_sub(rel.last_decayed_batch) > n
+                    {
+                        to_evict.insert(rel.id);
+                    }
+                }
+            }
+            DemotionPolicy::LruCapacity(capacity) => {
+                let mut rels_of_kind: Vec<(u64, RelationshipId)> = world
+                    .relationships()
+                    .iter()
+                    .filter(|r| r.kind == kind)
+                    .map(|r| (r.last_decayed_batch, r.id))
+                    .collect();
+                if rels_of_kind.len() > capacity {
+                    rels_of_kind.sort_unstable_by(|a, b| b.0.cmp(&a.0)); // most-recent first
+                    for (_, id) in &rels_of_kind[capacity..] {
+                        to_evict.insert(*id);
+                    }
+                }
+            }
+        }
+    }
+
+    let evicted: Vec<RelationshipId> = to_evict.into_iter().collect();
+    for &id in &evicted {
+        world.relationships_mut().remove(id);
+    }
+    evicted
 }
 
 /// Apply Hebbian or STDP plasticity weight updates for a batch's observations.
@@ -493,7 +557,7 @@ mod tests {
     use graph_world::World;
     use smallvec::SmallVec;
 
-    use crate::registry::{InfluenceKindConfig, InfluenceKindRegistry, PlasticityConfig};
+    use crate::registry::{DemotionPolicy, InfluenceKindConfig, InfluenceKindRegistry, PlasticityConfig};
     use crate::engine::batch::{PlasticityObs, TimingOrder};
 
     fn make_world_with_rel(activity: f32, weight: f32) -> (World, RelationshipId) {
@@ -518,6 +582,93 @@ mod tests {
         let rel_id = rel.id;
         world.relationships_mut().insert(rel);
         (world, rel_id)
+    }
+
+    fn make_rel(world: &mut World, id: u64, kind: u64, activity: f32, last_decayed_batch: u64) -> RelationshipId {
+        let rel_id = RelationshipId(id);
+        world.loci_mut().insert(Locus::new(LocusId(id * 2), LocusKindId(0), StateVector::zeros(1)));
+        world.loci_mut().insert(Locus::new(LocusId(id * 2 + 1), LocusKindId(0), StateVector::zeros(1)));
+        let mut rel = Relationship {
+            id: rel_id,
+            kind: InfluenceKindId(kind),
+            endpoints: Endpoints::symmetric(LocusId(id * 2), LocusId(id * 2 + 1)),
+            state: StateVector::from_slice(&[activity, 0.0]),
+            lineage: RelationshipLineage { created_by: None, last_touched_by: None, change_count: 0, kinds_observed: SmallVec::new() },
+            created_batch: BatchId(0),
+            last_decayed_batch: 0,
+            metadata: None,
+        };
+        rel.last_decayed_batch = last_decayed_batch;
+        world.relationships_mut().insert(rel);
+        rel_id
+    }
+
+    #[test]
+    fn demotion_activity_floor_evicts_low_activity() {
+        let mut world = World::default();
+        let low = make_rel(&mut world, 10, 1, 0.05, 0);
+        let high = make_rel(&mut world, 11, 1, 0.9, 0);
+
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(InfluenceKindId(1), InfluenceKindConfig::new("t")
+            .with_demotion(DemotionPolicy::ActivityFloor(0.1)));
+
+        apply_demotion_policies(&mut world, &reg, BatchId(5));
+
+        assert!(world.relationships().get(low).is_none(), "low activity should be evicted");
+        assert!(world.relationships().get(high).is_some(), "high activity should remain");
+    }
+
+    #[test]
+    fn demotion_idle_batches_evicts_stale_rels() {
+        let mut world = World::default();
+        let stale = make_rel(&mut world, 20, 2, 1.0, 0);  // last touched at batch 0
+        let fresh = make_rel(&mut world, 21, 2, 1.0, 9);  // last touched at batch 9
+
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(InfluenceKindId(2), InfluenceKindConfig::new("t")
+            .with_demotion(DemotionPolicy::IdleBatches(5)));
+
+        // current_batch=10: stale idle 10 > 5 → evict; fresh idle 1 ≤ 5 → keep
+        apply_demotion_policies(&mut world, &reg, BatchId(10));
+
+        assert!(world.relationships().get(stale).is_none(), "stale should be evicted");
+        assert!(world.relationships().get(fresh).is_some(), "fresh should remain");
+    }
+
+    #[test]
+    fn demotion_lru_capacity_keeps_most_recent() {
+        let mut world = World::default();
+        // Three rels of kind 3, touched at batches 1, 5, 9 respectively.
+        let oldest = make_rel(&mut world, 30, 3, 1.0, 1);
+        let middle = make_rel(&mut world, 31, 3, 1.0, 5);
+        let newest = make_rel(&mut world, 32, 3, 1.0, 9);
+
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(InfluenceKindId(3), InfluenceKindConfig::new("t")
+            .with_demotion(DemotionPolicy::LruCapacity(2)));
+
+        apply_demotion_policies(&mut world, &reg, BatchId(10));
+
+        assert!(world.relationships().get(oldest).is_none(), "oldest should be evicted beyond cap=2");
+        assert!(world.relationships().get(middle).is_some(), "middle (2nd recent) should remain");
+        assert!(world.relationships().get(newest).is_some(), "newest should remain");
+    }
+
+    #[test]
+    fn demotion_lru_below_capacity_evicts_nothing() {
+        let mut world = World::default();
+        let a = make_rel(&mut world, 40, 4, 1.0, 5);
+        let b = make_rel(&mut world, 41, 4, 1.0, 8);
+
+        let mut reg = InfluenceKindRegistry::new();
+        reg.insert(InfluenceKindId(4), InfluenceKindConfig::new("t")
+            .with_demotion(DemotionPolicy::LruCapacity(5)));
+
+        apply_demotion_policies(&mut world, &reg, BatchId(10));
+
+        assert!(world.relationships().get(a).is_some());
+        assert!(world.relationships().get(b).is_some());
     }
 
     #[test]

@@ -375,6 +375,14 @@ impl Simulation {
                 world.evict_cold_relationships(threshold, min_idle, current_batch);
             }
 
+            // Per-kind demotion (E3): evict relationships that satisfy their
+            // kind's DemotionPolicy (ActivityFloor / IdleBatches / LruCapacity).
+            crate::engine::world_ops::apply_demotion_policies(
+                &mut *world,
+                &self.base_influences,
+                current_batch,
+            );
+
             // Auto-weathering: compress entity sediment on a periodic cadence.
             self.tick_count += 1;
             if let Some(interval) = self.auto_weather_every_ticks

@@ -22,7 +22,7 @@ pub use regime::{
 };
 pub use engine::{Engine, EngineConfig, TickResult};
 pub use graph_core::{DefaultEntityWeathering, Encoder, EntityWeatheringPolicy, LifecycleCause, PassthroughEncoder, Properties, PropertyValue, RegimeTag, StructuralProposal, WeatheringEffect, WorldEvent};
-pub use registry::{InfluenceKindConfig, InfluenceKindRegistry, LocusKindConfig, LocusKindRegistry, PlasticityConfig, SlotDefsMap};
+pub use registry::{DemotionPolicy, InfluenceKindConfig, InfluenceKindRegistry, LocusKindConfig, LocusKindRegistry, PlasticityConfig, SlotDefsMap};
 pub use graph_core::RelationshipSlotDef;
 pub use graph_world::{SubscriptionStore, WorldDiff, WorldMetrics};
 pub use simulation::{
