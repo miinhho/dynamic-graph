@@ -172,6 +172,47 @@ fn format_entity_diffs(diffs: &[EntityDiff], names: &NameMap) -> String {
         .join("\n")
 }
 
+// ─── Prediction scoring ───────────────────────────────────────────────────────
+
+/// Ask the LLM to evaluate a prediction made by the simulation engine.
+///
+/// `task_description` explains what was predicted (e.g. "faction split on
+/// Karate Club"), `ground_truth` is the known-correct answer, `prediction` is
+/// what the engine produced, and `metrics` summarises quantitative accuracy
+/// (precision, recall, accuracy percentage, etc.).
+///
+/// Returns a concise qualitative evaluation with an overall score.
+pub fn score_prediction(
+    client: &dyn LlmClient,
+    task_description: &str,
+    ground_truth: &str,
+    prediction: &str,
+    metrics: &str,
+) -> Result<String, LlmError> {
+    let system = "\
+        You are an expert evaluator of graph learning and network analysis systems. \
+        Evaluate the engine prediction against the ground truth using this rubric:\n\
+        - correctness (0-4): does the prediction capture the qualitatively correct structure?\n\
+        - precision (0-2): are false positives low?\n\
+        - recall (0-2): are false negatives low?\n\
+        - insight (0-2): does the prediction surface non-obvious structure?\n\
+        Produce a JSON object with keys: correctness, precision, recall, insight, total (sum), \
+        rationale (one sentence per criterion). \
+        Then, after the JSON block, add one paragraph of plain-language interpretation \
+        (what the engine got right, what it missed, and why). \
+        Total score range: 0–10.";
+
+    let user = format!(
+        "Task: {task_description}\n\n\
+         Ground truth:\n{ground_truth}\n\n\
+         Engine prediction:\n{prediction}\n\n\
+         Quantitative metrics:\n{metrics}\n\n\
+         Evaluate the prediction."
+    );
+
+    client.complete(system, &user)
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

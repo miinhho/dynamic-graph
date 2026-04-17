@@ -29,11 +29,13 @@
 
 use graph_boundary::{analyze_boundary, prescribe_updates, PrescriptionConfig};
 use graph_core::{BatchId, ChangeId, Endpoints};
+use graph_engine::{DefaultCoherePerspective, DefaultEmergencePerspective, InfluenceKindConfig};
 use graph_query::{entity_deviations_since, relationships_absent_without, NameMap};
 use graph_schema::SchemaWorld;
 use graph_world::World;
 
 use crate::client::LlmClient;
+use crate::configure;
 use crate::error::LlmError;
 use crate::ingest::{ExtractedNode, TextIngestor};
 
@@ -132,6 +134,63 @@ impl<'a> GraphLlm<'a> {
     /// Feed the returned [`ExtractedNode`]s into `Simulation::ingest_cooccurrence`.
     pub fn ingest(&self, text: &str, kinds: &[&str]) -> Result<Vec<ExtractedNode>, LlmError> {
         TextIngestor::new(self.client).extract(text, kinds)
+    }
+
+    // ── Parameter configuration ───────────────────────────────────────────────
+
+    /// Infer `InfluenceKindConfig` parameters from a plain-language description.
+    ///
+    /// Translates natural-language descriptions of signal behaviour into
+    /// numeric simulation parameters (decay rate, activity contribution,
+    /// Hebbian plasticity, etc.), so you don't have to hand-tune them.
+    ///
+    /// ```ignore
+    /// let cfg = g.configure_influence("glutamate",
+    ///     "fast excitatory neurotransmitter: decays quickly, does not
+    ///      saturate, and slightly strengthens repeated pathways")?;
+    /// sim_builder.influence(GLUTAMATE, cfg);
+    /// ```
+    pub fn configure_influence(
+        &self,
+        name: &str,
+        description: &str,
+    ) -> Result<InfluenceKindConfig, LlmError> {
+        configure::configure_influence(self.client, name, description)
+    }
+
+    /// Infer `DefaultEmergencePerspective` thresholds from a plain-language description.
+    ///
+    /// Controls the activity floor and entity-matching sensitivity used by
+    /// [`EngineHandle::recognize_entities`].
+    ///
+    /// ```ignore
+    /// let perspective = g.configure_emergence(
+    ///     "detect clusters even when edges are only faintly active;
+    ///      allow entities to drift considerably between ticks")?;
+    /// handle.recognize_entities(&perspective);
+    /// ```
+    pub fn configure_emergence(
+        &self,
+        description: &str,
+    ) -> Result<DefaultEmergencePerspective, LlmError> {
+        configure::configure_emergence(self.client, description)
+    }
+
+    /// Infer `DefaultCoherePerspective` bridge threshold from a plain-language description.
+    ///
+    /// Controls when entity clusters are merged into a single cohere group by
+    /// [`EngineHandle::extract_cohere`].
+    ///
+    /// ```ignore
+    /// let perspective = g.configure_cohere(
+    ///     "only merge entity clusters that are strongly and directly interacting")?;
+    /// handle.extract_cohere(&perspective);
+    /// ```
+    pub fn configure_cohere(
+        &self,
+        description: &str,
+    ) -> Result<DefaultCoherePerspective, LlmError> {
+        configure::configure_cohere(self.client, description)
     }
 }
 

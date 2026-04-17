@@ -14,8 +14,9 @@ anthropic = ["dep:reqwest"]
 ollama = ["dep:reqwest"]
 
 [dependencies]
-graph-core  = { workspace = true }
-graph-query = { workspace = true }
+graph-core   = { workspace = true }
+graph-engine = { workspace = true }
+graph-query  = { workspace = true }
 graph-boundary = { workspace = true }
 graph-schema   = { workspace = true }
 graph-world    = { workspace = true }
@@ -25,5 +26,18 @@ rustc-hash  = { workspace = true }
 
 reqwest = { version = "0.12", features = ["blocking", "json"], optional = true }
 
+[[example]]
+name = "ollama_smoke"
+required-features = ["ollama"]
+
+[[example]]
+name = "configure_demo"
+required-features = ["ollama"]
+
+[[example]]
+name = "prediction_demo"
+required-features = ["ollama"]
+
 [dev-dependencies]
-graph-engine = { workspace = true }
+smallvec = { workspace = true }
+rustc-hash = { workspace = true }

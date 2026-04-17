@@ -76,6 +76,7 @@
 //! [`MockLlmClient`] is always available for tests.
 
 mod client;
+mod configure;
 mod error;
 mod facade;
 mod ingest;
@@ -84,10 +85,11 @@ mod rag;
 mod tension;
 
 pub use client::{LlmClient, MockLlmClient};
+pub use configure::{configure_cohere, configure_emergence, configure_influence};
 pub use error::LlmError;
 pub use facade::GraphLlm;
 pub use ingest::{ExtractedNode, TextIngestor};
-pub use narrate::{narrate_counterfactual, narrate_entity_deviations};
+pub use narrate::{narrate_counterfactual, narrate_entity_deviations, score_prediction};
 pub use rag::answer_with_graph;
 pub use tension::narrate_prescriptions;
 
