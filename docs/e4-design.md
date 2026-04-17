@@ -121,15 +121,21 @@ A relationship between locus A (partition 0) and locus B (partition 1) is
 Since Apply runs partitions in parallel, two partitions cannot hold `&mut World`
 simultaneously. Options:
 
-**Option A — Owned partition slices (preferred)**
+**Option A — Owned partition slices (race risk — NOT the default)**
 
 Before the parallel Apply phase, split `RelationshipStore` into per-partition
-shards. Each partition owns its shard. Cross-partition relationships land in the
-partition of their **source locus** (from-endpoint). After Apply, shards are
-reassembled. No locking; ownership is transferred.
+shards by source locus. **Race condition**: if locus A (partition 0) and
+locus B (partition 1) both emit changes in the same batch that touch the
+shared relationship `rel(A,B)`, both partition Apply loops would write
+`rel.state`, `rel.lineage.last_touched_by`, and `rel.lineage.change_count`
+concurrently. `last_touched_by` becomes race-dependent; determinism is broken.
 
-Downside: shard split/reassemble is O(R) per batch, adding overhead for
-callers with small P or low locality.
+Option A is only safe if the cross-partition apply_emergence rule is
+**source-only**: partition P only processes emergence for relationships
+whose **from-endpoint** is in P. A change from locus B arriving at
+`rel(A,B)` would be a no-op at the relationship level — only B's locus
+state is updated. This requires the design to specify the asymmetry
+explicitly and test that locus-state-only behaviour is correct.
 
 **Option B — Mutex per relationship**
 
@@ -137,15 +143,21 @@ Wrap each `Relationship` in an `RwLock<Relationship>`. Cross-partition writes
 contend on the lock. Straightforward but changes the hot-path data layout.
 Not preferred — adds lock overhead to the already-tight Update hot path.
 
-**Option C — Cross-partition buffer (deferred)**
+**Option C — Cross-partition buffer (preferred)**
 
-During Apply, cross-partition emergence ops are pushed to a per-source-partition
-buffer. After the parallel phase, a sequential pass drains cross-partition
-buffers. This is the cleanest separation but adds a second serial phase.
+During the parallel Apply phase, cross-partition emergence ops are pushed
+to a per-source-partition buffer instead of immediately applied. After the
+parallel phase, a sequential drain pass applies the cross-partition ops in
+deterministic order. No races; locus state and relationship state separate
+cleanly.
 
-**Decision: start with Option A.** It preserves the existing single-`&mut` world
-write model and requires no data structure changes to `Relationship`. If shard
-overhead is measurable (expected only at P >> 10), revisit Option C.
+Cost: one extra serial pass over cross-partition ops only (not all of R).
+At 99% locality (stress_emergence N=10000 P=10) this is ~1% of total ops.
+
+**Decision: Option C.** The determinism guarantee is non-negotiable (the
+integration test §10 step 5 asserts exact world state equality). Option A
+is only safe with the source-only asymmetry rule, which changes semantics.
+Option C has negligible cost at the observed locality levels.
 
 ---
 
