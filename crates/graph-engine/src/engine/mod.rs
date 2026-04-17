@@ -31,7 +31,7 @@ use crate::registry::{InfluenceKindRegistry, LocusKindRegistry};
 
 use batch::{
     build_computed_change, compute_pending_change, BuiltChange, ComputedChange, DispatchInput,
-    DispatchResult, EmergenceResolution, PendingChange, PlasticityObs, TimingOrder,
+    DispatchResult, EmergenceResolution, PartitionAccumulator, PendingChange, PlasticityObs, TimingOrder,
 };
 
 #[derive(Debug, Clone)]
@@ -114,27 +114,10 @@ impl Engine {
         // dispatched — preventing cascade amplification.
         let mut last_fired: FxHashMap<LocusId, u64> = FxHashMap::default();
 
-        // Pre-allocate outside the loop; clear + reuse each iteration.
-        let mut committed_ids_by_locus: FxHashMap<LocusId, Vec<ChangeId>> = FxHashMap::default();
-        let mut affected_loci: Vec<LocusId> = Vec::new();
-        let mut affected_loci_set: FxHashSet<LocusId> = FxHashSet::default();
-        let mut plasticity_obs: Vec<PlasticityObs> = Vec::new();
-        let mut structural_proposals: Vec<StructuralProposal> = Vec::new();
-        // Per-batch kind-touch tracking for cross-kind interaction effects.
-        // Keyed by endpoint pair (EndpointKey) rather than RelationshipId because
-        // each relationship is bound to a single kind — only endpoint-level grouping
-        // can accumulate 2+ distinct kinds.
-        // Value: (set of kinds that touched this endpoint pair, rel_ids affected).
-        // When 2+ kinds co-occur the registered InteractionEffect (if any) is
-        // applied to ALL relationship activities for that endpoint pair after the
-        // Hebbian plasticity phase.
-        let mut batch_kind_touches: FxHashMap<graph_core::EndpointKey, (FxHashSet<InfluenceKindId>, FxHashSet<RelationshipId>)> = FxHashMap::default();
-        // Relationship changes that have subscribers: collected during commit,
-        // resolved to subscriber loci after the commit loop.
-        // Tuple: (rel_id, change_id, kind, from_locus, to_locus) — endpoints and
-        // kind are captured at commit time so kind-level subscriber resolution can
-        // use them without a second world lookup.
-        let mut pending_rel_notifications: Vec<(RelationshipId, ChangeId, InfluenceKindId, LocusId, LocusId)> = Vec::new();
+        // Per-batch accumulators — reused each iteration via clear().
+        // Wrapped in PartitionAccumulator so the parallel-Apply step can
+        // create one instance per partition and merge them deterministically.
+        let mut acc = PartitionAccumulator::new();
 
         // Phase timing: set GRAPH_ENGINE_PROFILE=1 to print per-phase μs to stderr.
         let profile = std::env::var_os("GRAPH_ENGINE_PROFILE").is_some();
@@ -162,13 +145,7 @@ impl Engine {
             }
 
             let batch = world.current_batch();
-            committed_ids_by_locus.clear();
-            affected_loci.clear();
-            affected_loci_set.clear();
-            plasticity_obs.clear();
-            structural_proposals.clear();
-            pending_rel_notifications.clear();
-            batch_kind_touches.clear();
+            acc.clear();
 
             // ── COMPUTE PHASE (parallel) ────────────────────────────────
             // Read the pre-batch world snapshot for every pending change and
@@ -267,25 +244,14 @@ impl Engine {
                 // Pass B2: single `extend_batch` call replaces N individual
                 // `append_change` calls, reducing ChangeLog HashMap ops from
                 // O(3N) to O(n_unique_subjects + 1).
-                let mut batch_changes: Vec<Change> = Vec::with_capacity(n);
-                // Collect newly auto-emerged relationships so we can write
-                // explicit ChangeSubject::Relationship log entries after the
-                // main batch commit.  Without these entries, causal queries
-                // that walk ChangeSubject::Relationship log entries cannot
-                // find auto-emerged relationships — they would only be
-                // discoverable via the lineage.created_by backlink, which is
-                // an implicit side-channel rather than a first-class log fact.
-                // (rel_id, trigger_change_id, kind, initial_state)
-                // Carrying initial_state avoids a second relationship-store lookup in Pass B3.
-                let mut new_emerged_rels: Vec<(RelationshipId, ChangeId, InfluenceKindId, StateVector)> =
-                    Vec::new();
+                acc.batch_changes.reserve(n);
 
                 let t_ae0 = if profile { Some(std::time::Instant::now()) } else { None };
                 for bc in built {
                     match bc {
                         BuiltChange::Locus(c) => {
                             let id = c.change.id;
-                            batch_changes.push(c.change);
+                            acc.batch_changes.push(c.change);
                             if let Some(patch) = c.property_patch {
                                 if let Some(props) = world.properties_mut().get_mut(c.locus_id) {
                                     props.extend(&patch);
@@ -313,7 +279,7 @@ impl Engine {
                                     continue;
                                 };
                                 if let Some((fk, tk)) = pred.schema_violation {
-                                    result.events.push(WorldEvent::SchemaViolation {
+                                    acc.events.push(WorldEvent::SchemaViolation {
                                         relationship: rel_id,
                                         kind: c.kind,
                                         from_locus_kind: fk,
@@ -321,14 +287,14 @@ impl Engine {
                                     });
                                 }
                                 if is_new {
-                                    result.events.push(WorldEvent::RelationshipEmerged {
+                                    acc.events.push(WorldEvent::RelationshipEmerged {
                                         relationship: rel_id,
                                         from: pred.from_locus,
                                         to: c.locus_id,
                                         kind: c.kind,
                                         trigger_change_id: id,
                                     });
-                                    new_emerged_rels.push((
+                                    acc.new_emerged_rels.push((
                                         rel_id, id, c.kind,
                                         // emerged_state is Some only when is_new == true.
                                         emerged_state.expect("new relationship must have initial state"),
@@ -343,7 +309,7 @@ impl Engine {
                                     } else {
                                         TimingOrder::Simultaneous
                                     };
-                                    plasticity_obs.push(PlasticityObs {
+                                    acc.plasticity_obs.push(PlasticityObs {
                                         rel_id,
                                         kind: c.kind,
                                         pre: pred.pre_signal,
@@ -360,14 +326,14 @@ impl Engine {
                                     } else {
                                         graph_core::Endpoints::directed(pred.from_locus, c.locus_id).key()
                                     };
-                                    let entry = batch_kind_touches.entry(ep_key).or_default();
+                                    let entry = acc.batch_kind_touches.entry(ep_key).or_default();
                                     entry.0.insert(c.kind);
                                     entry.1.insert(rel_id);
                                 }
                             }
-                            committed_ids_by_locus.entry(c.locus_id).or_default().push(id);
-                            if affected_loci_set.insert(c.locus_id) {
-                                affected_loci.push(c.locus_id);
+                            acc.committed_ids_by_locus.entry(c.locus_id).or_default().push(id);
+                            if acc.affected_loci_set.insert(c.locus_id) {
+                                acc.affected_loci.push(c.locus_id);
                             }
                         }
                         BuiltChange::Relationship(c) => {
@@ -377,9 +343,9 @@ impl Engine {
                                 rel.lineage.last_touched_by = Some(id);
                                 rel.lineage.change_count += 1;
                             }
-                            batch_changes.push(c.change);
+                            acc.batch_changes.push(c.change);
                             if c.has_subscribers {
-                                pending_rel_notifications.push((
+                                acc.pending_rel_notifications.push((
                                     c.rel_id, id, c.kind, c.from, c.to,
                                 ));
                             }
@@ -392,7 +358,7 @@ impl Engine {
                 // Pass B2: bulk ChangeLog append — one grouping pass instead
                 // of N individual HashMap inserts.
                 let t_acl0 = if profile { Some(std::time::Instant::now()) } else { None };
-                world.extend_batch_changes(batch_changes);
+                world.extend_batch_changes(std::mem::take(&mut acc.batch_changes));
                 if let Some(t) = t_acl0 { t_apply_changelog += t.elapsed(); }
 
                 // Pass B3: write ChangeSubject::Relationship entries for every
@@ -406,11 +372,11 @@ impl Engine {
                 // density invariant: the relationship entries are appended
                 // at the tail of the reserved-ID sequence for this batch.
                 let t_ab30 = if profile { Some(std::time::Instant::now()) } else { None };
-                if !new_emerged_rels.is_empty() {
-                    let n_new = new_emerged_rels.len();
+                if !acc.new_emerged_rels.is_empty() {
+                    let n_new = acc.new_emerged_rels.len();
                     let emerge_base = world.reserve_change_ids(n_new);
                     world.log_mut().reserve(n_new);
-                    let emerge_changes: Vec<Change> = new_emerged_rels
+                    let emerge_changes: Vec<Change> = acc.new_emerged_rels
                         .iter()
                         .enumerate()
                         .map(|(i, (rel_id, trigger_id, kind, initial_state))| {
@@ -441,14 +407,14 @@ impl Engine {
             // All three scopes (Specific, AllOfKind, TouchingLocus) are
             // resolved and deduplicated by `collect_subscribers`.
             let td = if profile { Some(std::time::Instant::now()) } else { None };
-            for (rel_id, change_id, kind, from, to) in pending_rel_notifications.drain(..) {
+            for (rel_id, change_id, kind, from, to) in acc.pending_rel_notifications.drain(..) {
                 let subscribers = world
                     .subscriptions()
                     .collect_subscribers(rel_id, kind, from, to);
                 for subscriber in subscribers {
-                    committed_ids_by_locus.entry(subscriber).or_default().push(change_id);
-                    if affected_loci_set.insert(subscriber) {
-                        affected_loci.push(subscriber);
+                    acc.committed_ids_by_locus.entry(subscriber).or_default().push(change_id);
+                    if acc.affected_loci_set.insert(subscriber) {
+                        acc.affected_loci.push(subscriber);
                     }
                 }
             }
@@ -456,7 +422,7 @@ impl Engine {
             // Dispatch programs for every locus that just received at
             // least one change.
             let batch_num = batch.0;
-            let dispatch_inputs: Vec<DispatchInput> = affected_loci
+            let dispatch_inputs: Vec<DispatchInput> = acc.affected_loci
                 .iter()
                 .filter_map(|locus_id| {
                     let locus = world.locus(*locus_id)?;
@@ -470,7 +436,7 @@ impl Engine {
                         return None;
                     }
                     let program = cfg.program.as_ref();
-                    let inbox: Vec<&Change> = committed_ids_by_locus
+                    let inbox: Vec<&Change> = acc.committed_ids_by_locus
                         .get(locus_id)
                         .map(|ids| {
                             ids.iter()
@@ -515,7 +481,7 @@ impl Engine {
                     proposed: p,
                     derived_predecessors: derived.clone(),
                 }));
-                structural_proposals.extend(structural);
+                acc.structural_proposals.extend(structural);
             }
             if let Some(t) = td { t_dispatch += t.elapsed(); }
 
@@ -525,7 +491,7 @@ impl Engine {
             // so subscribers fire once more with a deletion signal in inbox.
             let tombstones = batch::apply_structural_proposals(
                 world,
-                std::mem::take(&mut structural_proposals),
+                std::mem::take(&mut acc.structural_proposals),
                 influence_registry,
             );
             pending.extend(tombstones);
@@ -534,8 +500,8 @@ impl Engine {
             // interaction effects (delegated to world_ops for testability).
             let th = if profile { Some(std::time::Instant::now()) } else { None };
             let hebbian_changes =
-                world_ops::apply_hebbian_updates(world, &plasticity_obs, influence_registry);
-            world_ops::apply_interaction_effects(world, &batch_kind_touches, influence_registry);
+                world_ops::apply_hebbian_updates(world, &acc.plasticity_obs, influence_registry);
+            world_ops::apply_interaction_effects(world, &acc.batch_kind_touches, influence_registry);
 
             // Weight-based structural pruning: delete relationships whose weight
             // fell at or below `prune_weight_threshold` after a plasticity update.
@@ -600,6 +566,7 @@ impl Engine {
             if let Some(t) = th { t_hebbian += t.elapsed(); }
 
             let to2 = if profile { Some(std::time::Instant::now()) } else { None };
+            result.events.append(&mut acc.events);
             world.advance_batch();
             if let Some(t) = to2 { t_other += t.elapsed(); }
             result.batches_committed += 1;

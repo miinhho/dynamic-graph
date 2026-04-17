@@ -773,6 +773,87 @@ fn make_tombstones(
         .collect()
 }
 
+// ── per-partition apply accumulator ──────────────────────────────────────────
+
+use graph_core::{EndpointKey, WorldEvent};
+use rustc_hash::{FxHashMap, FxHashSet};
+
+/// Collects all mutable state accumulated during a single partition's Apply
+/// pass. In single-partition mode this is constructed once and used directly.
+/// In parallel mode, one instance is created per partition; they are merged
+/// sequentially (in ascending bucket ID order) after the rayon join.
+pub(crate) struct PartitionAccumulator {
+    pub batch_changes: Vec<Change>,
+    /// (rel_id, trigger_change_id, kind, initial_state) — for Pass B3 log entries.
+    pub new_emerged_rels: Vec<(RelationshipId, ChangeId, InfluenceKindId, StateVector)>,
+    pub committed_ids_by_locus: FxHashMap<LocusId, Vec<ChangeId>>,
+    pub affected_loci: Vec<LocusId>,
+    pub affected_loci_set: FxHashSet<LocusId>,
+    pub plasticity_obs: Vec<PlasticityObs>,
+    pub structural_proposals: Vec<StructuralProposal>,
+    /// (endpoint_key → (kinds_touched, rel_ids)) for interaction effects.
+    pub batch_kind_touches: FxHashMap<EndpointKey, (FxHashSet<InfluenceKindId>, FxHashSet<RelationshipId>)>,
+    /// (rel_id, change_id, kind, from, to) — resolved to subscribers after Apply.
+    pub pending_rel_notifications: Vec<(RelationshipId, ChangeId, InfluenceKindId, LocusId, LocusId)>,
+    pub events: Vec<WorldEvent>,
+}
+
+impl PartitionAccumulator {
+    pub fn new() -> Self {
+        Self {
+            batch_changes: Vec::new(),
+            new_emerged_rels: Vec::new(),
+            committed_ids_by_locus: FxHashMap::default(),
+            affected_loci: Vec::new(),
+            affected_loci_set: FxHashSet::default(),
+            plasticity_obs: Vec::new(),
+            structural_proposals: Vec::new(),
+            batch_kind_touches: FxHashMap::default(),
+            pending_rel_notifications: Vec::new(),
+            events: Vec::new(),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.batch_changes.clear();
+        self.new_emerged_rels.clear();
+        self.committed_ids_by_locus.clear();
+        self.affected_loci.clear();
+        self.affected_loci_set.clear();
+        self.plasticity_obs.clear();
+        self.structural_proposals.clear();
+        self.batch_kind_touches.clear();
+        self.pending_rel_notifications.clear();
+        self.events.clear();
+    }
+
+    /// Merge `other` into `self` in deterministic order. Called sequentially
+    /// after a parallel phase; buckets must be drained in ascending bucket ID
+    /// order so the overall sequence is reproducible.
+    pub fn merge_from(&mut self, other: PartitionAccumulator) {
+        self.batch_changes.extend(other.batch_changes);
+        self.new_emerged_rels.extend(other.new_emerged_rels);
+        for (locus, ids) in other.committed_ids_by_locus {
+            self.committed_ids_by_locus.entry(locus).or_default().extend(ids);
+        }
+        // Maintain insertion order for affected_loci; set guards duplicates.
+        for locus in other.affected_loci {
+            if self.affected_loci_set.insert(locus) {
+                self.affected_loci.push(locus);
+            }
+        }
+        self.plasticity_obs.extend(other.plasticity_obs);
+        self.structural_proposals.extend(other.structural_proposals);
+        for (key, (kinds, rels)) in other.batch_kind_touches {
+            let entry = self.batch_kind_touches.entry(key).or_default();
+            entry.0.extend(kinds);
+            entry.1.extend(rels);
+        }
+        self.pending_rel_notifications.extend(other.pending_rel_notifications);
+        self.events.extend(other.events);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
