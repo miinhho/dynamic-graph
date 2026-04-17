@@ -146,6 +146,13 @@ pub fn explain(world: &World, query: &Query) -> QueryPlan {
             Some(*n),
         ),
 
+        // D3: Structural counterfactual replay — O(D×descendants + R).
+        Query::CounterfactualReplay { remove_changes } => single_scan_plan(
+            world.log().len() + world.relationships().len(),
+            &format!("counterfactual_replay: O(descendants of {} roots + R={})", remove_changes.len(), world.relationships().len()),
+            None,
+        ),
+
         // D4: Entity-level causality — O(layers + ancestors).
         Query::EntityTransitionCause { .. } => single_scan_plan(
             world.entities().len(),

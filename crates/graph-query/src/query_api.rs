@@ -544,6 +544,14 @@ pub enum Query {
         n: usize,
     },
 
+    // ── D3: Structural counterfactual replay ─────────────────────────────
+
+    /// Compute the structural impact of removing `remove_changes` from the world.
+    /// Returns `QueryResult::Counterfactual`.
+    CounterfactualReplay {
+        remove_changes: Vec<ChangeId>,
+    },
+
     // ── D4: Entity-level causality ───────────────────────────────────────
 
     /// Get the lifecycle cause for `entity_id`'s layer at `at_batch`.
@@ -634,6 +642,9 @@ pub enum QueryResult {
 
     /// Feedback-loop pairs: `(locus_a, locus_b, balance_ratio)` sorted by balance descending.
     FeedbackPairs(Vec<(LocusId, LocusId, f32)>),
+
+    /// Counterfactual structural impact.
+    Counterfactual(crate::CounterfactualDiff),
 
     /// A lifecycle cause for an entity transition. `None` when entity or layer not found.
     EntityCause(Option<graph_core::LifecycleCause>),
@@ -1019,6 +1030,12 @@ pub fn execute(world: &World, query: &Query) -> QueryResult {
         }
         Query::GrangerDominantEffects { source, kind, lag_batches, n } => {
             QueryResult::LocusScores(crate::causal_strength::granger_dominant_effects(world, *source, *kind, *lag_batches, *n))
+        }
+
+        // ── D3: Structural counterfactual replay ─────────────────────────────
+
+        Query::CounterfactualReplay { remove_changes } => {
+            QueryResult::Counterfactual(crate::counterfactual_replay(world, remove_changes.clone()))
         }
 
         // ── D4: Entity-level causality ───────────────────────────────────────

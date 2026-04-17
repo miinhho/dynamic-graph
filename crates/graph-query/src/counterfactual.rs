@@ -1,4 +1,35 @@
-//! Counterfactual relationship queries.
+//! Counterfactual relationship queries (D3).
+//!
+//! Two levels of counterfactual analysis:
+//!
+//! **Structural queries** (`relationships_caused_by`, `relationships_absent_without`):
+//! Lightweight forward-causal analysis — identify which relationships have
+//! causal paths back to a set of root stimuli.
+//!
+//! **Structural replay** (`counterfactual_replay`): Given a set of `ChangeId`s
+//! to remove, compute the full structural impact:
+//! - All suppressed changes (roots + their descendants)
+//! - Relationships that would be absent
+//! - The divergence batch (earliest suppressed batch)
+//!
+//! This is a pure read operation over the existing ChangeLog and relationship
+//! lineage — no engine re-simulation is performed. The result is a
+//! [`CounterfactualDiff`] rather than a `WorldDiff`; re-simulation from the
+//! divergence point is left to callers who have access to the engine.
+//!
+//! ## Example
+//!
+//! ```ignore
+//! let diff = graph_query::counterfactual_replay(&world, vec![stimulus_change_id]);
+//! println!(
+//!     "{} changes suppressed, {} relationships absent, divergence at {:?}",
+//!     diff.suppressed_changes.len(),
+//!     diff.absent_relationships.len(),
+//!     diff.divergence_batch,
+//! );
+//! ```
+//!
+//! ## Original structural queries
 //!
 //! Answers the question: *"which relationships would not exist if stimulus X
 //! had never happened?"*
@@ -30,7 +61,7 @@
 //! println!("{} relationships would vanish", absent_without.len());
 //! ```
 
-use graph_core::{ChangeSubject, ChangeId, RelationshipId};
+use graph_core::{BatchId, ChangeSubject, ChangeId, RelationshipId};
 use graph_world::World;
 use rustc_hash::FxHashSet;
 
@@ -175,6 +206,78 @@ pub fn counterfactual(world: &World) -> CounterfactualQuery<'_> {
     CounterfactualQuery::new(world)
 }
 
+// ─── D3: Structural counterfactual replay ────────────────────────────────────
+
+/// The structural impact of removing a set of changes from the world.
+///
+/// Returned by [`counterfactual_replay`]. Describes what the world would look
+/// like structurally if the specified changes (and all their causal descendants)
+/// had never been committed.
+///
+/// This is a read-only structural analysis, not a full re-simulation. To
+/// actually replay from the divergence point, the caller needs access to the
+/// engine — see `docs/roadmap.md §D3` for the planned full-replay extension.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CounterfactualDiff {
+    /// The change IDs originally specified for removal.
+    pub removed_roots: Vec<ChangeId>,
+    /// All suppressed changes: roots + their full causal descendants.
+    pub suppressed_changes: FxHashSet<ChangeId>,
+    /// Relationships that would be absent if the roots had not fired —
+    /// i.e., those whose `lineage.created_by` is in `suppressed_changes`.
+    pub absent_relationships: Vec<RelationshipId>,
+    /// The earliest batch covered by the suppressed set (the "divergence
+    /// point"). `None` when `removed_roots` is empty or all roots reference
+    /// trimmed / unknown changes.
+    pub divergence_batch: Option<BatchId>,
+}
+
+impl CounterfactualDiff {
+    /// `true` when no changes were suppressed (empty or unknown roots).
+    pub fn is_empty(&self) -> bool {
+        self.suppressed_changes.is_empty()
+    }
+}
+
+/// Compute the structural counterfactual of removing `remove` changes and all
+/// their causal descendants.
+///
+/// The algorithm:
+/// 1. Collect all causal descendants of each root (O(D) BFS per root).
+/// 2. Identify relationships whose `created_by` change is in the suppressed
+///    set — these would not exist in the counterfactual world (O(R)).
+/// 3. Find the divergence batch: the minimum batch among all suppressed changes.
+///
+/// Returns a [`CounterfactualDiff`] with the full structural impact.
+pub fn counterfactual_replay(world: &World, remove: Vec<ChangeId>) -> CounterfactualDiff {
+    let suppressed = collect_descendants(world, &remove);
+
+    let absent_relationships = world
+        .relationships()
+        .iter()
+        .filter(|rel| {
+            rel.lineage
+                .created_by
+                .map(|cid| suppressed.contains(&cid))
+                .unwrap_or(false)
+        })
+        .map(|rel| rel.id)
+        .collect();
+
+    let divergence_batch = suppressed
+        .iter()
+        .filter_map(|&cid| world.log().get(cid))
+        .map(|c| c.batch)
+        .min();
+
+    CounterfactualDiff {
+        removed_roots: remove,
+        suppressed_changes: suppressed,
+        absent_relationships,
+        divergence_batch,
+    }
+}
+
 // ─── Helper ───────────────────────────────────────────────────────────────────
 
 /// Build the union of all causal descendants of `root_changes`, including the
@@ -306,5 +409,55 @@ mod tests {
         // ChangeId(2) is downstream of the relationship, not its cause.
         let caused = relationships_caused_by(&world, &[ChangeId(2)]);
         assert!(!caused.contains(&rel_id));
+    }
+
+    // ── D3: counterfactual_replay ─────────────────────────────────────────────
+
+    #[test]
+    fn replay_empty_roots_returns_empty_diff() {
+        let (world, _, _) = make_world_with_linear_causal_chain();
+        let diff = counterfactual_replay(&world, vec![]);
+        assert!(diff.is_empty());
+        assert!(diff.absent_relationships.is_empty());
+        assert!(diff.divergence_batch.is_none());
+    }
+
+    #[test]
+    fn replay_finds_absent_relationship() {
+        let (world, rel_id, root) = make_world_with_linear_causal_chain();
+        let diff = counterfactual_replay(&world, vec![root]);
+        assert!(diff.absent_relationships.contains(&rel_id),
+            "relationship should be absent in counterfactual world");
+    }
+
+    #[test]
+    fn replay_suppressed_includes_root_and_descendants() {
+        let (world, _, root) = make_world_with_linear_causal_chain();
+        let diff = counterfactual_replay(&world, vec![root]);
+        // Chain has 3 changes (0, 1, 2). Root=0 suppresses 0, 1, 2.
+        assert!(diff.suppressed_changes.contains(&root));
+        assert!(diff.suppressed_changes.contains(&ChangeId(1)));
+        assert!(diff.suppressed_changes.contains(&ChangeId(2)));
+    }
+
+    #[test]
+    fn replay_divergence_batch_is_earliest_suppressed() {
+        let (world, _, root) = make_world_with_linear_causal_chain();
+        let diff = counterfactual_replay(&world, vec![root]);
+        // All changes are in batch 1 in our test fixture.
+        assert_eq!(diff.divergence_batch, Some(BatchId(1)));
+    }
+
+    #[test]
+    fn replay_unrelated_root_does_not_suppress_relationship() {
+        let (world, rel_id, _) = make_world_with_linear_causal_chain();
+        // ChangeId(2) is downstream — it has no further descendants beyond itself.
+        // Its removal does not cause the relationship (which was created by ChangeId(1)).
+        // The relationship created_by = ChangeId(1); ChangeId(2) is a descendant of
+        // ChangeId(1), not its ancestor. So removing ChangeId(2) alone should NOT
+        // make the relationship absent.
+        let diff = counterfactual_replay(&world, vec![ChangeId(2)]);
+        assert!(!diff.absent_relationships.contains(&rel_id),
+            "downstream-only root should not suppress the relationship");
     }
 }

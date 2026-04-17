@@ -1,8 +1,8 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::hint::black_box;
 use graph_core::{
-    BatchId, Endpoints, InfluenceKindId, KindObservation, Locus, LocusId, LocusKindId,
-    Relationship, RelationshipLineage, StateVector,
+    BatchId, Change, ChangeId, ChangeSubject, Endpoints, InfluenceKindId, KindObservation, Locus,
+    LocusId, LocusKindId, Relationship, RelationshipLineage, StateVector,
 };
 use graph_query::*;
 use graph_query::api::{execute, Query, RelationshipPredicate, RelSort};
@@ -420,6 +420,155 @@ fn bench_active_traversal(c: &mut Criterion) {
     g.finish();
 }
 
+// ─── Phase 1 B4: path_between scaling ────────────────────────────────────────
+
+/// path_between scaling over N ∈ [64, 256, 1024] on Erdős-Rényi graphs.
+/// Uses BenchmarkId so results appear as path_scaling/64, path_scaling/256, etc.
+fn bench_path_scaling(c: &mut Criterion) {
+    let mut g = c.benchmark_group("path_scaling");
+    g.measurement_time(Duration::from_secs(5));
+
+    for n in [64u64, 256, 1024] {
+        let world = erdos_renyi(n, 5.0, 42);
+        let far = LocusId(n - 1);
+        g.bench_with_input(BenchmarkId::new("path_between", n), &world, |b, w| {
+            b.iter(|| path_between(black_box(w), LocusId(0), far))
+        });
+    }
+
+    g.finish();
+}
+
+// ─── Phase 1 B4: reachable_from_active scaling ───────────────────────────────
+
+/// reachable_from_active scaling over N ∈ [64, 256, 1024].
+/// Uses mixed-activity graph (50% dormant) to exercise the active-traversal path.
+/// Activity threshold 0.3 matches existing bench_active_traversal convention.
+fn bench_reach_active_scaling(c: &mut Criterion) {
+    let mut g = c.benchmark_group("reach_active_scaling");
+    g.measurement_time(Duration::from_secs(5));
+
+    for n in [64u64, 256, 1024] {
+        let world = mixed_activity_graph(n, 5.0, 0.5, 42);
+        g.bench_with_input(
+            BenchmarkId::new("reachable_from_active", n),
+            &world,
+            |b, w| b.iter(|| reachable_from_active(black_box(w), LocusId(0), n as usize, 0.3)),
+        );
+    }
+
+    g.finish();
+}
+
+// ─── Phase 1 B4: causal_ancestors scaling ────────────────────────────────────
+
+/// Build a world whose ChangeLog contains a linear predecessor chain of exactly
+/// `depth` changes: change[i] has change[i-1] as its sole predecessor.
+/// Returns the world and the last ChangeId.
+fn linear_change_chain(depth: usize) -> (World, ChangeId) {
+    let kind = InfluenceKindId(1);
+    let lk   = LocusKindId(1);
+    let mut world = World::new();
+    world.insert_locus(Locus::new(LocusId(0), lk, StateVector::zeros(1)));
+
+    let before = StateVector::zeros(1);
+    let after  = StateVector::from_slice(&[1.0]);
+
+    let mut prev: Option<ChangeId> = None;
+    let mut last_id = ChangeId(0);
+
+    for i in 0..depth {
+        let id = ChangeId(i as u64);
+        let predecessors = prev.map(|p| vec![p]).unwrap_or_default();
+        let change = Change {
+            id,
+            subject: ChangeSubject::Locus(LocusId(0)),
+            kind,
+            predecessors,
+            before: before.clone(),
+            after: after.clone(),
+            batch: BatchId(i as u64),
+            wall_time: None,
+            metadata: None,
+        };
+        world.append_change(change);
+        prev = Some(id);
+        last_id = id;
+    }
+
+    (world, last_id)
+}
+
+/// causal_ancestors BFS cost as ChangeLog depth grows: ∈ [10, 100, 500].
+fn bench_causal_scaling(c: &mut Criterion) {
+    let mut g = c.benchmark_group("causal_scaling");
+    g.measurement_time(Duration::from_secs(5));
+
+    for depth in [10usize, 100, 500] {
+        let (world, last_id) = linear_change_chain(depth);
+        g.bench_with_input(
+            BenchmarkId::new("causal_ancestors", depth),
+            &(world, last_id),
+            |b, (w, lid)| b.iter(|| causal_ancestors(black_box(w), *lid)),
+        );
+    }
+
+    g.finish();
+}
+
+// ─── B4: counterfactual replay scaling ───────────────────────────────────────
+
+/// Build a world with a linear causal chain of `depth` changes, returning the
+/// world and the root ChangeId (id=0) and last ChangeId.
+fn causal_chain_world(depth: usize) -> (World, ChangeId) {
+    use graph_core::{Change, ChangeId, ChangeSubject, InfluenceKindId, LocusKindId};
+    let kind = InfluenceKindId(1);
+    let lk = LocusKindId(1);
+    let mut world = World::new();
+    world.insert_locus(Locus::new(LocusId(0), lk, StateVector::zeros(1)));
+
+    let before = StateVector::zeros(1);
+    let after = StateVector::from_slice(&[1.0]);
+    let mut prev: Option<ChangeId> = None;
+
+    for i in 0..depth {
+        let id = ChangeId(i as u64);
+        let predecessors = prev.map(|p| vec![p]).unwrap_or_default();
+        world.append_change(Change {
+            id,
+            subject: ChangeSubject::Locus(LocusId(0)),
+            kind,
+            predecessors,
+            before: before.clone(),
+            after: after.clone(),
+            batch: BatchId(i as u64),
+            wall_time: None,
+            metadata: None,
+        });
+        prev = Some(id);
+    }
+
+    (world, ChangeId(0))
+}
+
+/// counterfactual_replay cost as causal chain depth grows.
+/// Removing the root suppresses the entire chain — O(chain depth) BFS + O(R) rels.
+fn bench_counterfactual_scaling(c: &mut Criterion) {
+    let mut g = c.benchmark_group("counterfactual_scaling");
+    g.measurement_time(Duration::from_secs(5));
+
+    for depth in [10usize, 100, 500] {
+        let (world, root) = causal_chain_world(depth);
+        g.bench_with_input(
+            BenchmarkId::new("counterfactual_replay/chain", depth),
+            &(world, root),
+            |b, (w, r)| b.iter(|| graph_query::counterfactual_replay(black_box(w), vec![*r])),
+        );
+    }
+
+    g.finish();
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 criterion_group!(
@@ -431,5 +580,9 @@ criterion_group!(
     bench_direct_lookup,
     bench_lazy_limit,
     bench_active_traversal,
+    bench_path_scaling,
+    bench_reach_active_scaling,
+    bench_causal_scaling,
+    bench_counterfactual_scaling,
 );
 criterion_main!(benches);

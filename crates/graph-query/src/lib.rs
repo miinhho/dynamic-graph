@@ -123,8 +123,9 @@ pub use temporal::{
     BatchStats,
 };
 pub use counterfactual::{
-    counterfactual, relationships_absent_without, relationships_caused_by,
-    CounterfactualQuery,
+    counterfactual, counterfactual_replay,
+    relationships_absent_without, relationships_caused_by,
+    CounterfactualDiff, CounterfactualQuery,
 };
 pub use debug::{causal_trace, CausalStep, CausalTrace};
 pub use deviation::{entity_diff, entity_deviations_since, EntityDiff};
