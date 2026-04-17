@@ -4,7 +4,7 @@ This document tracks forward-looking work for the engine. It supersedes the
 "Open" subsection of `identity.md §8` — that section previously claimed "No
 open roadmap items"; this file is now the authoritative forward plan.
 
-Last updated: 2026-04-17.
+Last updated: 2026-04-17. Phase 2 complete; Phase 3 E3/E2 done; E4 in progress.
 
 ## 1. Scope
 
@@ -190,3 +190,11 @@ Decisions that changed item scope after the initial roadmap discussion:
   Concurrent finding: `find_communities` label propagation HashMap → Vec gave a secondary ~43%
   reduction in recognize_entities. Updated Phase 3 ordering: the cohere fix supersedes E3 as the
   immediate throughput win; E3 (reduce R) remains relevant for `sim.step()` cascade cost at scale.
+- **E4 scope (2026-04-17)**: Partition locality measured across three workloads.
+  stress_emergence N=10000 P=10: 99% within; neural_population N=1000 P=4: 100% within;
+  celegans N=299 P=4: 32% within (24% touch-weighted). Decision: implement as **opt-in**
+  user-supplied partition fn — callers without a meaningful partition fn see no benefit
+  and no overhead. apply_emergence Update path optimised before E4 to clean the baseline.
+  Implementation pending; see `docs/e4-design.md`.
+- **BCM plasticity (2026-04-17)**: `PlasticityConfig::bcm_tau` adds the Bienenstock-Cooper-Munro
+  sliding-threshold rule alongside plain Hebbian and STDP. θ_M persisted in World/Storage/Snapshot.
