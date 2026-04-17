@@ -11,9 +11,11 @@
 //! threaded into ticks. Keeping the world free of program references
 //! makes snapshots cheap and replay clean.
 
+mod partition;
 mod query;
 mod snapshot;
 
+pub use partition::{PartitionFn, PartitionIndex};
 pub use snapshot::{WorldMeta, WorldSnapshot};
 
 use graph_core::{BatchId, Change, ChangeId, Endpoints, KindObservation, Locus, LocusId, Relationship, RelationshipId, RelationshipKindId, RelationshipLineage, StateVector};
@@ -47,6 +49,10 @@ pub struct World {
     /// Per-locus BCM sliding threshold θ_M. Updated by `apply_hebbian_updates`
     /// when `PlasticityConfig::bcm` is true. Empty for non-BCM simulations.
     bcm_thresholds: FxHashMap<LocusId, f32>,
+    /// Optional partition assignment — set by callers who want E4 partition
+    /// parallelism. `None` (the default) means single-partition mode with no
+    /// overhead.
+    partition_index: Option<PartitionIndex>,
 }
 
 impl World {
@@ -55,6 +61,9 @@ impl World {
     }
 
     pub fn insert_locus(&mut self, locus: Locus) {
+        if let Some(idx) = &mut self.partition_index {
+            idx.assign(&locus);
+        }
         self.loci.insert(locus);
     }
 
@@ -325,6 +334,53 @@ impl World {
         }
 
         cold_ids
+    }
+
+    // ── E4 Partition API ──────────────────────────────────────────────────
+
+    /// Attach a partition assignment function. All currently loaded loci are
+    /// immediately assigned. Loci created after this call are assigned on
+    /// insertion. Pass `None` to revert to single-partition mode.
+    pub fn set_partition_fn(&mut self, f: Option<PartitionFn>) {
+        match f {
+            None => { self.partition_index = None; }
+            Some(fn_) => {
+                let mut idx = PartitionIndex::new(fn_);
+                for locus in self.loci.iter() {
+                    idx.assign(locus);
+                }
+                self.partition_index = Some(idx);
+            }
+        }
+    }
+
+    /// Re-evaluate every locus through the current partition fn and rebuild
+    /// the assignment index. O(L). No-op if no partition fn is set.
+    pub fn repartition(&mut self) {
+        if let Some(idx) = self.partition_index.take() {
+            let fn_ = idx.fn_.clone();
+            let mut new_idx = PartitionIndex::new(fn_);
+            for locus in self.loci.iter() {
+                new_idx.assign(locus);
+            }
+            self.partition_index = Some(new_idx);
+        }
+    }
+
+    /// Read-only access to the partition index, if one is active.
+    pub fn partition_index(&self) -> Option<&PartitionIndex> {
+        self.partition_index.as_ref()
+    }
+
+    /// Mutable access to the partition index.
+    pub(crate) fn partition_index_mut(&mut self) -> Option<&mut PartitionIndex> {
+        self.partition_index.as_mut()
+    }
+
+    /// Return the partition bucket for `locus_id`, or `None` if no partition
+    /// fn is active or the locus was not yet assigned.
+    pub fn partition_of(&self, locus_id: LocusId) -> Option<u64> {
+        self.partition_index.as_ref()?.bucket_of(locus_id)
     }
 }
 

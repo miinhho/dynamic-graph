@@ -198,6 +198,55 @@ impl RelationshipStore {
         self.relationships_for_locus(a)
             .filter(move |r| r.endpoints.involves(b))
     }
+
+    // ── E4 partition helpers ──────────────────────────────────────────────
+
+    /// Remove all relationships whose **canonical source locus** is assigned
+    /// to `bucket` and return them. Canonical source: `from` for directed,
+    /// `min(a, b)` for symmetric.
+    ///
+    /// Used by the engine's parallel Apply phase to hand each partition thread
+    /// exclusive ownership of its relationship shard. Call `reinsert_many`
+    /// after the parallel phase to restore the store.
+    ///
+    /// O(R) in the number of relationships.
+    pub fn extract_by_source_bucket(
+        &mut self,
+        assignment: &rustc_hash::FxHashMap<LocusId, u64>,
+        bucket: u64,
+    ) -> Vec<Relationship> {
+        let ids: Vec<RelationshipId> = self
+            .by_id
+            .keys()
+            .filter(|&&id| {
+                let rel = &self.by_id[&id];
+                let src = canonical_source(&rel.endpoints);
+                assignment.get(&src).copied() == Some(bucket)
+            })
+            .copied()
+            .collect();
+        ids.into_iter()
+            .filter_map(|id| self.remove(id))
+            .collect()
+    }
+
+    /// Re-insert a Vec of relationships previously extracted by
+    /// `extract_by_source_bucket`. Panics on duplicate IDs (programming error).
+    pub fn reinsert_many(&mut self, rels: Vec<Relationship>) {
+        self.reserve(rels.len());
+        for rel in rels {
+            self.insert(rel);
+        }
+    }
+}
+
+/// Canonical source locus for partition ownership: `from` for directed,
+/// the lower-ID endpoint for symmetric.
+fn canonical_source(endpoints: &Endpoints) -> LocusId {
+    match endpoints {
+        Endpoints::Directed { from, .. } => *from,
+        Endpoints::Symmetric { a, b } => if a.0 <= b.0 { *a } else { *b },
+    }
 }
 
 /// Invoke `f` once for every distinct `LocusId` that appears in `endpoints`.
