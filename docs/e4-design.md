@@ -159,6 +159,36 @@ integration test §10 step 5 asserts exact world state equality). Option A
 is only safe with the source-only asymmetry rule, which changes semantics.
 Option C has negligible cost at the observed locality levels.
 
+### 5a. Cross-partition Drain Order (determinism rule)
+
+The sequential drain pass must apply cross-partition ops in a **fixed, deterministic
+order** — otherwise two runs with the same seed but different thread schedules
+can produce different relationship states. Rule:
+
+> Process partitions in **ascending bucket ID order**. Within a bucket, apply
+> ops in the order they were buffered (source-locus iteration order, which is
+> deterministic because `PartitionIndex::members_of` returns loci sorted by
+> insertion order, not hash order — enforced in the drain loop by sorting the
+> cross-partition buffer by `(bucket_id, locus_id)` before draining).
+
+### 5b. `CreateRelationship` ID Minting at Partition Boundaries
+
+`RelationshipStore::mint_id()` advances a shared monotone counter. During the
+parallel Apply phase, two partition threads cannot both call it without a mutex.
+**Resolution: defer `CreateRelationship` structural proposals to the sequential
+post-phase.**
+
+During parallel Apply, each partition accumulates `Vec<StructuralProposal>` for
+cross-partition creates. After the parallel phase, the sequential drain loop:
+1. Processes cross-partition emergence ops (see §5 / §5a).
+2. Processes all buffered `CreateRelationship` proposals in sorted order (bucket
+   ascending, then proposal index) — minting IDs sequentially.
+3. Applies `DeleteRelationship` proposals similarly.
+
+Within-partition creates whose both endpoints are local can mint IDs freely
+during the parallel phase (each partition owns a pre-reserved ID range,
+allocated before the parallel split via `RelationshipStore::reserve_id_range`).
+
 ---
 
 ## 6. BCM Thresholds and STDP at Partition Boundaries
@@ -222,18 +252,22 @@ resolution.
 
 1. **Add `PartitionIndex` to `World`** — `set_partition_fn`, `repartition`,
    incremental update on create/delete locus. No engine changes yet.
-2. **Shard split/reassemble** — `RelationshipStore::split_by_partition` +
-   `reassemble`. Unit-test round-trip correctness.
+2. **Shard split/reassemble** — `extract_by_source_bucket` + `reinsert_many`
+   already implemented in `RelationshipStore`. Unit-test round-trip correctness
+   (included in relationship_store tests). ✓ Done (657a91d)
 3. **Parallel Apply** — replace sequential Apply loop with `rayon::scope` over
    partition shards. Each partition gets its own shard + its subset of
-   `computed` changes.
+   `computed` changes. Cross-partition emerge ops buffered; drained sequentially
+   in ascending `(bucket_id, locus_id)` order (§5a). `CreateRelationship`
+   proposals deferred to sequential post-phase using pre-reserved ID ranges (§5b).
 4. **Parallel Dispatch** — same structure; merge `last_fired_partial` and
    `pending` after join.
-5. **Integration test** — run `neural_population` N=1000 P=4 with and without
-   partition fn; assert identical `World` state after 100 ticks (determinism
-   check).
+5. **Integration test (determinism harness)** — run `neural_population` N=1000
+   P=4 with and without partition fn; assert identical `World` state after 100
+   ticks. Write this *before* parallel Apply to establish the pass/fail oracle.
 6. **Benchmark** — compare `ring_scaling` N=1024 P=4 vs single-partition as the
-   E4 criterion group.
+   E4 criterion group. Expected gain: ~17% on emerge-heavy workloads (emerge ≈5ms
+   of ~24ms tick; dispatch is already `par_iter`).
 
 Rayon `scope` (not `spawn`) is appropriate here because all partition work
 is bounded by the current batch — no unbounded futures.
