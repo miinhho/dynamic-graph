@@ -598,4 +598,14 @@ fn print_entities(
             suffix,
         );
     }
+
+    // H4 — Ψ audit appended unconditionally.
+    {
+        let decay = sim.activity_decay_rates();
+        let world = sim.world();
+        let report = graph_query::emergence_report_with_decay(&world, &decay);
+        println!("\n{}", report.render_markdown());
+        let synergy = graph_query::emergence_report_synergy_with_decay(&world, &decay);
+        println!("\n{}", synergy.render_markdown());
+    }
 }

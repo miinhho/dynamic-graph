@@ -168,6 +168,27 @@ impl Simulation {
         self.world.read().unwrap()
     }
 
+    /// Snapshot of per-kind activity decay rates, suitable to feed into
+    /// `graph_query`'s `*_with_decay` emergence variants.
+    ///
+    /// Maps each registered `InfluenceKindId` to the config's
+    /// `decay_per_batch`. Background: activity (slot 0) on a relationship
+    /// decays once per batch after its last ChangeLog event, but the event
+    /// itself only records the post-change value. Reconstructing activity
+    /// at an arbitrary batch therefore requires the per-kind rate, which
+    /// lives inside the registry rather than on `World`. This helper
+    /// materialises the rates so callers (examples, diagnostic tools)
+    /// don't need to reach into the engine.
+    pub fn activity_decay_rates(&self) -> graph_query::DecayRates {
+        let mut rates = graph_query::DecayRates::default();
+        for kind in self.base_influences.kinds() {
+            if let Some(cfg) = self.base_influences.get(kind) {
+                rates.insert(kind, cfg.decay_per_batch);
+            }
+        }
+        rates
+    }
+
     /// Mutable access to the world via a scoped write guard.
     ///
     /// Use this to make one-off mutations (e.g. inserting a locus before the

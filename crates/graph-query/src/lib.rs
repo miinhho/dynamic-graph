@@ -45,6 +45,7 @@ mod centrality;
 mod counterfactual;
 mod debug;
 mod deviation;
+mod emergence;
 mod entity_query;
 mod export;
 mod filter;
@@ -131,6 +132,19 @@ pub use counterfactual::{
 };
 pub use debug::{causal_trace, CausalStep, CausalTrace};
 pub use deviation::{entity_diff, entity_deviations_since, EntityDiff};
+pub use emergence::{
+    coherence_autocorrelation, coherence_dense_series, coherence_dense_series_with_decay,
+    coherence_stable_series,
+    emergence_report, emergence_report_synergy,
+    emergence_report_synergy_with_decay, emergence_report_with_decay,
+    psi_scalar, psi_scalar_with_decay, psi_synergy,
+    psi_synergy_leave_one_out, psi_synergy_leave_one_out_with_decay,
+    psi_synergy_with_decay,
+    DecayRates, DropResult, EmergenceEntry, EmergenceReport, EmergenceSynergyEntry,
+    EmergenceSynergyReport, LeaveOneOutResult,
+    PsiResult, PsiSynergyResult, SynergyPair,
+    UnmeasuredEntry, UnmeasuredReason,
+};
 pub use entity_causality::{
     cause_seed_changes, entity_layers_in_range, entity_transition_cause,
     entity_upstream_transitions,

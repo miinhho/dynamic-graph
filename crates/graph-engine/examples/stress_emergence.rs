@@ -295,6 +295,9 @@ struct Args {
     /// Burst-quiet mode: stimulate for `burst_on` batches then go silent for `burst_off` batches.
     burst_on: Option<usize>,
     burst_off: Option<usize>,
+    /// When true, print an `EmergenceReport` in markdown to stderr on exit.
+    /// H4 (roadmap Track H) uses this to audit Ψ distributions per workload.
+    psi: bool,
 }
 
 fn parse_args() -> Args {
@@ -304,6 +307,7 @@ fn parse_args() -> Args {
     let mut demotion_floor: Option<f32> = None;
     let mut burst_on: Option<usize> = None;
     let mut burst_off: Option<usize> = None;
+    let mut psi = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -327,13 +331,17 @@ fn parse_args() -> Args {
                 burst_off = Some(args[i + 1].parse().expect("--burst-off must be a positive integer"));
                 i += 2;
             }
+            "--psi" => {
+                psi = true;
+                i += 1;
+            }
             other => {
                 eprintln!("Unknown argument: {other}");
                 std::process::exit(1);
             }
         }
     }
-    Args { size, batches, demotion_floor, burst_on, burst_off }
+    Args { size, batches, demotion_floor, burst_on, burst_off, psi }
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -491,5 +499,29 @@ fn main() {
         eprintln!(
             "partition(P={p},N={n}): edges within%={edge_pct}% touches within%={touch_pct}% (edges={total_edges} touches={total_touches})"
         );
+    }
+
+    // H4 — optional Ψ (emergence capacity) audit. Printed to stderr in
+    // markdown so CSV output on stdout stays machine-parseable.
+    if args.psi {
+        let decay = sim.activity_decay_rates();
+        let world = sim.world();
+        let report = graph_query::emergence_report_with_decay(&world, &decay);
+        eprintln!("\n{}", report.render_markdown());
+        let synergy = graph_query::emergence_report_synergy_with_decay(&world, &decay);
+        eprintln!("\n{}", synergy.render_markdown());
+
+        // H4.2 — leave-one-out robustness for any entity with
+        // `psi_pair_top3 > 0`. Expected to be rare on this workload
+        // (fifth pass saw Entity 73 at b=50 as the sole such entity).
+        for entry in synergy.emergent.iter().chain(synergy.spurious.iter()) {
+            if entry.psi.psi_pair_top3 > 0.0 {
+                if let Some(loo) = graph_query::psi_synergy_leave_one_out_with_decay(
+                    &world, entry.entity, &decay,
+                ) {
+                    eprintln!("\n{}", loo.render_markdown());
+                }
+            }
+        }
     }
 }
