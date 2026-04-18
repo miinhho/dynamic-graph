@@ -72,7 +72,9 @@ impl EntityStore {
     ///
     /// Does nothing when the entity ID is not found.
     pub fn update_snapshot(&mut self, id: EntityId, snapshot: EntitySnapshot) {
-        let Some(entity) = self.by_id.get_mut(&id) else { return };
+        let Some(entity) = self.by_id.get_mut(&id) else {
+            return;
+        };
         // Fast path: members unchanged — only update numeric fields, skip index churn.
         // The common case for CoherenceShift transitions is identical member sets.
         if entity.current.members == snapshot.members {
@@ -140,7 +142,9 @@ impl EntityStore {
 
     /// Iterate only active entities.
     pub fn active(&self) -> impl Iterator<Item = &Entity> {
-        self.by_id.values().filter(|e| e.status == EntityStatus::Active)
+        self.by_id
+            .values()
+            .filter(|e| e.status == EntityStatus::Active)
     }
 
     pub fn len(&self) -> usize {
@@ -152,7 +156,10 @@ impl EntityStore {
     }
 
     pub fn active_count(&self) -> usize {
-        self.by_id.values().filter(|e| e.status == EntityStatus::Active).count()
+        self.by_id
+            .values()
+            .filter(|e| e.status == EntityStatus::Active)
+            .count()
     }
 
     /// Return the most recent layer deposited at or before `batch`, or `None`
@@ -215,7 +222,10 @@ mod tests {
         store.get_mut(id).unwrap().deposit(
             BatchId(5),
             snap2,
-            LayerTransition::MembershipDelta { added: vec![LocusId(99)], removed: vec![] },
+            LayerTransition::MembershipDelta {
+                added: vec![LocusId(99)],
+                removed: vec![],
+            },
         );
         // query before second layer
         let layer = store.layer_at_batch(id, BatchId(3)).unwrap();

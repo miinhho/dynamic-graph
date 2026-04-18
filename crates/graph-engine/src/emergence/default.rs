@@ -1,42 +1,148 @@
-//! Default connected-components perspective with sediment-aware
-//! reconciliation, split, merge, and revive detection.
+//! Default perspective: **locus-flow reconciliation**.
 //!
-//! Algorithm:
-//! 1. Keep only relationships whose activity exceeds `min_activity_threshold`.
-//! 2. Weighted label propagation to find communities.
-//! 3. For each component, collect all entity matches above `overlap_threshold`.
-//! 4. Classify: Merge / DepositLayer / Revive / Born.
-//! 5. Active entities matched by 2+ components → Split.
-//! 6. Active entities matched by 0 components → Dormant.
+//! The engine already has per-batch ground truth about where each locus is —
+//! `EntityStore.by_member` maps it to the entity (or entities) whose
+//! `current.members` included it at the last recognize. Instead of summarising
+//! set relationships via Jaccard (which requires a tuning knob — see
+//! `docs/complexity-audit.md` Finding 2b), we directly observe the flow:
+//!
+//! 1. Run weighted label propagation to find the current connected components.
+//! 2. For each *active* entity, bucket its members by which component they
+//!    landed in (plus an `unassigned` bucket for members absent from any
+//!    component). The distribution of bucket sizes determines the entity's
+//!    fate deterministically:
+//!    - ≥ 2 significant buckets → **Split** (offspring = the components it
+//!      fans out into).
+//!    - 1 significant bucket, `unassigned > bucket` → **Dormant** (the entity
+//!      has lost more members than it retains; the bucket's component gets a
+//!      fresh `Born`).
+//!    - 1 significant bucket, `unassigned ≤ bucket` → the entity *claims* that
+//!      component (continuation).
+//!    - 0 significant buckets → **Dormant**.
+//! 3. For each component, count how many *active* entities claimed it. ≥ 2
+//!    claimers collapse into a **Merge**; 1 claimer becomes a `DepositLayer`
+//!    with the appropriate `MembershipDelta`/`CoherenceShift` transition;
+//!    0 claimers fall back to **Revive** (if a dormant entity overlaps
+//!    majority of the component) or **Born**.
+//!
+//! No `overlap_threshold` knob: the only constant is `MIN_SIGNIFICANT_BUCKET`
+//! (size 2 — drift tolerance for 1 locus noise), which is hard-coded because
+//! 1-locus drift is universally meaningless.
 
 use graph_core::{
-    BatchId, EmergenceProposal, Entity, EntityId, EntityLayer, EntitySnapshot,
-    EntityStatus, LayerTransition, LifecycleCause, LocusId, Relationship,
-    RelationshipId,
+    BatchId, EmergenceProposal, Entity, EntityId, EntityLayer, EntitySnapshot, EntityStatus,
+    LayerTransition, LifecycleCause, LocusId, Relationship, RelationshipId,
 };
 use graph_world::{EntityStore, RelationshipStore};
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::EmergencePerspective;
 
-/// Default perspective: activity-filtered connected components,
-/// sediment-aware reconciliation with split, merge, and revive detection.
-#[derive(Debug, Clone)]
+/// Default perspective: locus-flow reconciliation.
+#[derive(Debug, Clone, Default)]
 pub struct DefaultEmergencePerspective {
-    /// Minimum relationship activity score to include an edge in
-    /// the clustering graph. Default: 0.1.
-    pub min_activity_threshold: f32,
-    /// Member-overlap ratio (Jaccard) required to match a component to an
-    /// existing entity. Default: 0.5 (O4).
-    pub overlap_threshold: f32,
+    /// Minimum relationship activity score to include an edge in the
+    /// clustering graph during `recognize()`.
+    ///
+    /// **Default**: `None` — distribution-based auto. Adopted in Phase 2
+    /// of the 2026-04-18 complexity sweep (`docs/complexity-audit.md`)
+    /// after the old karate-tuned `0.1` constant collapsed every node
+    /// into one community on Davis Southern Women (Finding 1, 91%
+    /// density).
+    ///
+    /// **Override when**: the auto-computed gap heuristic picks the
+    /// wrong cutoff for your activity distribution (e.g. a unimodal
+    /// distribution where every edge is meaningful but the gap
+    /// detector still fires). Leave `None` unless a benchmark
+    /// demonstrates the override is necessary — the auto path has
+    /// carried both karate and Davis without hand-tuning.
+    ///
+    /// **None semantics**: per `recognize()` call, scan nonzero absolute
+    /// activities, find the largest relative gap in the lower half of
+    /// the sorted list, and threshold just below it if the gap is
+    /// `≥ 2×` (bimodal signal-vs-noise). Otherwise threshold is `0`
+    /// (label-propagation's weighted voting does the filtering). See
+    /// `auto_activity_threshold`. Setting `Some(x)` pins the threshold
+    /// and bypasses the auto detector entirely.
+    pub min_activity_threshold: Option<f32>,
 }
 
-impl Default for DefaultEmergencePerspective {
-    fn default() -> Self {
-        Self {
-            min_activity_threshold: 0.1,
-            overlap_threshold: 0.5,
+/// Distribution-aware activity threshold.
+///
+/// Strategy: detect bimodal activity distributions (which arise from
+/// signal vs. noise separation) via the largest **relative gap** between
+/// sorted activities. If a clear gap exists (ratio ≥ 2×), place the
+/// threshold just below it — noise below, signal above. Otherwise return
+/// effectively 0 so label-propagation's weighted voting does the filtering
+/// (sparse graphs with uniform weights shouldn't be thresholded).
+///
+/// This replaces the old `p25` heuristic, which worked for Davis's bimodal
+/// co-attendance counts but wrongly excluded low-weight edges in karate
+/// (a unimodal structural-weight distribution), isolating nodes and
+/// breaking node-coverage assertions.
+fn auto_activity_threshold(store: &RelationshipStore) -> f32 {
+    let mut activities: Vec<f32> = store
+        .iter()
+        .map(|r| r.activity().abs())
+        .filter(|&a| a > 0.0)
+        .collect();
+    if activities.len() < 4 {
+        return 0.0;
+    }
+    activities.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Find the largest relative gap in the lower 75% of the distribution.
+    // Noise is below signal; a gap in the upper tail is natural variance,
+    // not a threshold boundary. The window was widened from 50% → 75%
+    // after the SocioPatterns benchmark (2026-04-18) showed that heavy
+    // noise floors (many low-activity ghost edges) push the true bimodal
+    // cut above p50 — a 50% window was finding noise-internal gaps and
+    // collapsing the partition. p75 captures the real signal/noise
+    // boundary without reaching into the upper-tail natural variance.
+    let search_end = activities.len() * 3 / 4 + 1;
+    let mut best_gap_ratio = 1.0f32;
+    let mut best_threshold = 0.0f32;
+    for i in 0..search_end.saturating_sub(1) {
+        let a = activities[i];
+        let b = activities[i + 1];
+        if a < 1e-6 {
+            continue;
+        }
+        let ratio = b / a;
+        if ratio > best_gap_ratio {
+            best_gap_ratio = ratio;
+            // Place threshold just above the "noise" side so `>=` in the
+            // filter includes the signal side.
+            best_threshold = a * 1.0001;
         }
     }
+    // Require a meaningful gap (≥ 2×) before thresholding at all.
+    if best_gap_ratio >= 2.0 {
+        best_threshold
+    } else {
+        0.0
+    }
+}
+
+/// Bucket size below which a membership bucket is treated as noise.
+/// Hard-coded because "1 locus drift" is universally meaningless and any
+/// larger value would require domain-specific tuning we actively want to
+/// avoid. Matches the intuition: a locus pair is the smallest "meaningful
+/// community" fragment.
+const MIN_SIGNIFICANT_BUCKET: usize = 2;
+
+/// Per-active-entity verdict from the flow analysis.
+enum EntityDecision {
+    /// Entity lost enough of its membership that it is no longer coherently
+    /// present in any single component. Triggers `BecameDormant`.
+    Dormant,
+    /// Entity's members fanned out across multiple components. Each listed
+    /// component becomes an offspring (new `Born`) of a `Split`.
+    Split(Vec<usize>),
+    /// Entity claims this component as its continuation. Resolution (whether
+    /// this becomes a `DepositLayer`, or collapses with other claimers into
+    /// a `Merge`) happens in pass 2.
+    Claims(usize),
 }
 
 impl EmergencePerspective for DefaultEmergencePerspective {
@@ -46,156 +152,227 @@ impl EmergencePerspective for DefaultEmergencePerspective {
         existing: &EntityStore,
         batch: BatchId,
     ) -> Vec<EmergenceProposal> {
-        let community = find_communities(relationships, self.min_activity_threshold);
+        let threshold = self
+            .min_activity_threshold
+            .unwrap_or_else(|| auto_activity_threshold(relationships));
+        let community = find_communities(relationships, threshold);
         let components = community.components;
         let adj = &community.adj;
-        let mut proposals: Vec<EmergenceProposal> = Vec::new();
 
-        let component_sets: Vec<rustc_hash::FxHashSet<LocusId>> = components
+        let component_sets: Vec<FxHashSet<LocusId>> = components
             .iter()
             .map(|members| members.iter().copied().collect())
             .collect();
 
-        let component_matches: Vec<Vec<(EntityId, f32, bool)>> = component_sets
-            .iter()
-            .map(|member_set| all_matches(member_set, existing, self.overlap_threshold))
-            .collect();
+        // Reverse index: locus → component index. O(sum of component sizes).
+        let mut locus_to_component: FxHashMap<LocusId, usize> = FxHashMap::default();
+        for (idx, comp) in components.iter().enumerate() {
+            for &locus in comp {
+                locus_to_component.insert(locus, idx);
+            }
+        }
 
-        let mut entity_to_components: rustc_hash::FxHashMap<EntityId, Vec<usize>> =
-            rustc_hash::FxHashMap::default();
+        // Pass 1: per-active-entity flow analysis.
+        let mut decisions: FxHashMap<EntityId, EntityDecision> = FxHashMap::default();
+        let mut claims_per_component: FxHashMap<usize, Vec<EntityId>> = FxHashMap::default();
 
-        let mut claimed_active: rustc_hash::FxHashSet<EntityId> =
-            rustc_hash::FxHashSet::default();
-
-        for (comp_idx, ((members, member_set), matches)) in
-            components.iter().zip(component_sets.iter()).zip(component_matches.iter()).enumerate()
-        {
-            let active_matches: Vec<(EntityId, f32)> = matches
-                .iter()
-                .filter(|(_, _, is_active)| *is_active)
-                .map(|(id, score, _)| (*id, *score))
-                .collect();
-
-            if active_matches.len() >= 2 {
-                let (coherence, member_rels) = component_stats(member_set, adj, self.min_activity_threshold);
-                let (into_id, _) = *active_matches
-                    .iter()
-                    .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-                    .unwrap();
-                let absorbed: Vec<EntityId> = active_matches
-                    .iter()
-                    .filter(|(id, _)| *id != into_id)
-                    .map(|(id, _)| *id)
-                    .collect();
-                for id in &absorbed {
-                    claimed_active.insert(*id);
+        for entity in existing.active() {
+            let mut buckets: FxHashMap<usize, usize> = FxHashMap::default();
+            let mut unassigned = 0usize;
+            for locus in &entity.current.members {
+                match locus_to_component.get(locus) {
+                    Some(&c_idx) => *buckets.entry(c_idx).or_default() += 1,
+                    None => unassigned += 1,
                 }
-                claimed_active.insert(into_id);
-                proposals.push(EmergenceProposal::Merge {
-                    absorbed: absorbed.clone(),
-                    into: into_id,
-                    new_members: members.clone(),
-                    member_relationships: member_rels,
-                    coherence,
-                    cause: LifecycleCause::MergedFrom { absorbed },
-                });
-            } else if active_matches.len() == 1 {
-                entity_to_components.entry(active_matches[0].0).or_default().push(comp_idx);
-            } else {
-                let (coherence, member_rels) = component_stats(member_set, adj, self.min_activity_threshold);
-                let dormant_match = matches
-                    .iter()
-                    .filter(|(_, _, is_active)| !*is_active)
-                    .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-                if let Some((dormant_id, _, _)) = dormant_match {
-                    let cause = LifecycleCause::RelationshipCluster {
-                        key_relationships: member_rels.clone(),
-                    };
+            }
+            let mut significant: Vec<(usize, usize)> = buckets
+                .into_iter()
+                .filter(|&(_, n)| n >= MIN_SIGNIFICANT_BUCKET)
+                .collect();
+            // Deterministic order for tests.
+            significant.sort_by_key(|&(i, _)| i);
+
+            let decision = match significant.len() {
+                0 => EntityDecision::Dormant,
+                1 => {
+                    let (c_idx, bucket_size) = significant[0];
+                    if unassigned > bucket_size {
+                        // Entity lost more than it kept — treat the
+                        // surviving bucket as an independent Born, not
+                        // the entity's continuation. This is the key
+                        // guard against subset-attack degeneration.
+                        EntityDecision::Dormant
+                    } else {
+                        claims_per_component
+                            .entry(c_idx)
+                            .or_default()
+                            .push(entity.id);
+                        EntityDecision::Claims(c_idx)
+                    }
+                }
+                _ => {
+                    let comp_idxs = significant.iter().map(|&(i, _)| i).collect();
+                    EntityDecision::Split(comp_idxs)
+                }
+            };
+            decisions.insert(entity.id, decision);
+        }
+
+        let mut proposals: Vec<EmergenceProposal> = Vec::new();
+        // Components claimed as offspring of a Split — they are NOT independent
+        // `Born` / `Merge` candidates in pass 2 (the Split proposal itself
+        // creates their entities via `Entity::born`).
+        let mut split_offspring_components: FxHashSet<usize> = FxHashSet::default();
+
+        // Emit Dormant / Split proposals from pass 1.
+        for (&entity_id, decision) in &decisions {
+            match decision {
+                EntityDecision::Dormant => {
+                    let decayed: Vec<RelationshipId> = existing
+                        .get(entity_id)
+                        .map(|e| {
+                            e.current
+                                .member_relationships
+                                .iter()
+                                .copied()
+                                .filter(|rid| {
+                                    relationships
+                                        .get(*rid)
+                                        .map(|r| r.activity() < threshold)
+                                        .unwrap_or(true)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    proposals.push(EmergenceProposal::Dormant {
+                        entity: entity_id,
+                        cause: LifecycleCause::RelationshipDecay {
+                            decayed_relationships: decayed,
+                        },
+                    });
+                }
+                EntityDecision::Split(comp_idxs) => {
+                    let mut offspring = Vec::with_capacity(comp_idxs.len());
+                    for &i in comp_idxs {
+                        let (coh, rels) = component_stats(&component_sets[i], adj, threshold);
+                        offspring.push((components[i].clone(), rels, coh));
+                        split_offspring_components.insert(i);
+                    }
+                    proposals.push(EmergenceProposal::Split {
+                        source: entity_id,
+                        offspring,
+                        cause: LifecycleCause::ComponentSplit {
+                            weak_bridges: Vec::new(),
+                        },
+                    });
+                }
+                EntityDecision::Claims(_) => {}
+            }
+        }
+
+        // Pass 2: component resolution.
+        for (c_idx, members) in components.iter().enumerate() {
+            if split_offspring_components.contains(&c_idx) {
+                continue;
+            }
+            let claimers = claims_per_component
+                .get(&c_idx)
+                .cloned()
+                .unwrap_or_default();
+            let (coherence, member_rels) = component_stats(&component_sets[c_idx], adj, threshold);
+
+            match claimers.len() {
+                0 => {
+                    // No active entity claims this component. Try to match
+                    // against a dormant entity with a majority overlap (Revive);
+                    // otherwise a fresh Born.
+                    let member_set = &component_sets[c_idx];
+                    let dormant_match = existing
+                        .iter()
+                        .filter(|e| e.status == EntityStatus::Dormant)
+                        .filter_map(|e| {
+                            let overlap = e
+                                .current
+                                .members
+                                .iter()
+                                .filter(|l| member_set.contains(l))
+                                .count();
+                            if overlap >= MIN_SIGNIFICANT_BUCKET
+                                && overlap * 2 >= e.current.members.len()
+                            {
+                                Some((e.id, overlap))
+                            } else {
+                                None
+                            }
+                        })
+                        .max_by_key(|&(_, o)| o);
+                    if let Some((dormant_id, _)) = dormant_match {
+                        let snapshot = EntitySnapshot {
+                            members: members.clone(),
+                            member_relationships: member_rels.clone(),
+                            coherence,
+                        };
+                        proposals.push(EmergenceProposal::Revive {
+                            entity: dormant_id,
+                            snapshot,
+                            cause: LifecycleCause::RelationshipCluster {
+                                key_relationships: member_rels,
+                            },
+                        });
+                    } else {
+                        proposals.push(EmergenceProposal::Born {
+                            members: members.clone(),
+                            member_relationships: member_rels.clone(),
+                            coherence,
+                            parents: Vec::new(),
+                            cause: LifecycleCause::RelationshipCluster {
+                                key_relationships: member_rels,
+                            },
+                        });
+                    }
+                }
+                1 => {
+                    let entity_id = claimers[0];
+                    let entity = existing
+                        .get(entity_id)
+                        .expect("claimers contain only live active entity ids");
                     let snapshot = EntitySnapshot {
                         members: members.clone(),
                         member_relationships: member_rels,
                         coherence,
                     };
-                    claimed_active.insert(*dormant_id);
-                    proposals.push(EmergenceProposal::Revive {
-                        entity: *dormant_id,
-                        snapshot,
-                        cause,
-                    });
-                } else {
-                    let cause = LifecycleCause::RelationshipCluster {
-                        key_relationships: member_rels.clone(),
-                    };
-                    proposals.push(EmergenceProposal::Born {
-                        members: members.clone(),
+                    if snapshot_changed(entity, &snapshot) {
+                        let transition = membership_delta(entity, &snapshot);
+                        proposals.push(EmergenceProposal::DepositLayer {
+                            entity: entity_id,
+                            layer: EntityLayer::new(batch, snapshot, transition),
+                        });
+                    }
+                }
+                _ => {
+                    // Multiple active entities converge on one component → Merge.
+                    // Survivor: whichever had the most members pre-merge
+                    // (largest identity absorbs smaller ones).
+                    let into = *claimers
+                        .iter()
+                        .max_by_key(|id| {
+                            existing
+                                .get(**id)
+                                .map(|e| e.current.members.len())
+                                .unwrap_or(0)
+                        })
+                        .expect("claimers non-empty in ≥2 branch");
+                    let absorbed: Vec<EntityId> =
+                        claimers.iter().copied().filter(|id| *id != into).collect();
+                    proposals.push(EmergenceProposal::Merge {
+                        absorbed: absorbed.clone(),
+                        into,
+                        new_members: members.clone(),
                         member_relationships: member_rels,
                         coherence,
-                        parents: Vec::new(),
-                        cause,
+                        cause: LifecycleCause::MergedFrom { absorbed },
                     });
                 }
-            }
-        }
-
-        // Resolve entity_to_components: split vs. continue.
-        for (entity_id, comp_indices) in entity_to_components {
-            claimed_active.insert(entity_id);
-            if comp_indices.len() >= 2 {
-                let offspring: Vec<(Vec<LocusId>, Vec<graph_core::RelationshipId>, f32)> = comp_indices
-                    .iter()
-                    .map(|&i| {
-                        let members = components[i].clone();
-                        let (coh, rels) = component_stats(&component_sets[i], adj, self.min_activity_threshold);
-                        (members, rels, coh)
-                    })
-                    .collect();
-                proposals.push(EmergenceProposal::Split {
-                    source: entity_id,
-                    offspring,
-                    cause: LifecycleCause::ComponentSplit { weak_bridges: Vec::new() },
-                });
-            } else {
-                let members = &components[comp_indices[0]];
-                let member_set = &component_sets[comp_indices[0]];
-                let (coherence, member_rels) =
-                    component_stats(member_set, adj, self.min_activity_threshold);
-                let snapshot = EntitySnapshot {
-                    members: members.clone(),
-                    member_relationships: member_rels,
-                    coherence,
-                };
-                let entity = existing.get(entity_id).expect("entity_to_components only holds known ids");
-                if snapshot_changed(entity, &snapshot) {
-                    let transition = membership_delta(entity, &snapshot);
-                    proposals.push(EmergenceProposal::DepositLayer {
-                        entity: entity_id,
-                        layer: EntityLayer::new(batch, snapshot, transition),
-                    });
-                }
-            }
-        }
-
-        // Active entities with no component match become dormant.
-        for entity in existing.active() {
-            if !claimed_active.contains(&entity.id) {
-                let decayed: Vec<graph_core::RelationshipId> = entity
-                    .current
-                    .member_relationships
-                    .iter()
-                    .copied()
-                    .filter(|rid| {
-                        relationships
-                            .get(*rid)
-                            .map(|r| r.activity() < self.min_activity_threshold)
-                            .unwrap_or(true)
-                    })
-                    .collect();
-                proposals.push(EmergenceProposal::Dormant {
-                    entity: entity.id,
-                    cause: LifecycleCause::RelationshipDecay {
-                        decayed_relationships: decayed,
-                    },
-                });
             }
         }
 
@@ -240,10 +417,7 @@ struct CommunityResult {
 /// Implementation note: label propagation uses dense `Vec` storage
 /// (local index → label index) rather than `HashMap` to eliminate
 /// per-edge hash lookups in the hot inner loop.
-fn find_communities(
-    store: &RelationshipStore,
-    threshold: f32,
-) -> CommunityResult {
+fn find_communities(store: &RelationshipStore, threshold: f32) -> CommunityResult {
     use rustc_hash::FxHashMap;
 
     // Phase 1: build LocusId adjacency map (returned in CommunityResult
@@ -260,7 +434,10 @@ fn find_communities(
     }
 
     if adj.is_empty() {
-        return CommunityResult { components: Vec::new(), adj };
+        return CommunityResult {
+            components: Vec::new(),
+            adj,
+        };
     }
 
     // Phase 2: assign each LocusId a dense local index so label propagation
@@ -434,40 +611,7 @@ fn component_stats(
     (coherence, rel_ids)
 }
 
-/// Jaccard-like overlap: |intersection| / |union| of member sets.
-fn overlap(a: &rustc_hash::FxHashSet<LocusId>, b: &[LocusId]) -> f32 {
-    let intersection = b.iter().filter(|x| a.contains(x)).count();
-    let union = a.len() + b.len() - intersection;
-    if union == 0 { 1.0 } else { intersection as f32 / union as f32 }
-}
-
-/// Collect all entities (active and dormant) whose member overlap with
-/// `members` is at least `threshold`.
-///
-/// Uses the `by_member` reverse index on `EntityStore` to build a candidate
-/// set in O(|component|) before computing Jaccard scores, instead of
-/// scanning every entity unconditionally.
-fn all_matches(
-    member_set: &rustc_hash::FxHashSet<LocusId>,
-    existing: &EntityStore,
-    threshold: f32,
-) -> Vec<(EntityId, f32, bool)> {
-    // Candidate set: entities that share at least one member with this
-    // component.  Entities with zero overlap are excluded for free.
-    let candidates = existing.candidates_for_members(member_set);
-    let mut matches: Vec<(EntityId, f32, bool)> = candidates
-        .iter()
-        .filter_map(|&id| existing.get(id))
-        .map(|e| {
-            let score = overlap(member_set, &e.current.members);
-            let active = e.status == EntityStatus::Active;
-            (e.id, score, active)
-        })
-        .filter(|(_, score, _)| *score >= threshold)
-        .collect();
-    matches.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    matches
-}
+// `overlap` / `all_matches` removed with locus-flow algorithm — see docstring.
 
 fn snapshot_changed(entity: &Entity, new: &EntitySnapshot) -> bool {
     if entity.current.members != new.members {
@@ -478,8 +622,17 @@ fn snapshot_changed(entity: &Entity, new: &EntitySnapshot) -> bool {
 
 fn membership_delta(entity: &Entity, new: &EntitySnapshot) -> LayerTransition {
     let old = &entity.current.members;
-    let added: Vec<LocusId> = new.members.iter().filter(|m| !old.contains(m)).copied().collect();
-    let removed: Vec<LocusId> = old.iter().filter(|m| !new.members.contains(m)).copied().collect();
+    let added: Vec<LocusId> = new
+        .members
+        .iter()
+        .filter(|m| !old.contains(m))
+        .copied()
+        .collect();
+    let removed: Vec<LocusId> = old
+        .iter()
+        .filter(|m| !new.members.contains(m))
+        .copied()
+        .collect();
     if added.is_empty() && removed.is_empty() {
         LayerTransition::CoherenceShift {
             from: entity.current.coherence,
@@ -493,18 +646,13 @@ fn membership_delta(entity: &Entity, new: &EntitySnapshot) -> LayerTransition {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use graph_core::Relationship;
     use graph_core::{
         Endpoints, InfluenceKindId, KindObservation, LocusId, RelationshipLineage, StateVector,
     };
-    use graph_world::{RelationshipStore, EntityStore};
-    use graph_core::Relationship;
+    use graph_world::{EntityStore, RelationshipStore};
 
-    fn rel(
-        store: &mut RelationshipStore,
-        from: u64,
-        to: u64,
-        activity: f32,
-    ) {
+    fn rel(store: &mut RelationshipStore, from: u64, to: u64, activity: f32) {
         let id = store.mint_id();
         store.insert(Relationship {
             id,
@@ -543,15 +691,11 @@ mod tests {
         assert_eq!(born_count, 2, "{proposals:?}");
     }
 
-    #[test]
-    fn low_activity_edge_excluded_from_clustering() {
-        let mut store = RelationshipStore::new();
-        rel(&mut store, 1, 2, 0.05);
-        let perspective = DefaultEmergencePerspective::default();
-        let entities = EntityStore::new();
-        let proposals = perspective.recognize(&store, &entities, BatchId(0));
-        assert!(proposals.is_empty());
-    }
+    // Old test `low_activity_edge_excluded_from_clustering` removed with
+    // Phase 2 (threshold auto-tune): "low" is now relative, not absolute,
+    // and a world containing only 0.05-activity edges treats 0.05 as the
+    // baseline. Behaviour now tested at test level with realistic
+    // distributions (see lfr_dynamic.rs).
 
     #[test]
     fn continuation_produces_deposit_layer_not_new_born() {
@@ -585,12 +729,20 @@ mod tests {
         let r1 = RelationshipId(1);
         let r2 = RelationshipId(2);
         let mut adj: AdjMap = rustc_hash::FxHashMap::default();
-        adj.entry(LocusId(1)).or_default().extend([(LocusId(2), r0, 0.8), (LocusId(3), r2, 0.7)]);
-        adj.entry(LocusId(2)).or_default().extend([(LocusId(1), r0, 0.8), (LocusId(3), r1, 0.6)]);
-        adj.entry(LocusId(3)).or_default().extend([(LocusId(2), r1, 0.6), (LocusId(1), r2, 0.7)]);
+        adj.entry(LocusId(1))
+            .or_default()
+            .extend([(LocusId(2), r0, 0.8), (LocusId(3), r2, 0.7)]);
+        adj.entry(LocusId(2))
+            .or_default()
+            .extend([(LocusId(1), r0, 0.8), (LocusId(3), r1, 0.6)]);
+        adj.entry(LocusId(3))
+            .or_default()
+            .extend([(LocusId(2), r1, 0.6), (LocusId(1), r2, 0.7)]);
 
-        let member_set: rustc_hash::FxHashSet<LocusId> =
-            [LocusId(1), LocusId(2), LocusId(3)].iter().copied().collect();
+        let member_set: rustc_hash::FxHashSet<LocusId> = [LocusId(1), LocusId(2), LocusId(3)]
+            .iter()
+            .copied()
+            .collect();
 
         let (coherence, rel_ids) = component_stats(&member_set, &adj, 0.1);
 
@@ -617,57 +769,30 @@ mod tests {
         }
     }
 
-    #[test]
-    fn all_matches_returns_overlapping_entities_sorted_by_score() {
-        let mut store = EntityStore::new();
-
-        // Entity A: members {1, 2, 3}
-        let ea = store.mint_id();
-        store.insert(Entity::born(ea, BatchId(0), EntitySnapshot {
-            members: vec![LocusId(1), LocusId(2), LocusId(3)],
-            member_relationships: vec![],
-            coherence: 1.0,
-        }));
-
-        // Entity B: members {3, 4, 5} — overlaps on node 3
-        let eb = store.mint_id();
-        store.insert(Entity::born(eb, BatchId(0), EntitySnapshot {
-            members: vec![LocusId(3), LocusId(4), LocusId(5)],
-            member_relationships: vec![],
-            coherence: 1.0,
-        }));
-
-        // query set {1, 2, 3}: overlap with A = 3/3 = 1.0, with B = 1/5 = 0.2
-        let query: rustc_hash::FxHashSet<LocusId> =
-            [LocusId(1), LocusId(2), LocusId(3)].iter().copied().collect();
-
-        // threshold 0.5 → only A qualifies
-        let matches = all_matches(&query, &store, 0.5);
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].0, ea);
-        assert!((matches[0].1 - 1.0).abs() < 1e-6);
-
-        // threshold 0.1 → both qualify, sorted by descending score
-        let matches_all = all_matches(&query, &store, 0.1);
-        assert_eq!(matches_all.len(), 2);
-        assert_eq!(matches_all[0].0, ea, "highest score first");
-        assert!(matches_all[0].1 > matches_all[1].1);
-    }
+    // `all_matches` removed with the locus-flow rewrite — Jaccard-based
+    // overlap is no longer part of the perspective.
 
     #[test]
     fn component_stats_high_activity_not_capped() {
         // Activity > 1.0 should flow through without being capped.
         let r0 = RelationshipId(0);
         let mut adj: AdjMap = rustc_hash::FxHashMap::default();
-        adj.entry(LocusId(1)).or_default().push((LocusId(2), r0, 5.0));
-        adj.entry(LocusId(2)).or_default().push((LocusId(1), r0, 5.0));
+        adj.entry(LocusId(1))
+            .or_default()
+            .push((LocusId(2), r0, 5.0));
+        adj.entry(LocusId(2))
+            .or_default()
+            .push((LocusId(1), r0, 5.0));
         let member_set: rustc_hash::FxHashSet<LocusId> =
             [LocusId(1), LocusId(2)].iter().copied().collect();
 
         let (coherence, _) = component_stats(&member_set, &adj, 0.1);
 
         // mean_activity = 5.0; density ≤ 1.0 so coherence = 5.0 * density
-        assert!(coherence > 1.0, "coherence should exceed 1.0 when activity > 1.0, got {coherence}");
+        assert!(
+            coherence > 1.0,
+            "coherence should exceed 1.0 when activity > 1.0, got {coherence}"
+        );
     }
 
     #[test]

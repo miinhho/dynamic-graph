@@ -20,7 +20,7 @@
 //!
 //! Callers that need different semantics can implement the trait directly.
 
-use crate::entity::{CompressionLevel, CompressedTransition, EntityLayer};
+use crate::entity::{CompressedTransition, CompressionLevel, EntityLayer};
 
 /// What the engine should do to a single entity layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,34 +119,25 @@ pub fn apply_skeleton(layer: &mut EntityLayer) {
 ///
 /// Significant transitions (Born/Split/Merged) are **never** removed
 /// by the engine — they fall back to `Skeleton` regardless.
-#[derive(Debug, Clone, Copy)]
-pub struct DefaultEntityWeathering {
-    /// Layers younger than this are untouched.
-    pub recent_window: u64,
-    /// Layers between `recent_window` and this are compressed.
-    pub compression_age: u64,
-    /// Layers between `compression_age` and this are skeletonised.
-    /// Layers older than this are removed (significant → skeleton).
-    pub removal_age: u64,
-}
+///
+/// Phase 6: the `recent_window` / `compression_age` / `removal_age` /
+/// `preserved_transitions` knobs were collapsed into hard-coded constants.
+/// No benchmark required non-default values. Custom policies are still
+/// possible via `impl EntityWeatheringPolicy for MyPolicy`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DefaultEntityWeathering;
 
-impl Default for DefaultEntityWeathering {
-    fn default() -> Self {
-        Self {
-            recent_window: 50,
-            compression_age: 200,
-            removal_age: 1000,
-        }
-    }
-}
+const RECENT_WINDOW: u64 = 50;
+const COMPRESSION_AGE: u64 = 200;
+const REMOVAL_AGE: u64 = 1000;
 
 impl EntityWeatheringPolicy for DefaultEntityWeathering {
     fn effect(&self, _layer: &EntityLayer, age_in_batches: u64) -> WeatheringEffect {
-        if age_in_batches < self.recent_window {
+        if age_in_batches < RECENT_WINDOW {
             WeatheringEffect::Preserved
-        } else if age_in_batches < self.compression_age {
+        } else if age_in_batches < COMPRESSION_AGE {
             WeatheringEffect::Compress
-        } else if age_in_batches < self.removal_age {
+        } else if age_in_batches < REMOVAL_AGE {
             WeatheringEffect::Skeleton
         } else {
             WeatheringEffect::Remove
@@ -227,7 +218,10 @@ mod tests {
         let mut layer = full_layer(0);
         apply_compress(&mut layer);
         apply_skeleton(&mut layer);
-        assert!(matches!(layer.compression, CompressionLevel::Skeleton { .. }));
+        assert!(matches!(
+            layer.compression,
+            CompressionLevel::Skeleton { .. }
+        ));
     }
 
     #[test]

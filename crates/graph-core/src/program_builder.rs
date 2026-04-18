@@ -119,10 +119,7 @@ impl ProgramBuilder {
     /// for the common patterns.
     pub fn on_process<F>(mut self, rule: F) -> Self
     where
-        F: Fn(&Locus, &[&Change], &dyn LocusContext) -> Vec<ProposedChange>
-            + Send
-            + Sync
-            + 'static,
+        F: Fn(&Locus, &[&Change], &dyn LocusContext) -> Vec<ProposedChange> + Send + Sync + 'static,
     {
         self.process_rules.push(Box::new(rule));
         self
@@ -222,9 +219,9 @@ mod tests {
     use super::*;
     use crate::change::ChangeSubject;
     use crate::ids::{InfluenceKindId, LocusId, LocusKindId};
-    use crate::relationship::RelationshipId;
     use crate::locus::Locus;
     use crate::relationship::Relationship;
+    use crate::relationship::RelationshipId;
     use crate::state::StateVector;
 
     // Minimal no-op LocusContext for tests.
@@ -244,7 +241,11 @@ mod tests {
     }
 
     fn make_locus(id: u64, state0: f32) -> Locus {
-        Locus::new(LocusId(id), LocusKindId(0), StateVector::from_slice(&[state0]))
+        Locus::new(
+            LocusId(id),
+            LocusKindId(0),
+            StateVector::from_slice(&[state0]),
+        )
     }
 
     const KIND: InfluenceKindId = InfluenceKindId(1);
@@ -346,9 +347,7 @@ mod tests {
     #[test]
     fn on_process_closure_is_called() {
         let prog = ProgramBuilder::new()
-            .on_process(|_l, _i, _c| {
-                vec![ProposedChange::activation(LocusId(99), KIND, 0.5)]
-            })
+            .on_process(|_l, _i, _c| vec![ProposedChange::activation(LocusId(99), KIND, 0.5)])
             .build();
         let locus = make_locus(0, 0.0);
         let changes = prog.process(&locus, &[], &NullCtx);

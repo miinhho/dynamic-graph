@@ -75,19 +75,19 @@ const CHALLENGE_KIND: InfluenceKindId = InfluenceKindId(3);
 // ── Locus IDs ──────────────────────────────────────────────────────────────────
 
 const ALICE: LocusId = LocusId(1);
-const BOB:   LocusId = LocusId(2);
+const BOB: LocusId = LocusId(2);
 const CAROL: LocusId = LocusId(3);
-const DAVE:  LocusId = LocusId(4);
-const EVE:   LocusId = LocusId(5);
+const DAVE: LocusId = LocusId(4);
+const EVE: LocusId = LocusId(5);
 
 fn label(id: LocusId) -> &'static str {
     match id {
         ALICE => "ALICE",
-        BOB   => "BOB",
+        BOB => "BOB",
         CAROL => "CAROL",
-        DAVE  => "DAVE",
-        EVE   => "EVE",
-        _     => "?",
+        DAVE => "DAVE",
+        EVE => "EVE",
+        _ => "?",
     }
 }
 
@@ -104,8 +104,8 @@ fn label(id: LocusId) -> &'static str {
 /// than `min_signal` are dropped to prevent tiny magnitudes from cycling
 /// indefinitely when the graph contains back-edges (e.g. CAROL↔EVE challenge).
 struct ResearcherProgram {
-    trust_targets:     Vec<LocusId>,
-    collab_targets:    Vec<LocusId>,
+    trust_targets: Vec<LocusId>,
+    collab_targets: Vec<LocusId>,
     challenge_targets: Vec<LocusId>,
     /// Signal attenuation per forwarding step.
     attenuation: f32,
@@ -172,8 +172,8 @@ fn build_world() -> (World, LocusKindRegistry, InfluenceKindRegistry) {
     loci.insert(
         KIND_RESEARCHER,
         Box::new(ResearcherProgram {
-            trust_targets:     vec![BOB, CAROL],
-            collab_targets:    vec![BOB],
+            trust_targets: vec![BOB, CAROL],
+            collab_targets: vec![BOB],
             challenge_targets: vec![],
             attenuation: 0.5,
             min_signal: 0.05,
@@ -186,17 +186,17 @@ fn build_world() -> (World, LocusKindRegistry, InfluenceKindRegistry) {
     // For conciseness, BOB, CAROL, DAVE, EVE use LocusKindId(2..5) but share
     // the same ResearcherProgram struct with different target lists.
 
-    const KIND_BOB:   LocusKindId = LocusKindId(2);
+    const KIND_BOB: LocusKindId = LocusKindId(2);
     const KIND_CAROL: LocusKindId = LocusKindId(3);
-    const KIND_DAVE:  LocusKindId = LocusKindId(4);
-    const KIND_EVE:   LocusKindId = LocusKindId(5);
+    const KIND_DAVE: LocusKindId = LocusKindId(4);
+    const KIND_EVE: LocusKindId = LocusKindId(5);
 
     // BOB: trusts ALICE; collaborates with ALICE and DAVE; challenges DAVE.
     loci.insert(
         KIND_BOB,
         Box::new(ResearcherProgram {
-            trust_targets:     vec![ALICE],
-            collab_targets:    vec![ALICE, DAVE],
+            trust_targets: vec![ALICE],
+            collab_targets: vec![ALICE, DAVE],
             challenge_targets: vec![DAVE],
             attenuation: 0.5,
             min_signal: 0.05,
@@ -207,8 +207,8 @@ fn build_world() -> (World, LocusKindRegistry, InfluenceKindRegistry) {
     loci.insert(
         KIND_CAROL,
         Box::new(ResearcherProgram {
-            trust_targets:     vec![ALICE],
-            collab_targets:    vec![],
+            trust_targets: vec![ALICE],
+            collab_targets: vec![],
             challenge_targets: vec![EVE],
             attenuation: 0.5,
             min_signal: 0.05,
@@ -219,8 +219,8 @@ fn build_world() -> (World, LocusKindRegistry, InfluenceKindRegistry) {
     loci.insert(
         KIND_DAVE,
         Box::new(ResearcherProgram {
-            trust_targets:     vec![],
-            collab_targets:    vec![BOB],
+            trust_targets: vec![],
+            collab_targets: vec![BOB],
             challenge_targets: vec![],
             attenuation: 0.5,
             min_signal: 0.05,
@@ -231,8 +231,8 @@ fn build_world() -> (World, LocusKindRegistry, InfluenceKindRegistry) {
     loci.insert(
         KIND_EVE,
         Box::new(ResearcherProgram {
-            trust_targets:     vec![],
-            collab_targets:    vec![],
+            trust_targets: vec![],
+            collab_targets: vec![],
             challenge_targets: vec![CAROL],
             attenuation: 0.5,
             min_signal: 0.05,
@@ -240,22 +240,39 @@ fn build_world() -> (World, LocusKindRegistry, InfluenceKindRegistry) {
     );
 
     let mut influences = InfluenceKindRegistry::new();
-    influences.insert(TRUST_KIND,     InfluenceKindConfig::new("trust").with_decay(0.85));
-    influences.insert(COLLAB_KIND,    InfluenceKindConfig::new("collab").with_decay(0.85));
-    influences.insert(CHALLENGE_KIND, InfluenceKindConfig::new("challenge").with_decay(0.85));
+    influences.insert(
+        TRUST_KIND,
+        InfluenceKindConfig::new("trust").with_decay(0.85),
+    );
+    influences.insert(
+        COLLAB_KIND,
+        InfluenceKindConfig::new("collab").with_decay(0.85),
+    );
+    influences.insert(
+        CHALLENGE_KIND,
+        InfluenceKindConfig::new("challenge").with_decay(0.85),
+    );
 
     // Cross-kind interaction rules used later by `net_activity_with_interactions`.
     // Trust + collab together are synergistic (boost 1.3×).
-    influences.register_interaction(TRUST_KIND, COLLAB_KIND, InteractionEffect::Synergistic { boost: 1.3 });
+    influences.register_interaction(
+        TRUST_KIND,
+        COLLAB_KIND,
+        InteractionEffect::Synergistic { boost: 1.3 },
+    );
     // Trust and challenge partially cancel (dampen 0.7×).
-    influences.register_interaction(TRUST_KIND, CHALLENGE_KIND, InteractionEffect::Antagonistic { dampen: 0.7 });
+    influences.register_interaction(
+        TRUST_KIND,
+        CHALLENGE_KIND,
+        InteractionEffect::Antagonistic { dampen: 0.7 },
+    );
 
     let mut world = World::new();
     world.insert_locus(Locus::new(ALICE, KIND_RESEARCHER, StateVector::zeros(1)));
-    world.insert_locus(Locus::new(BOB,   KIND_BOB,        StateVector::zeros(1)));
-    world.insert_locus(Locus::new(CAROL, KIND_CAROL,      StateVector::zeros(1)));
-    world.insert_locus(Locus::new(DAVE,  KIND_DAVE,       StateVector::zeros(1)));
-    world.insert_locus(Locus::new(EVE,   KIND_EVE,        StateVector::zeros(1)));
+    world.insert_locus(Locus::new(BOB, KIND_BOB, StateVector::zeros(1)));
+    world.insert_locus(Locus::new(CAROL, KIND_CAROL, StateVector::zeros(1)));
+    world.insert_locus(Locus::new(DAVE, KIND_DAVE, StateVector::zeros(1)));
+    world.insert_locus(Locus::new(EVE, KIND_EVE, StateVector::zeros(1)));
 
     (world, loci, influences)
 }
@@ -279,10 +296,10 @@ fn print_bundle(label_a: &str, label_b: &str, bundle: &Q::RelationshipBundle<'_>
 
 fn kind_name(id: InfluenceKindId) -> &'static str {
     match id {
-        TRUST_KIND     => "trust",
-        COLLAB_KIND    => "collab",
+        TRUST_KIND => "trust",
+        COLLAB_KIND => "collab",
         CHALLENGE_KIND => "challenge",
-        _              => "?",
+        _ => "?",
     }
 }
 
@@ -293,7 +310,9 @@ fn main() {
     // max_batches_per_tick=64: cyclic topologies (e.g. CAROL↔EVE challenge)
     // require more batches to quiesce.  With attenuation=0.5 and min_signal=0.05,
     // the longest chain dies within ~10 batches; 64 is a comfortable ceiling.
-    let engine = Engine::new(EngineConfig { max_batches_per_tick: 64 });
+    let engine = Engine::new(EngineConfig {
+        max_batches_per_tick: 64,
+    });
 
     println!("=== Multi-Kind Relationship Profile Example ===\n");
     println!("  Three influence kinds: TRUST (+), COLLAB (+), CHALLENGE (-)");
@@ -313,17 +332,19 @@ fn main() {
         &influences,
         vec![
             // Trust stimuli: Alice initiates trust → BOB, CAROL
-            ProposedChange::stimulus(ALICE, TRUST_KIND,     &[1.0]),
+            ProposedChange::stimulus(ALICE, TRUST_KIND, &[1.0]),
             // Collab stimuli: Bob initiates collaboration → ALICE, DAVE
-            ProposedChange::stimulus(BOB,   COLLAB_KIND,    &[1.0]),
+            ProposedChange::stimulus(BOB, COLLAB_KIND, &[1.0]),
             // Challenge: Carol challenges EVE; Bob challenges DAVE
             ProposedChange::stimulus(CAROL, CHALLENGE_KIND, &[1.0]),
-            ProposedChange::stimulus(BOB,   CHALLENGE_KIND, &[0.6]),
+            ProposedChange::stimulus(BOB, CHALLENGE_KIND, &[0.6]),
         ],
     );
     println!(
         "  batches={} changes={} relationships={}",
-        r1.batches_committed, r1.changes_committed, world.relationships().len()
+        r1.batches_committed,
+        r1.changes_committed,
+        world.relationships().len()
     );
 
     // ── Tick 2: reinforce — each node now relays what it received ─────────────
@@ -334,17 +355,19 @@ fn main() {
         &loci,
         &influences,
         vec![
-            ProposedChange::stimulus(ALICE, TRUST_KIND,     &[1.0]),
-            ProposedChange::stimulus(BOB,   COLLAB_KIND,    &[1.0]),
-            ProposedChange::stimulus(BOB,   TRUST_KIND,     &[0.8]),
+            ProposedChange::stimulus(ALICE, TRUST_KIND, &[1.0]),
+            ProposedChange::stimulus(BOB, COLLAB_KIND, &[1.0]),
+            ProposedChange::stimulus(BOB, TRUST_KIND, &[0.8]),
             ProposedChange::stimulus(CAROL, CHALLENGE_KIND, &[1.0]),
-            ProposedChange::stimulus(EVE,   CHALLENGE_KIND, &[0.9]),
-            ProposedChange::stimulus(DAVE,  COLLAB_KIND,    &[0.7]),
+            ProposedChange::stimulus(EVE, CHALLENGE_KIND, &[0.9]),
+            ProposedChange::stimulus(DAVE, COLLAB_KIND, &[0.7]),
         ],
     );
     println!(
         "  batches={} changes={} relationships={}",
-        r2.batches_committed, r2.changes_committed, world.relationships().len()
+        r2.batches_committed,
+        r2.changes_committed,
+        world.relationships().len()
     );
 
     // ── Tick 3: second reinforcement — let activity accumulate ─────────────────
@@ -355,17 +378,19 @@ fn main() {
         &loci,
         &influences,
         vec![
-            ProposedChange::stimulus(ALICE, TRUST_KIND,     &[1.0]),
-            ProposedChange::stimulus(BOB,   COLLAB_KIND,    &[1.0]),
-            ProposedChange::stimulus(BOB,   TRUST_KIND,     &[0.8]),
+            ProposedChange::stimulus(ALICE, TRUST_KIND, &[1.0]),
+            ProposedChange::stimulus(BOB, COLLAB_KIND, &[1.0]),
+            ProposedChange::stimulus(BOB, TRUST_KIND, &[0.8]),
             ProposedChange::stimulus(CAROL, CHALLENGE_KIND, &[1.0]),
-            ProposedChange::stimulus(EVE,   CHALLENGE_KIND, &[0.9]),
-            ProposedChange::stimulus(DAVE,  COLLAB_KIND,    &[0.7]),
+            ProposedChange::stimulus(EVE, CHALLENGE_KIND, &[0.9]),
+            ProposedChange::stimulus(DAVE, COLLAB_KIND, &[0.7]),
         ],
     );
     println!(
         "  batches={} changes={} relationships={}",
-        r3.batches_committed, r3.changes_committed, world.relationships().len()
+        r3.batches_committed,
+        r3.changes_committed,
+        world.relationships().len()
     );
 
     // ── Relationship inventory ─────────────────────────────────────────────────
@@ -376,26 +401,31 @@ fn main() {
     for r in &rels {
         let (a, b) = match r.endpoints {
             Endpoints::Directed { from, to } => (from, to),
-            Endpoints::Symmetric { a, b }   => (a, b),
+            Endpoints::Symmetric { a, b } => (a, b),
         };
         println!(
             "  rel#{:2}  {}→{}  kind={:<9}  activity={:+.3}  weight={:.4}",
-            r.id.0, label(a), label(b), kind_name(r.kind), r.activity(), r.weight()
+            r.id.0,
+            label(a),
+            label(b),
+            kind_name(r.kind),
+            r.activity(),
+            r.weight()
         );
     }
 
     // ── Relationship profiles (multi-dimensional view) ─────────────────────────
 
     println!("\n--- Relationship profiles (all kinds, both directions) ---");
-    let bundle_ab    = Q::relationship_profile(&world, ALICE, BOB);
-    let bundle_ac    = Q::relationship_profile(&world, ALICE, CAROL);
-    let bundle_bd    = Q::relationship_profile(&world, BOB,   DAVE);
-    let bundle_ce    = Q::relationship_profile(&world, CAROL, EVE);
+    let bundle_ab = Q::relationship_profile(&world, ALICE, BOB);
+    let bundle_ac = Q::relationship_profile(&world, ALICE, CAROL);
+    let bundle_bd = Q::relationship_profile(&world, BOB, DAVE);
+    let bundle_ce = Q::relationship_profile(&world, CAROL, EVE);
 
-    print_bundle("ALICE", "BOB",   &bundle_ab);
+    print_bundle("ALICE", "BOB", &bundle_ab);
     print_bundle("ALICE", "CAROL", &bundle_ac);
-    print_bundle("BOB",   "DAVE",  &bundle_bd);
-    print_bundle("CAROL", "EVE",   &bundle_ce);
+    print_bundle("BOB", "DAVE", &bundle_bd);
+    print_bundle("CAROL", "EVE", &bundle_ce);
 
     // ── Profile similarity matrix ─────────────────────────────────────────────
     //
@@ -406,15 +436,17 @@ fn main() {
     println!("  (1.0 = identical coupling profile; 0.0 = orthogonal; −1.0 = opposite)");
 
     let pairs = [
-        ("ALICE↔BOB",   &bundle_ab),
+        ("ALICE↔BOB", &bundle_ab),
         ("ALICE↔CAROL", &bundle_ac),
-        ("BOB↔DAVE",    &bundle_bd),
-        ("CAROL↔EVE",   &bundle_ce),
+        ("BOB↔DAVE", &bundle_bd),
+        ("CAROL↔EVE", &bundle_ce),
     ];
 
     // Header row
     print!("  {:13}", "");
-    for (name, _) in &pairs { print!("  {:13}", name); }
+    for (name, _) in &pairs {
+        print!("  {:13}", name);
+    }
     println!();
 
     // Similarity matrix
@@ -435,13 +467,12 @@ fn main() {
     println!("\n--- Net activity with cross-kind interactions ---");
     println!("  Rules: trust+collab → synergistic (×1.3); trust+challenge → antagonistic (×0.7)");
 
-    let interaction_fn = |ka: InfluenceKindId, kb: InfluenceKindId| {
-        influences.interaction_between(ka, kb).cloned()
-    };
+    let interaction_fn =
+        |ka: InfluenceKindId, kb: InfluenceKindId| influences.interaction_between(ka, kb).cloned();
 
     for (name, bundle) in &pairs {
         let plain = bundle.net_activity();
-        let adj   = bundle.net_activity_with_interactions(&interaction_fn);
+        let adj = bundle.net_activity_with_interactions(&interaction_fn);
         println!("  {name:13}  plain={plain:+.3}  adjusted={adj:+.3}");
     }
 
@@ -452,9 +483,10 @@ fn main() {
     // Min rule:     composed = min(edge1, edge2, …) (bottleneck strength).
 
     println!("\n--- Transitive inference: COLLAB chain ALICE → DAVE (through BOB) ---");
-    let t_product = Q::infer_transitive(&world, ALICE, DAVE, COLLAB_KIND, Q::TransitiveRule::Product);
-    let t_min     = Q::infer_transitive(&world, ALICE, DAVE, COLLAB_KIND, Q::TransitiveRule::Min);
-    let t_mean    = Q::infer_transitive(&world, ALICE, DAVE, COLLAB_KIND, Q::TransitiveRule::Mean);
+    let t_product =
+        Q::infer_transitive(&world, ALICE, DAVE, COLLAB_KIND, Q::TransitiveRule::Product);
+    let t_min = Q::infer_transitive(&world, ALICE, DAVE, COLLAB_KIND, Q::TransitiveRule::Min);
+    let t_mean = Q::infer_transitive(&world, ALICE, DAVE, COLLAB_KIND, Q::TransitiveRule::Mean);
 
     // Product rule multiplies raw activity values along the path.  When those
     // values are > 1.0 the product grows with distance — suited for probability
@@ -462,22 +494,31 @@ fn main() {
     // rules are more robust for unnormalised activity.
     println!(
         "  ALICE→DAVE (Product): {}",
-        t_product.map(|v| format!("{v:.4}")).unwrap_or("no collab path".into())
+        t_product
+            .map(|v| format!("{v:.4}"))
+            .unwrap_or("no collab path".into())
     );
     println!(
         "  ALICE→DAVE (Min):     {}",
-        t_min.map(|v| format!("{v:.4}")).unwrap_or("no collab path".into())
+        t_min
+            .map(|v| format!("{v:.4}"))
+            .unwrap_or("no collab path".into())
     );
     println!(
         "  ALICE→DAVE (Mean):    {}",
-        t_mean.map(|v| format!("{v:.4}")).unwrap_or("no collab path".into())
+        t_mean
+            .map(|v| format!("{v:.4}"))
+            .unwrap_or("no collab path".into())
     );
 
     // Also check TRUST chain from ALICE to CAROL (direct hop).
-    let t_trust_direct = Q::infer_transitive(&world, ALICE, CAROL, TRUST_KIND, Q::TransitiveRule::Product);
+    let t_trust_direct =
+        Q::infer_transitive(&world, ALICE, CAROL, TRUST_KIND, Q::TransitiveRule::Product);
     println!(
         "  ALICE→CAROL (Trust, Product, 1 hop): {}",
-        t_trust_direct.map(|v| format!("{v:.4}")).unwrap_or("no trust path".into())
+        t_trust_direct
+            .map(|v| format!("{v:.4}"))
+            .unwrap_or("no trust path".into())
     );
 
     // ── Most similar relationships to the ALICE→BOB trust edge ────────────────
@@ -511,11 +552,15 @@ fn main() {
                 let rel = world.relationships().get(*other_id).unwrap();
                 let (a, b) = match rel.endpoints {
                     Endpoints::Directed { from, to } => (from, to),
-                    Endpoints::Symmetric { a, b }   => (a, b),
+                    Endpoints::Symmetric { a, b } => (a, b),
                 };
                 println!(
                     "  rel#{:2}  {}→{}  kind={:<9}  cosine_sim={:.4}",
-                    other_id.0, label(a), label(b), kind_name(rel.kind), sim
+                    other_id.0,
+                    label(a),
+                    label(b),
+                    kind_name(rel.kind),
+                    sim
                 );
             }
         }
@@ -525,12 +570,15 @@ fn main() {
     // ── Entity emergence ───────────────────────────────────────────────────────
 
     let ep = DefaultEmergencePerspective {
-        min_activity_threshold: 0.01,
+        min_activity_threshold: Some(0.01),
         ..Default::default()
     };
     engine.recognize_entities(&mut world, &influences, &ep);
 
-    println!("\n--- Entities ({} active) ---", world.entities().active_count());
+    println!(
+        "\n--- Entities ({} active) ---",
+        world.entities().active_count()
+    );
     for e in world.entities().active() {
         let members: Vec<&str> = e.current.members.iter().map(|l| label(*l)).collect();
         println!(
@@ -543,15 +591,20 @@ fn main() {
 
     // ── Cohere clusters ────────────────────────────────────────────────────────
 
-    let cp = DefaultCoherePerspective { min_bridge_activity: 0.01, ..Default::default() };
+    let cp = DefaultCoherePerspective {
+        min_bridge_activity: Some(0.01),
+        ..Default::default()
+    };
     engine.extract_cohere(&mut world, &influences, &cp);
     let coheres = world.coheres().get("default").unwrap_or(&[]);
     println!("\n--- Coheres ({}) ---", coheres.len());
     for c in coheres {
         let ms = match &c.members {
-            graph_core::CohereMembers::Entities(ids) => {
-                ids.iter().map(|e| format!("entity#{}", e.0)).collect::<Vec<_>>().join(", ")
-            }
+            graph_core::CohereMembers::Entities(ids) => ids
+                .iter()
+                .map(|e| format!("entity#{}", e.0))
+                .collect::<Vec<_>>()
+                .join(", "),
             _ => "(mixed)".into(),
         };
         println!("  cohere#{}  [{}]  strength={:.3}", c.id.0, ms, c.strength);

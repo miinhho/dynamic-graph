@@ -14,19 +14,21 @@
 //! Run: `cargo run -p graph-engine --example rumor_spread`
 
 use graph_core::{
-    Change, Endpoints, InfluenceKindId, Locus, LocusContext, LocusId, LocusKindId,
-    LocusProgram, ProposedChange, StateSlotDef, StateVector,
+    Change, Endpoints, InfluenceKindId, Locus, LocusContext, LocusId, LocusKindId, LocusProgram,
+    ProposedChange, StateSlotDef, StateVector,
 };
-use graph_engine::{Engine, EngineConfig, InfluenceKindConfig, InfluenceKindRegistry,
-    LocusKindConfig, LocusKindRegistry};
+use graph_engine::{
+    Engine, EngineConfig, InfluenceKindConfig, InfluenceKindRegistry, LocusKindConfig,
+    LocusKindRegistry,
+};
 use graph_query as Q;
 use graph_world::World;
 
 // ─── Kind constants ───────────────────────────────────────────────────────────
 
 const KIND_INFLUENCER: LocusKindId = LocusKindId(1);
-const KIND_REGULAR:    LocusKindId = LocusKindId(2);
-const KIND_SKEPTIC:    LocusKindId = LocusKindId(3);
+const KIND_REGULAR: LocusKindId = LocusKindId(2);
+const KIND_SKEPTIC: LocusKindId = LocusKindId(3);
 
 const BELIEF_KIND: InfluenceKindId = InfluenceKindId(1);
 
@@ -74,7 +76,12 @@ impl LocusProgram for InfluencerProgram {
             return vec![];
         }
         // Propagate own belief to all neighbors.
-        let my_belief = locus.state.as_slice().get(BELIEF_SLOT).copied().unwrap_or(0.0);
+        let my_belief = locus
+            .state
+            .as_slice()
+            .get(BELIEF_SLOT)
+            .copied()
+            .unwrap_or(0.0);
         ctx.relationships_for(locus.id)
             .filter_map(|r| r.endpoints.target())
             .map(|target| ProposedChange::stimulus(target, BELIEF_KIND, &[my_belief]))
@@ -98,7 +105,12 @@ impl LocusProgram for RegularProgram {
         if incoming.is_empty() {
             return vec![];
         }
-        let current = locus.state.as_slice().get(BELIEF_SLOT).copied().unwrap_or(0.0);
+        let current = locus
+            .state
+            .as_slice()
+            .get(BELIEF_SLOT)
+            .copied()
+            .unwrap_or(0.0);
         let avg_incoming: f32 = incoming
             .iter()
             .map(|c| c.after.as_slice().get(BELIEF_SLOT).copied().unwrap_or(0.0))
@@ -122,8 +134,15 @@ impl LocusProgram for RegularProgram {
         // so downstream gets the strongest available signal.
         let relay_belief = new_belief.max(current);
         if relay_belief > 1e-4 {
-            for target in ctx.relationships_for(locus.id).filter_map(|r| r.endpoints.target()) {
-                proposals.push(ProposedChange::stimulus(target, BELIEF_KIND, &[relay_belief]));
+            for target in ctx
+                .relationships_for(locus.id)
+                .filter_map(|r| r.endpoints.target())
+            {
+                proposals.push(ProposedChange::stimulus(
+                    target,
+                    BELIEF_KIND,
+                    &[relay_belief],
+                ));
             }
         }
         proposals
@@ -143,7 +162,12 @@ impl LocusProgram for SkepticProgram {
         if incoming.is_empty() {
             return vec![];
         }
-        let current = locus.state.as_slice().get(BELIEF_SLOT).copied().unwrap_or(0.0);
+        let current = locus
+            .state
+            .as_slice()
+            .get(BELIEF_SLOT)
+            .copied()
+            .unwrap_or(0.0);
         let avg_incoming: f32 = incoming
             .iter()
             .map(|c| c.after.as_slice().get(BELIEF_SLOT).copied().unwrap_or(0.0))
@@ -171,30 +195,41 @@ fn build_world() -> (World, LocusKindRegistry, InfluenceKindRegistry) {
         .with_range(0.0, 1.0);
 
     let mut loci = LocusKindRegistry::new();
-    loci.insert_with_config(KIND_INFLUENCER, LocusKindConfig {
-        name: Some("Influencer".into()),
-        state_slots: vec![belief_slot_def.clone()],
-        program: Box::new(InfluencerProgram),
-        refractory_batches: 0,
-        encoder: None,
-        max_proposals_per_dispatch: None,
-    });
-    loci.insert_with_config(KIND_REGULAR, LocusKindConfig {
-        name: Some("Regular".into()),
-        state_slots: vec![belief_slot_def.clone()],
-        program: Box::new(RegularProgram { learning_rate: 0.25 }),
-        refractory_batches: 0,
-        encoder: None,
-        max_proposals_per_dispatch: None,
-    });
-    loci.insert_with_config(KIND_SKEPTIC, LocusKindConfig {
-        name: Some("Skeptic".into()),
-        state_slots: vec![belief_slot_def],
-        program: Box::new(SkepticProgram),
-        refractory_batches: 0,
-        encoder: None,
-        max_proposals_per_dispatch: None,
-    });
+    loci.insert_with_config(
+        KIND_INFLUENCER,
+        LocusKindConfig {
+            name: Some("Influencer".into()),
+            state_slots: vec![belief_slot_def.clone()],
+            program: Box::new(InfluencerProgram),
+            refractory_batches: 0,
+            encoder: None,
+            max_proposals_per_dispatch: None,
+        },
+    );
+    loci.insert_with_config(
+        KIND_REGULAR,
+        LocusKindConfig {
+            name: Some("Regular".into()),
+            state_slots: vec![belief_slot_def.clone()],
+            program: Box::new(RegularProgram {
+                learning_rate: 0.25,
+            }),
+            refractory_batches: 0,
+            encoder: None,
+            max_proposals_per_dispatch: None,
+        },
+    );
+    loci.insert_with_config(
+        KIND_SKEPTIC,
+        LocusKindConfig {
+            name: Some("Skeptic".into()),
+            state_slots: vec![belief_slot_def],
+            program: Box::new(SkepticProgram),
+            refractory_batches: 0,
+            encoder: None,
+            max_proposals_per_dispatch: None,
+        },
+    );
 
     let mut influences = InfluenceKindRegistry::new();
     influences.insert(
@@ -214,21 +249,57 @@ fn build_world() -> (World, LocusKindRegistry, InfluenceKindRegistry) {
     let mut world = World::new();
 
     // Influencers start fully convinced; everyone else starts neutral.
-    world.insert_locus(Locus::new(INFLUENCER_A, KIND_INFLUENCER, StateVector::from_slice(&[1.0])));
-    world.insert_locus(Locus::new(INFLUENCER_B, KIND_INFLUENCER, StateVector::from_slice(&[1.0])));
-    world.insert_locus(Locus::new(REG_1,        KIND_REGULAR,    StateVector::from_slice(&[0.0])));
-    world.insert_locus(Locus::new(REG_2,        KIND_REGULAR,    StateVector::from_slice(&[0.0])));
-    world.insert_locus(Locus::new(REG_3,        KIND_REGULAR,    StateVector::from_slice(&[0.0])));
-    world.insert_locus(Locus::new(REG_4,        KIND_REGULAR,    StateVector::from_slice(&[0.0])));
-    world.insert_locus(Locus::new(SKEPTIC_1,    KIND_SKEPTIC,    StateVector::from_slice(&[0.0])));
-    world.insert_locus(Locus::new(SKEPTIC_2,    KIND_SKEPTIC,    StateVector::from_slice(&[0.0])));
+    world.insert_locus(Locus::new(
+        INFLUENCER_A,
+        KIND_INFLUENCER,
+        StateVector::from_slice(&[1.0]),
+    ));
+    world.insert_locus(Locus::new(
+        INFLUENCER_B,
+        KIND_INFLUENCER,
+        StateVector::from_slice(&[1.0]),
+    ));
+    world.insert_locus(Locus::new(
+        REG_1,
+        KIND_REGULAR,
+        StateVector::from_slice(&[0.0]),
+    ));
+    world.insert_locus(Locus::new(
+        REG_2,
+        KIND_REGULAR,
+        StateVector::from_slice(&[0.0]),
+    ));
+    world.insert_locus(Locus::new(
+        REG_3,
+        KIND_REGULAR,
+        StateVector::from_slice(&[0.0]),
+    ));
+    world.insert_locus(Locus::new(
+        REG_4,
+        KIND_REGULAR,
+        StateVector::from_slice(&[0.0]),
+    ));
+    world.insert_locus(Locus::new(
+        SKEPTIC_1,
+        KIND_SKEPTIC,
+        StateVector::from_slice(&[0.0]),
+    ));
+    world.insert_locus(Locus::new(
+        SKEPTIC_2,
+        KIND_SKEPTIC,
+        StateVector::from_slice(&[0.0]),
+    ));
 
     // Pre-wire the social graph.
     for (from, to) in [
-        (INFLUENCER_A, REG_1), (INFLUENCER_A, REG_2),
-        (INFLUENCER_B, REG_2), (INFLUENCER_B, REG_3),
-        (REG_1, REG_3), (REG_2, REG_4),
-        (REG_3, SKEPTIC_1), (REG_4, SKEPTIC_2),
+        (INFLUENCER_A, REG_1),
+        (INFLUENCER_A, REG_2),
+        (INFLUENCER_B, REG_2),
+        (INFLUENCER_B, REG_3),
+        (REG_1, REG_3),
+        (REG_2, REG_4),
+        (REG_3, SKEPTIC_1),
+        (REG_4, SKEPTIC_2),
     ] {
         world.add_relationship(
             Endpoints::directed(from, to),
@@ -243,13 +314,23 @@ fn build_world() -> (World, LocusKindRegistry, InfluenceKindRegistry) {
 // ─── Query helpers ────────────────────────────────────────────────────────────
 
 fn belief(world: &World, id: LocusId) -> f32 {
-    world.locus(id)
+    world
+        .locus(id)
         .and_then(|l| l.state.as_slice().get(BELIEF_SLOT).copied())
         .unwrap_or(0.0)
 }
 
 fn print_beliefs(world: &World) {
-    for id in [INFLUENCER_A, INFLUENCER_B, REG_1, REG_2, REG_3, REG_4, SKEPTIC_1, SKEPTIC_2] {
+    for id in [
+        INFLUENCER_A,
+        INFLUENCER_B,
+        REG_1,
+        REG_2,
+        REG_3,
+        REG_4,
+        SKEPTIC_1,
+        SKEPTIC_2,
+    ] {
         println!("  {:<14} belief={:.3}", label(id), belief(world, id));
     }
 }
@@ -258,7 +339,9 @@ fn print_beliefs(world: &World) {
 
 fn main() {
     let (mut world, loci, influences) = build_world();
-    let engine = Engine::new(EngineConfig { max_batches_per_tick: 32 });
+    let engine = Engine::new(EngineConfig {
+        max_batches_per_tick: 32,
+    });
 
     println!("=== Rumor Propagation Example ===\n");
     println!("  INFLUENCER_A → REG_1 → REG_3 → SKEPTIC_1");
@@ -278,8 +361,12 @@ fn main() {
             ProposedChange::stimulus(INFLUENCER_B, BELIEF_KIND, &[1.0]),
         ],
     );
-    println!("  batches={} changes={} relationships={}",
-        r1.batches_committed, r1.changes_committed, world.relationships().len());
+    println!(
+        "  batches={} changes={} relationships={}",
+        r1.batches_committed,
+        r1.changes_committed,
+        world.relationships().len()
+    );
     print_beliefs(&world);
     println!();
 
@@ -295,8 +382,12 @@ fn main() {
             ProposedChange::stimulus(INFLUENCER_B, BELIEF_KIND, &[1.0]),
         ],
     );
-    println!("  batches={} changes={} relationships={}",
-        r2.batches_committed, r2.changes_committed, world.relationships().len());
+    println!(
+        "  batches={} changes={} relationships={}",
+        r2.batches_committed,
+        r2.changes_committed,
+        world.relationships().len()
+    );
     print_beliefs(&world);
     println!();
 
@@ -312,8 +403,12 @@ fn main() {
             ProposedChange::stimulus(INFLUENCER_B, BELIEF_KIND, &[1.0]),
         ],
     );
-    println!("  batches={} changes={} relationships={}",
-        r3.batches_committed, r3.changes_committed, world.relationships().len());
+    println!(
+        "  batches={} changes={} relationships={}",
+        r3.batches_committed,
+        r3.changes_committed,
+        world.relationships().len()
+    );
     print_beliefs(&world);
     println!();
 
@@ -348,10 +443,14 @@ fn main() {
     let upstr = Q::upstream_of(&world, REG_2, 1);
     let downstr = Q::downstream_of(&world, REG_2, 1);
     print!("  sources of REG_2: ");
-    for id in &upstr { print!("{} ", label(*id)); }
+    for id in &upstr {
+        print!("{} ", label(*id));
+    }
     println!();
     print!("  targets of REG_2: ");
-    for id in &downstr { print!("{} ", label(*id)); }
+    for id in &downstr {
+        print!("{} ", label(*id));
+    }
     println!();
 
     // ── Filter: who has been significantly influenced? ────────────────────────
@@ -365,10 +464,16 @@ fn main() {
     let unconvinced = Q::loci(&world)
         .where_state(BELIEF_SLOT, |b| b <= 0.1)
         .collect();
-    println!("  convinced (>0.5): {}  {:?}", convinced.len(),
-        convinced.iter().map(|l| label(l.id)).collect::<Vec<_>>());
-    println!("  unconvinced (<=0.1): {}  {:?}", unconvinced.len(),
-        unconvinced.iter().map(|l| label(l.id)).collect::<Vec<_>>());
+    println!(
+        "  convinced (>0.5): {}  {:?}",
+        convinced.len(),
+        convinced.iter().map(|l| label(l.id)).collect::<Vec<_>>()
+    );
+    println!(
+        "  unconvinced (<=0.1): {}  {:?}",
+        unconvinced.len(),
+        unconvinced.iter().map(|l| label(l.id)).collect::<Vec<_>>()
+    );
 
     // ── Ranking: who has the highest belief? ─────────────────────────────────
 
@@ -377,7 +482,12 @@ fn main() {
     // Builder API: sort by belief state slot, take top 4
     let top4 = Q::loci(&world).top_n_by_state(BELIEF_SLOT, 4).collect();
     for (rank, l) in top4.iter().enumerate() {
-        println!("  #{} {} belief={:.3}", rank + 1, label(l.id), l.state.as_slice()[BELIEF_SLOT]);
+        println!(
+            "  #{} {} belief={:.3}",
+            rank + 1,
+            label(l.id),
+            l.state.as_slice()[BELIEF_SLOT]
+        );
     }
 
     // ── Convince-reach: regulars near INFLUENCER_A with high belief ───────────
@@ -391,7 +501,11 @@ fn main() {
         .top_n_by_state(BELIEF_SLOT, 5)
         .collect();
     for l in &convinced_reach {
-        println!("  {} belief={:.3}", label(l.id), l.state.as_slice()[BELIEF_SLOT]);
+        println!(
+            "  {} belief={:.3}",
+            label(l.id),
+            l.state.as_slice()[BELIEF_SLOT]
+        );
     }
 
     // ── Influence balance: net senders vs receivers ───────────────────────────
@@ -399,7 +513,13 @@ fn main() {
     println!("\n--- Influence balance ---");
     for id in [INFLUENCER_A, INFLUENCER_B, REG_2, REG_3, SKEPTIC_1] {
         let balance = Q::net_influence_balance(&world, id);
-        let direction = if balance > 0.0 { "sender" } else if balance < 0.0 { "receiver" } else { "neutral" };
+        let direction = if balance > 0.0 {
+            "sender"
+        } else if balance < 0.0 {
+            "receiver"
+        } else {
+            "neutral"
+        };
         println!("  {:<14} net={:+.3}  ({})", label(id), balance, direction);
     }
 
@@ -414,9 +534,16 @@ fn main() {
         .collect();
     for r in &top3 {
         let from = r.endpoints.source().map(label).unwrap_or("?");
-        let to   = r.endpoints.target().map(label).unwrap_or("?");
-        println!("  {}→{}  strength={:.3}  activity={:.3}  weight={:.3}  touches={}",
-            from, to, r.strength(), r.activity(), r.weight(), r.lineage.change_count);
+        let to = r.endpoints.target().map(label).unwrap_or("?");
+        println!(
+            "  {}→{}  strength={:.3}  activity={:.3}  weight={:.3}  touches={}",
+            from,
+            to,
+            r.strength(),
+            r.activity(),
+            r.weight(),
+            r.lineage.change_count
+        );
     }
 
     // ── Outgoing edges of INFLUENCER_A with high activity ────────────────────
@@ -438,9 +565,13 @@ fn main() {
     println!("\n--- Per-batch activity ---");
     for batch_id in Q::committed_batches(&world) {
         let changed = Q::loci_changed_in_batch(&world, batch_id);
-        if changed.is_empty() { continue; }
+        if changed.is_empty() {
+            continue;
+        }
         print!("  batch {}: ", batch_id.0);
-        for id in &changed { print!("{} ", label(*id)); }
+        for id in &changed {
+            print!("{} ", label(*id));
+        }
         println!("({} loci)", changed.len());
     }
 
@@ -474,16 +605,17 @@ fn main() {
     println!("  relationships older than 1 batch: {}", old_rels);
 
     // Builder API: high-activity filter
-    let volatile_count = Q::relationships(&world)
-        .above_activity(1.0)
-        .count();
+    let volatile_count = Q::relationships(&world).above_activity(1.0).count();
     println!("  highly active (activity > 1.0): {}", volatile_count);
 
     // ── Reciprocal pairs: mutual influence ────────────────────────────────────
 
     println!("\n--- Reciprocal (bidirectional) pairs ---");
     let pairs = Q::reciprocal_pairs(&world);
-    println!("  reciprocal pairs: {} (expected 0 for DAG topology)", pairs.len());
+    println!(
+        "  reciprocal pairs: {} (expected 0 for DAG topology)",
+        pairs.len()
+    );
 
     // ── Entity recognition ────────────────────────────────────────────────────
 
@@ -492,7 +624,10 @@ fn main() {
     println!("  active entities: {}", entities.len());
     for e in &entities {
         let members: Vec<_> = e.current.members.iter().map(|id| label(*id)).collect();
-        println!("  entity#{} coherence={:.3} members={:?}", e.id.0, e.current.coherence, members);
+        println!(
+            "  entity#{} coherence={:.3} members={:?}",
+            e.id.0, e.current.coherence, members
+        );
     }
 
     let skeptic_entities = Q::entities_with_member(&world, SKEPTIC_1);
@@ -507,13 +642,11 @@ fn main() {
     println!("\n--- Relationship touch rate (touches/batch) ---");
 
     // Builder API: top 3 by change count, then derive touch rate
-    let top_touch = Q::relationships(&world)
-        .top_n_by_change_count(3)
-        .collect();
+    let top_touch = Q::relationships(&world).top_n_by_change_count(3).collect();
     for r in &top_touch {
         let rate = Q::relationship_touch_rate(&world, r.id, current_batch);
         let from = r.endpoints.source().map(label).unwrap_or("?");
-        let to   = r.endpoints.target().map(label).unwrap_or("?");
+        let to = r.endpoints.target().map(label).unwrap_or("?");
         println!("  {}→{}  {:.2} touches/batch", from, to, rate);
     }
 
@@ -527,19 +660,34 @@ fn main() {
         .sort_by_state(BELIEF_SLOT)
         .collect();
     for l in &upstream_loci {
-        println!("  {} belief={:.3}", label(l.id), l.state.as_slice().get(BELIEF_SLOT).copied().unwrap_or(0.0));
+        println!(
+            "  {} belief={:.3}",
+            label(l.id),
+            l.state.as_slice().get(BELIEF_SLOT).copied().unwrap_or(0.0)
+        );
     }
 
     // ── Schema / ontology events from TickResult ──────────────────────────────
 
     println!("\n--- Ontology events from ticks ---");
-    let all_events: Vec<_> = r1.events.iter()
+    let all_events: Vec<_> = r1
+        .events
+        .iter()
         .chain(r2.events.iter())
         .chain(r3.events.iter())
         .collect();
-    let emerged: Vec<_> = all_events.iter().filter(|e| matches!(e, graph_core::WorldEvent::RelationshipEmerged { .. })).collect();
-    let violations: Vec<_> = all_events.iter().filter(|e| matches!(e, graph_core::WorldEvent::SchemaViolation { .. })).collect();
-    println!("  relationships auto-emerged across ticks: {}", emerged.len());
+    let emerged: Vec<_> = all_events
+        .iter()
+        .filter(|e| matches!(e, graph_core::WorldEvent::RelationshipEmerged { .. }))
+        .collect();
+    let violations: Vec<_> = all_events
+        .iter()
+        .filter(|e| matches!(e, graph_core::WorldEvent::SchemaViolation { .. }))
+        .collect();
+    println!(
+        "  relationships auto-emerged across ticks: {}",
+        emerged.len()
+    );
     println!("  schema violations (soft): {}", violations.len());
     if violations.is_empty() {
         println!("  → all auto-emerged edges respect applies_between constraints");
@@ -553,15 +701,36 @@ fn main() {
     for (kind_id, name) in loci.named_kinds() {
         let cfg = loci.get_config(kind_id).unwrap();
         let slots: Vec<&str> = cfg.state_slots.iter().map(|s| s.name.as_str()).collect();
-        let ranges: Vec<String> = cfg.state_slots.iter()
-            .map(|s| s.range.map(|(lo, hi)| format!("[{lo},{hi}]")).unwrap_or_else(|| "unbounded".into()))
+        let ranges: Vec<String> = cfg
+            .state_slots
+            .iter()
+            .map(|s| {
+                s.range
+                    .map(|(lo, hi)| format!("[{lo},{hi}]"))
+                    .unwrap_or_else(|| "unbounded".into())
+            })
             .collect();
-        println!("  {name} ({kind_id:?}): slots={:?}  ranges={:?}", slots, ranges);
+        println!(
+            "  {name} ({kind_id:?}): slots={:?}  ranges={:?}",
+            slots, ranges
+        );
     }
     let belief_cfg = influences.get(BELIEF_KIND).unwrap();
-    let constraints: Vec<_> = belief_cfg.applies_between.iter()
-        .map(|(fk, tk)| (loci.named_kinds().find(|(id, _)| *id == *fk).map(|(_, n)| n).unwrap_or("?"),
-                          loci.named_kinds().find(|(id, _)| *id == *tk).map(|(_, n)| n).unwrap_or("?")))
+    let constraints: Vec<_> = belief_cfg
+        .applies_between
+        .iter()
+        .map(|(fk, tk)| {
+            (
+                loci.named_kinds()
+                    .find(|(id, _)| *id == *fk)
+                    .map(|(_, n)| n)
+                    .unwrap_or("?"),
+                loci.named_kinds()
+                    .find(|(id, _)| *id == *tk)
+                    .map(|(_, n)| n)
+                    .unwrap_or("?"),
+            )
+        })
         .collect();
     println!("  'belief' applies_between: {:?}", constraints);
 
@@ -574,27 +743,39 @@ fn main() {
 
     println!("\n--- Transitive influence (INFLUENCER_A → SKEPTIC_1, 3 hops) ---");
     let transitive_product = Q::infer_transitive(
-        &world, INFLUENCER_A, SKEPTIC_1, BELIEF_KIND, Q::TransitiveRule::Product,
+        &world,
+        INFLUENCER_A,
+        SKEPTIC_1,
+        BELIEF_KIND,
+        Q::TransitiveRule::Product,
     );
     let transitive_min = Q::infer_transitive(
-        &world, INFLUENCER_A, SKEPTIC_1, BELIEF_KIND, Q::TransitiveRule::Min,
+        &world,
+        INFLUENCER_A,
+        SKEPTIC_1,
+        BELIEF_KIND,
+        Q::TransitiveRule::Min,
     );
     match transitive_product {
         Some(v) => println!("  Product rule (weakens with distance): {v:.4}"),
-        None    => println!("  Product rule: no directed BELIEF_KIND path found"),
+        None => println!("  Product rule: no directed BELIEF_KIND path found"),
     }
     match transitive_min {
         Some(v) => println!("  Min rule    (bottleneck):             {v:.4}"),
-        None    => println!("  Min rule: no directed BELIEF_KIND path found"),
+        None => println!("  Min rule: no directed BELIEF_KIND path found"),
     }
 
     // Also check INFLUENCER_B → SKEPTIC_2 path (INFLUENCER_B → REG_2 → REG_4 → SKEPTIC_2)
     let b_to_s2 = Q::infer_transitive(
-        &world, INFLUENCER_B, SKEPTIC_2, BELIEF_KIND, Q::TransitiveRule::Product,
+        &world,
+        INFLUENCER_B,
+        SKEPTIC_2,
+        BELIEF_KIND,
+        Q::TransitiveRule::Product,
     );
     match b_to_s2 {
         Some(v) => println!("  INFLUENCER_B → SKEPTIC_2 (Product): {v:.4}"),
-        None    => println!("  INFLUENCER_B → SKEPTIC_2: no path"),
+        None => println!("  INFLUENCER_B → SKEPTIC_2: no path"),
     }
 
     // ── Relationship bundle: INFLUENCER_A ↔ REG_1 pair ────────────────────────
@@ -607,7 +788,9 @@ fn main() {
     let bundle_a1 = Q::relationship_profile(&world, INFLUENCER_A, REG_1);
     println!(
         "  edges: {}  net_activity={:.3}  is_excitatory={}",
-        bundle_a1.len(), bundle_a1.net_activity(), bundle_a1.is_excitatory(),
+        bundle_a1.len(),
+        bundle_a1.net_activity(),
+        bundle_a1.is_excitatory(),
     );
     if let Some(dom) = bundle_a1.dominant_kind() {
         println!("  dominant_kind={dom:?}");
@@ -618,7 +801,9 @@ fn main() {
     let sim = bundle_a1.profile_similarity(&bundle_a2);
     println!("\n--- Profile similarity: (A↔REG_1) vs (A↔REG_2) ---");
     println!("  profile_similarity={sim:.3}  (1.0 = identical coupling profile)");
-    println!("  (with single-kind topology all profiles are collinear — add multi-kind for richer signal)");
+    println!(
+        "  (with single-kind topology all profiles are collinear — add multi-kind for richer signal)"
+    );
 
     println!("\nDone.");
 }

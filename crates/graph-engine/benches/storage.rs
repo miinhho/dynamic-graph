@@ -6,7 +6,7 @@
 //! cargo bench --bench storage --features storage
 //! ```
 
-use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
+use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 
 use graph_core::BatchId;
 use graph_engine::Simulation;

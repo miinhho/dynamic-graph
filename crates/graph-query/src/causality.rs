@@ -7,7 +7,9 @@
 //!
 //! All queries are read-only over `&World`.
 
-use graph_core::{BatchId, Change, ChangeId, ChangeSubject, LocusId, Relationship, RelationshipId, TrimSummary};
+use graph_core::{
+    BatchId, Change, ChangeId, ChangeSubject, LocusId, Relationship, RelationshipId, TrimSummary,
+};
 use graph_world::World;
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -66,7 +68,11 @@ pub fn loci_changed_in_batch(world: &World, batch: BatchId) -> Vec<LocusId> {
         .batch(batch)
         .filter_map(|c| match c.subject {
             ChangeSubject::Locus(id) => {
-                if seen.insert(id) { Some(id) } else { None }
+                if seen.insert(id) {
+                    Some(id)
+                } else {
+                    None
+                }
             }
             ChangeSubject::Relationship(_) => None,
         })
@@ -87,7 +93,11 @@ pub fn relationships_changed_in_batch(world: &World, batch: BatchId) -> Vec<Rela
         .batch(batch)
         .filter_map(|c| match c.subject {
             ChangeSubject::Relationship(id) => {
-                if seen.insert(id) { Some(id) } else { None }
+                if seen.insert(id) {
+                    Some(id)
+                } else {
+                    None
+                }
             }
             ChangeSubject::Locus(_) => None,
         })
@@ -131,17 +141,21 @@ pub fn causal_depth(world: &World, change_id: ChangeId) -> usize {
 
     while let Some((cid, processed)) = stack.pop() {
         if processed {
-            let depth = world.log().get(cid).map(|c| {
-                if c.predecessors.is_empty() {
-                    0
-                } else {
-                    c.predecessors
-                        .iter()
-                        .map(|&p| memo.get(&p).copied().unwrap_or(0) + 1)
-                        .max()
-                        .unwrap_or(0)
-                }
-            }).unwrap_or(0);
+            let depth = world
+                .log()
+                .get(cid)
+                .map(|c| {
+                    if c.predecessors.is_empty() {
+                        0
+                    } else {
+                        c.predecessors
+                            .iter()
+                            .map(|&p| memo.get(&p).copied().unwrap_or(0) + 1)
+                            .max()
+                            .unwrap_or(0)
+                    }
+                })
+                .unwrap_or(0);
             memo.insert(cid, depth);
         } else if !memo.contains_key(&cid) {
             stack.push((cid, true));
@@ -183,7 +197,11 @@ pub fn root_stimuli_for_relationship(world: &World, rel: RelationshipId) -> Vec<
     };
 
     // If the creation change is itself a root stimulus, return it directly.
-    if world.log().get(created_by).is_some_and(|c| c.predecessors.is_empty()) {
+    if world
+        .log()
+        .get(created_by)
+        .is_some_and(|c| c.predecessors.is_empty())
+    {
         return vec![created_by];
     }
 
@@ -226,7 +244,11 @@ pub fn relationship_volatility(
     let nf = n as f32;
     let activity = |c: &&Change| c.after.as_slice().first().copied().unwrap_or(0.0);
     let mean = changes.iter().map(activity).sum::<f32>() / nf;
-    let variance = changes.iter().map(|c| (activity(c) - mean).powi(2)).sum::<f32>() / nf;
+    let variance = changes
+        .iter()
+        .map(|c| (activity(c) - mean).powi(2))
+        .sum::<f32>()
+        / nf;
     variance.sqrt()
 }
 
@@ -363,8 +385,18 @@ pub fn relationship_weight_delta(
     if changes.len() < 2 {
         return None;
     }
-    let newest = changes.first()?.after.as_slice().get(Relationship::WEIGHT_SLOT).copied()?;
-    let oldest = changes.last()?.after.as_slice().get(Relationship::WEIGHT_SLOT).copied()?;
+    let newest = changes
+        .first()?
+        .after
+        .as_slice()
+        .get(Relationship::WEIGHT_SLOT)
+        .copied()?;
+    let oldest = changes
+        .last()?
+        .after
+        .as_slice()
+        .get(Relationship::WEIGHT_SLOT)
+        .copied()?;
     Some(newest - oldest)
 }
 
@@ -523,15 +555,15 @@ pub(crate) fn ols_slot_slope(changes: &[&Change], slot_idx: usize) -> Option<f32
         return None;
     }
     let nf = n as f32;
-    let sum_x  = nf * (nf - 1.0) / 2.0;
+    let sum_x = nf * (nf - 1.0) / 2.0;
     let sum_x2 = nf * (nf - 1.0) * (2.0 * nf - 1.0) / 6.0;
-    let (sum_y, sum_xy) = changes.iter().enumerate().fold(
-        (0.0f32, 0.0f32),
-        |(sy, sxy), (i, c)| {
+    let (sum_y, sum_xy) = changes
+        .iter()
+        .enumerate()
+        .fold((0.0f32, 0.0f32), |(sy, sxy), (i, c)| {
             let a = c.after.as_slice().get(slot_idx).copied().unwrap_or(0.0);
             (sy + a, sxy + i as f32 * a)
-        },
-    );
+        });
     let denom = nf * sum_x2 - sum_x * sum_x;
     if denom.abs() < 1e-12 {
         return None;
@@ -561,7 +593,12 @@ pub(crate) fn ols_activity_slope(changes: &[&Change]) -> Option<f32> {
 ///
 /// Complexity: O(ancestors).
 pub fn causal_ancestors(world: &World, target: ChangeId) -> Vec<ChangeId> {
-    world.log().causal_ancestors(target).into_iter().map(|c| c.id).collect()
+    world
+        .log()
+        .causal_ancestors(target)
+        .into_iter()
+        .map(|c| c.id)
+        .collect()
 }
 
 /// True iff `ancestor` is a causal ancestor of `descendant` in the change
@@ -681,7 +718,13 @@ mod tests {
     };
     use graph_world::World;
 
-    fn push_change(world: &mut World, id: u64, locus: u64, preds: Vec<u64>, batch: u64) -> ChangeId {
+    fn push_change(
+        world: &mut World,
+        id: u64,
+        locus: u64,
+        preds: Vec<u64>,
+        batch: u64,
+    ) -> ChangeId {
         let cid = ChangeId(id);
         world.log_mut().append(Change {
             id: cid,
@@ -766,8 +809,16 @@ mod tests {
         };
         let mut w = World::new();
         let rk: RelationshipKindId = InfluenceKindId(1);
-        w.insert_locus(graph_core::Locus::new(LocusId(0), LocusKindId(1), StateVector::zeros(1)));
-        w.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+        w.insert_locus(graph_core::Locus::new(
+            LocusId(0),
+            LocusKindId(1),
+            StateVector::zeros(1),
+        ));
+        w.insert_locus(Locus::new(
+            LocusId(1),
+            LocusKindId(1),
+            StateVector::zeros(1),
+        ));
 
         // Push a root change (no predecessors) at id 0.
         push_change(&mut w, 0, 0, vec![], 0);
@@ -780,7 +831,10 @@ mod tests {
         w.relationships_mut().insert(Relationship {
             id: rel_id,
             kind: rk,
-            endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(1) },
+            endpoints: Endpoints::Directed {
+                from: LocusId(0),
+                to: LocusId(1),
+            },
             state: StateVector::from_slice(&[1.0, 0.0]),
             lineage: RelationshipLineage {
                 created_by: created_by.map(ChangeId),
@@ -813,9 +867,9 @@ mod tests {
     fn root_stimuli_for_relationship_traces_through_predecessors() {
         // Chain: c0 (root) → c1 → c2 (created_by for rel)
         let mut w = World::new();
-        push_change(&mut w, 0, 0, vec![], 0);     // root
-        push_change(&mut w, 1, 1, vec![0], 1);    // derived
-        push_change(&mut w, 2, 2, vec![1], 2);    // created_by
+        push_change(&mut w, 0, 0, vec![], 0); // root
+        push_change(&mut w, 1, 1, vec![0], 1); // derived
+        push_change(&mut w, 2, 2, vec![1], 2); // created_by
 
         use graph_core::{
             Endpoints, InfluenceKindId, KindObservation, Locus, LocusKindId, Relationship,
@@ -823,13 +877,20 @@ mod tests {
         };
         let rk: RelationshipKindId = InfluenceKindId(1);
         for i in 0..3 {
-            w.insert_locus(Locus::new(LocusId(i), LocusKindId(1), StateVector::zeros(1)));
+            w.insert_locus(Locus::new(
+                LocusId(i),
+                LocusKindId(1),
+                StateVector::zeros(1),
+            ));
         }
         let rel_id = w.relationships_mut().mint_id();
         w.relationships_mut().insert(Relationship {
             id: rel_id,
             kind: rk,
-            endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(1) },
+            endpoints: Endpoints::Directed {
+                from: LocusId(0),
+                to: LocusId(1),
+            },
             state: StateVector::from_slice(&[1.0, 0.0]),
             lineage: RelationshipLineage {
                 created_by: Some(ChangeId(2)),
@@ -855,14 +916,25 @@ mod tests {
         };
         let rk: RelationshipKindId = InfluenceKindId(1);
         let mut w = World::new();
-        w.insert_locus(Locus::new(LocusId(0), LocusKindId(1), StateVector::zeros(1)));
-        w.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+        w.insert_locus(Locus::new(
+            LocusId(0),
+            LocusKindId(1),
+            StateVector::zeros(1),
+        ));
+        w.insert_locus(Locus::new(
+            LocusId(1),
+            LocusKindId(1),
+            StateVector::zeros(1),
+        ));
 
         let rel_id = w.relationships_mut().mint_id();
         w.relationships_mut().insert(Relationship {
             id: rel_id,
             kind: rk,
-            endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(1) },
+            endpoints: Endpoints::Directed {
+                from: LocusId(0),
+                to: LocusId(1),
+            },
             state: StateVector::from_slice(&[1.0, 0.0]),
             lineage: RelationshipLineage {
                 created_by: None,
@@ -895,21 +967,30 @@ mod tests {
     #[test]
     fn relationship_volatility_zero_for_fewer_than_two_changes() {
         let (w, rel_id) = world_with_rel_changes(&[0.5]);
-        assert_eq!(relationship_volatility(&w, rel_id, BatchId(0), BatchId(10)), 0.0);
+        assert_eq!(
+            relationship_volatility(&w, rel_id, BatchId(0), BatchId(10)),
+            0.0
+        );
     }
 
     #[test]
     fn relationship_volatility_zero_for_constant_activity() {
         let (w, rel_id) = world_with_rel_changes(&[0.5, 0.5, 0.5]);
         let v = relationship_volatility(&w, rel_id, BatchId(0), BatchId(10));
-        assert!(v.abs() < 1e-5, "constant activity should have ~0 volatility, got {v}");
+        assert!(
+            v.abs() < 1e-5,
+            "constant activity should have ~0 volatility, got {v}"
+        );
     }
 
     #[test]
     fn relationship_volatility_nonzero_for_variable_activity() {
         let (w, rel_id) = world_with_rel_changes(&[0.1, 0.9, 0.1, 0.9]);
         let v = relationship_volatility(&w, rel_id, BatchId(0), BatchId(10));
-        assert!(v > 0.3, "alternating activity should have high volatility, got {v}");
+        assert!(
+            v > 0.3,
+            "alternating activity should have high volatility, got {v}"
+        );
     }
 
     // ── loci_changed_in_batch / relationships_changed_in_batch ──────────────
@@ -954,10 +1035,10 @@ mod tests {
     #[test]
     fn relationships_changed_in_batch_excludes_locus_changes() {
         let mut w = World::new();
-        push_change(&mut w, 0, 0, vec![], 1);        // locus change — should be excluded
-        push_rel_change(&mut w, 1, 10, 1);             // rel 10 in batch 1
-        push_rel_change(&mut w, 2, 10, 1);             // rel 10 again — deduplicated
-        push_rel_change(&mut w, 3, 20, 1);             // rel 20 in batch 1
+        push_change(&mut w, 0, 0, vec![], 1); // locus change — should be excluded
+        push_rel_change(&mut w, 1, 10, 1); // rel 10 in batch 1
+        push_rel_change(&mut w, 2, 10, 1); // rel 10 again — deduplicated
+        push_rel_change(&mut w, 3, 20, 1); // rel 20 in batch 1
 
         use graph_core::RelationshipId;
         let mut rels = relationships_changed_in_batch(&w, BatchId(1));
@@ -972,7 +1053,7 @@ mod tests {
         // Diamond: c0 → c1 → c3
         //          c0 → c2 → c3
         let mut w = World::new();
-        push_change(&mut w, 0, 0, vec![], 0);       // root
+        push_change(&mut w, 0, 0, vec![], 0); // root
         push_change(&mut w, 1, 1, vec![0], 1);
         push_change(&mut w, 2, 2, vec![0], 1);
         push_change(&mut w, 3, 3, vec![1, 2], 2);
@@ -1020,7 +1101,10 @@ mod tests {
         assert!(trail.fine.contains(&ChangeId(1)));
         // Coarse should contain the summary for locus 0 (c0's locus).
         // c1's subject is locus 1, and its predecessor c0 is trimmed → locus 1 gets a summary.
-        assert!(!trail.coarse.is_empty(), "should have coarse summaries for the trimmed locus");
+        assert!(
+            !trail.coarse.is_empty(),
+            "should have coarse summaries for the trimmed locus"
+        );
         assert!(!trail.is_exact(), "trim boundary was crossed → not exact");
     }
 
@@ -1051,10 +1135,10 @@ mod tests {
     fn causal_depth_on_diamond_takes_longer_branch() {
         // c0 → c1 → c3 (depth 2) and c0 → c2 → c3 (also depth 2)
         let mut w = World::new();
-        push_change(&mut w, 0, 0, vec![], 0);       // depth 0
-        push_change(&mut w, 1, 1, vec![0], 1);      // depth 1
-        push_change(&mut w, 2, 2, vec![0], 1);      // depth 1
-        push_change(&mut w, 3, 3, vec![1, 2], 2);   // depth 2
+        push_change(&mut w, 0, 0, vec![], 0); // depth 0
+        push_change(&mut w, 1, 1, vec![0], 1); // depth 1
+        push_change(&mut w, 2, 2, vec![0], 1); // depth 1
+        push_change(&mut w, 3, 3, vec![1, 2], 2); // depth 2
         assert_eq!(causal_depth(&w, ChangeId(3)), 2);
     }
 }

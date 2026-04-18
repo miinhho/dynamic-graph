@@ -46,19 +46,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use graph_core::{
-    Change, Endpoints, InfluenceKindId, Locus, LocusContext, LocusId, LocusKindId,
-    LocusProgram, Properties, ProposedChange, StateVector,
+    Change, Endpoints, InfluenceKindId, Locus, LocusContext, LocusId, LocusKindId, LocusProgram,
+    Properties, ProposedChange, StateVector,
 };
 use graph_engine::{
     DefaultCoherePerspective, DefaultEmergencePerspective, InfluenceKindConfig,
-    InfluenceKindRegistry, LocusKindRegistry, PlasticityConfig,
-    SimulationConfig,
+    InfluenceKindRegistry, LocusKindRegistry, PlasticityConfig, SimulationConfig,
 };
 use graph_query::{
-    NameMap,
-    entity_deviations_since, entities_summary,
-    relationships_absent_without,
-    to_dot_named,
+    NameMap, entities_summary, entity_deviations_since, relationships_absent_without, to_dot_named,
 };
 
 // ── Influence kind IDs ─────────────────────────────────────────────────────────
@@ -104,10 +100,13 @@ impl LocusProgram for NeuronProgram {
         }
 
         // Net input: excitatory adds, inhibitory subtracts.
-        let net_input: f32 = incoming.iter().map(|c| {
-            let mag = c.after.as_slice().first().copied().unwrap_or(0.0);
-            if c.kind == KIND_INH { -mag.abs() } else { mag }
-        }).sum();
+        let net_input: f32 = incoming
+            .iter()
+            .map(|c| {
+                let mag = c.after.as_slice().first().copied().unwrap_or(0.0);
+                if c.kind == KIND_INH { -mag.abs() } else { mag }
+            })
+            .sum();
 
         let current = locus.state.as_slice().first().copied().unwrap_or(0.0);
         let membrane = (current * self.leak + net_input).clamp(-2.0, 2.0);
@@ -128,14 +127,17 @@ impl LocusProgram for NeuronProgram {
         // This means pre_signal = membrane * 0.5 * weight is small for weak
         // synapses, so Hebbian learning_rate is set high (0.5) to compensate.
         let signal = membrane * 0.5;
-        targets.iter().map(|&(target, weight, is_exc)| {
-            let kind = if is_exc { KIND_EXC } else { KIND_INH };
-            ProposedChange::new(
-                graph_core::ChangeSubject::Locus(target),
-                kind,
-                StateVector::from_slice(&[(signal * weight).clamp(-1.0, 1.0)]),
-            )
-        }).collect()
+        targets
+            .iter()
+            .map(|&(target, weight, is_exc)| {
+                let kind = if is_exc { KIND_EXC } else { KIND_INH };
+                ProposedChange::new(
+                    graph_core::ChangeSubject::Locus(target),
+                    kind,
+                    StateVector::from_slice(&[(signal * weight).clamp(-1.0, 1.0)]),
+                )
+            })
+            .collect()
     }
 }
 
@@ -161,13 +163,22 @@ fn parse_connectome(csv: &str) -> Vec<SynapseRow> {
         .filter_map(|line| {
             let cols: Vec<&str> = line.splitn(6, ',').collect();
             // format: index, Neuron, Target, Number of Connections, Neurotransmitter
-            if cols.len() < 5 { return None; }
-            let from  = cols[1].trim().to_owned();
-            let to    = cols[2].trim().to_owned();
+            if cols.len() < 5 {
+                return None;
+            }
+            let from = cols[1].trim().to_owned();
+            let to = cols[2].trim().to_owned();
             let count = cols[3].trim().parse::<f32>().ok()?;
-            let nt    = cols[4].trim().to_lowercase();
-            if from.is_empty() || to.is_empty() { return None; }
-            Some(SynapseRow { from, to, count, nt })
+            let nt = cols[4].trim().to_lowercase();
+            if from.is_empty() || to.is_empty() {
+                return None;
+            }
+            Some(SynapseRow {
+                from,
+                to,
+                count,
+                nt,
+            })
         })
         .collect()
 }
@@ -178,10 +189,14 @@ fn parse_sensory(csv: &str) -> Vec<SensoryRow> {
         .filter_map(|line| {
             let cols: Vec<&str> = line.splitn(5, ',').collect();
             // format: index, Function, Neuron, Weight, Neurotransmitter
-            if cols.len() < 3 { return None; }
+            if cols.len() < 3 {
+                return None;
+            }
             let function = cols[1].trim().to_owned();
-            let neuron   = cols[2].trim().to_owned();
-            if neuron.is_empty() { return None; }
+            let neuron = cols[2].trim().to_owned();
+            if neuron.is_empty() {
+                return None;
+            }
             Some(SensoryRow { function, neuron })
         })
         .collect()
@@ -192,16 +207,21 @@ fn parse_sensory(csv: &str) -> Vec<SensoryRow> {
 fn build_simulation(
     connectome: &[SynapseRow],
     sensory_meta: &[SensoryRow],
-) -> (graph_engine::Simulation, HashMap<String, LocusId>, HashMap<LocusId, String>) {
+) -> (
+    graph_engine::Simulation,
+    HashMap<String, LocusId>,
+    HashMap<LocusId, String>,
+) {
     // ── Assign locus IDs ──────────────────────────────────────────────────
     let mut name_to_id: HashMap<String, LocusId> = HashMap::new();
     let mut id_to_name: HashMap<LocusId, String> = HashMap::new();
     let mut next_id = 0u64;
 
     let get_or_insert = |name: &str,
-                              name_to_id: &mut HashMap<String, LocusId>,
-                              id_to_name: &mut HashMap<LocusId, String>,
-                              next_id: &mut u64| -> LocusId {
+                         name_to_id: &mut HashMap<String, LocusId>,
+                         id_to_name: &mut HashMap<LocusId, String>,
+                         next_id: &mut u64|
+     -> LocusId {
         if let Some(&id) = name_to_id.get(name) {
             return id;
         }
@@ -214,7 +234,7 @@ fn build_simulation(
 
     for row in connectome {
         get_or_insert(&row.from, &mut name_to_id, &mut id_to_name, &mut next_id);
-        get_or_insert(&row.to,   &mut name_to_id, &mut id_to_name, &mut next_id);
+        get_or_insert(&row.to, &mut name_to_id, &mut id_to_name, &mut next_id);
     }
 
     let n_neurons = next_id as usize;
@@ -223,45 +243,63 @@ fn build_simulation(
 
     // ── Build target lists per neuron ────────────────────────────────────
     // max synapse count (for weight normalisation)
-    let max_count = connectome.iter().map(|r| r.count).fold(0.0f32, f32::max).max(1.0);
+    let max_count = connectome
+        .iter()
+        .map(|r| r.count)
+        .fold(0.0f32, f32::max)
+        .max(1.0);
 
     let mut targets_map: HashMap<LocusId, Vec<(LocusId, f32, bool)>> = HashMap::new();
     for row in connectome {
         let from_id = name_to_id[&row.from];
-        let to_id   = name_to_id[&row.to];
-        let weight  = (row.count / max_count).clamp(0.01, 1.0);
-        let is_exc  = !row.nt.starts_with("inh");
-        targets_map.entry(from_id).or_default().push((to_id, weight, is_exc));
+        let to_id = name_to_id[&row.to];
+        let weight = (row.count / max_count).clamp(0.01, 1.0);
+        let is_exc = !row.nt.starts_with("inh");
+        targets_map
+            .entry(from_id)
+            .or_default()
+            .push((to_id, weight, is_exc));
     }
 
     // ── Registries ───────────────────────────────────────────────────────
     let mut loci_reg = LocusKindRegistry::new();
     let mut infl_reg = InfluenceKindRegistry::new();
 
-    infl_reg.insert(KIND_EXC,  InfluenceKindConfig::new("excitatory")
-        .with_decay(0.85)
-        .with_activity_contribution(1.0)
-        .with_max_activity(3.0)
-        .with_plasticity(PlasticityConfig { learning_rate: 0.5, weight_decay: 0.995, max_weight: 2.0, stdp: false,
-            ..Default::default() })
-        .with_min_emerge_activity(0.05));
-    infl_reg.insert(KIND_INH,  InfluenceKindConfig::new("inhibitory")
-        .with_decay(0.85)
-        .with_activity_contribution(-1.0)
-        .with_max_activity(3.0)
-        .with_min_emerge_activity(0.05));
-    infl_reg.insert(KIND_SENS, InfluenceKindConfig::new("sensory")
-        .with_decay(1.0)
-        .with_activity_contribution(1.0)
-        .with_max_activity(2.0));
+    infl_reg.insert(
+        KIND_EXC,
+        InfluenceKindConfig::new("excitatory")
+            .with_decay(0.85)
+            .with_activity_contribution(1.0)
+            .with_plasticity(PlasticityConfig {
+                learning_rate: 0.5,
+                weight_decay: 0.995,
+                max_weight: 2.0,
+                ..Default::default()
+            }),
+    );
+    infl_reg.insert(
+        KIND_INH,
+        InfluenceKindConfig::new("inhibitory")
+            .with_decay(0.85)
+            .with_activity_contribution(-1.0),
+    );
+    infl_reg.insert(
+        KIND_SENS,
+        InfluenceKindConfig::new("sensory")
+            .with_decay(1.0)
+            .with_activity_contribution(1.0),
+    );
 
     // All neurons share one program that looks up targets by locus.id at runtime.
     let shared_targets: Arc<HashMap<LocusId, Vec<(LocusId, f32, bool)>>> = Arc::new(targets_map);
-    loci_reg.insert(LKIND_NEURON, Box::new(NeuronProgram {
-        targets: Arc::clone(&shared_targets),
-        threshold: 0.15,
-        leak: 0.7,
-    }));
+    loci_reg.insert(
+        LKIND_NEURON,
+        Box::new(NeuronProgram {
+            targets: Arc::clone(&shared_targets),
+            threshold: 0.15,
+            leak: 0.7,
+        }),
+    );
 
     // ── World: insert all loci ───────────────────────────────────────────
     let mut world = graph_world::World::new();
@@ -292,7 +330,6 @@ fn build_simulation(
     (sim, name_to_id, id_to_name)
 }
 
-
 // ── Stimulation helpers ───────────────────────────────────────────────────────
 
 fn stimulate(
@@ -301,13 +338,16 @@ fn stimulate(
     neurons: &[&str],
     magnitude: f32,
 ) -> graph_engine::StepObservation {
-    let stimuli: Vec<ProposedChange> = neurons.iter()
+    let stimuli: Vec<ProposedChange> = neurons
+        .iter()
         .filter_map(|&name| name_to_id.get(name))
-        .map(|&id| ProposedChange::new(
-            graph_core::ChangeSubject::Locus(id),
-            KIND_SENS,
-            StateVector::from_slice(&[magnitude]),
-        ))
+        .map(|&id| {
+            ProposedChange::new(
+                graph_core::ChangeSubject::Locus(id),
+                KIND_SENS,
+                StateVector::from_slice(&[magnitude]),
+            )
+        })
         .collect();
     sim.step(stimuli)
 }
@@ -316,9 +356,9 @@ fn stimulate(
 
 fn main() {
     let connectome_csv = include_str!("data/celegans_connectome.csv");
-    let sensory_csv    = include_str!("data/celegans_sensory.csv");
+    let sensory_csv = include_str!("data/celegans_sensory.csv");
 
-    let connectome   = parse_connectome(connectome_csv);
+    let connectome = parse_connectome(connectome_csv);
     let sensory_meta = parse_sensory(sensory_csv);
 
     println!("=== C. elegans Connectome Simulation ===\n");
@@ -329,11 +369,10 @@ fn main() {
     let names = NameMap::from_world(&*sim.world());
 
     let ep = DefaultEmergencePerspective {
-        min_activity_threshold: 0.05,
-        overlap_threshold: 0.4,
+        min_activity_threshold: Some(0.05),
     };
     let cp = DefaultCoherePerspective {
-        min_bridge_activity: 0.03,
+        min_bridge_activity: Some(0.03),
         ..Default::default()
     };
 
@@ -343,7 +382,12 @@ fn main() {
     // root changes for counterfactual analysis.
     let pre_r1_batch = sim.world().current_batch();
     for _ in 0..5 {
-        stimulate(&mut sim, &name_to_id, &["PLML", "PLMR", "PVDL", "PVDR"], 0.8);
+        stimulate(
+            &mut sim,
+            &name_to_id,
+            &["PLML", "PLMR", "PVDL", "PVDR"],
+            0.8,
+        );
     }
     let post_r1_batch = sim.world().current_batch();
     // Root changes = all changes in the very first stimulation batch.
@@ -351,7 +395,9 @@ fn main() {
     // start of each loop iteration, then calls advance_batch() at the end.
     // So the first batch written during the first stimulate() call is
     // pre_r1_batch (not pre_r1_batch + 1).
-    let r1_roots: Vec<_> = sim.world().log()
+    let r1_roots: Vec<_> = sim
+        .world()
+        .log()
         .batch(pre_r1_batch)
         .map(|c| c.id)
         .collect();
@@ -362,7 +408,10 @@ fn main() {
 
     // Counterfactual: which relationships were born from the touch stimulus?
     let absent_r1 = relationships_absent_without(&*sim.world(), &r1_roots);
-    println!("  [counterfactual] {} relationship(s) would not exist without the initial touch stimulus", absent_r1.len());
+    println!(
+        "  [counterfactual] {} relationship(s) would not exist without the initial touch stimulus",
+        absent_r1.len()
+    );
     for rel_id in absent_r1.iter().take(5) {
         let wg = sim.world();
         if let Some(rel) = wg.relationships().get(*rel_id) {
@@ -370,10 +419,17 @@ fn main() {
                 Endpoints::Directed { from, to } => (from, to),
                 Endpoints::Symmetric { a, b } => (a, b),
             };
-            println!("    {} → {}  activity={:.3}", names.name(from), names.name(to), rel.activity());
+            println!(
+                "    {} → {}  activity={:.3}",
+                names.name(from),
+                names.name(to),
+                rel.activity()
+            );
         }
     }
-    if absent_r1.len() > 5 { println!("    … and {} more", absent_r1.len() - 5); }
+    if absent_r1.len() > 5 {
+        println!("    … and {} more", absent_r1.len() - 5);
+    }
 
     // ── Round 2: Nociception (harsh touch / chemical) ─────────────────────
     println!("\n--- Round 2: Nociception (ASH — harsh touch / chemical) ---");
@@ -382,7 +438,9 @@ fn main() {
         stimulate(&mut sim, &name_to_id, &["ASHL", "ASHR"], 1.0);
     }
     let post_r2_batch = sim.world().current_batch();
-    let r2_roots: Vec<_> = sim.world().log()
+    let r2_roots: Vec<_> = sim
+        .world()
+        .log()
         .batch(pre_r2_batch)
         .map(|c| c.id)
         .collect();
@@ -392,32 +450,54 @@ fn main() {
 
     // Entity deviations since end of Round 1.
     let deviations_r2 = entity_deviations_since(&*sim.world(), post_r1_batch);
-    let notable: Vec<_> = deviations_r2.iter()
-        .filter(|d| d.coherence_delta.abs() > 0.05 || d.membership_event_count > 0 || d.went_dormant || d.born_after_baseline)
+    let notable: Vec<_> = deviations_r2
+        .iter()
+        .filter(|d| {
+            d.coherence_delta.abs() > 0.05
+                || d.membership_event_count > 0
+                || d.went_dormant
+                || d.born_after_baseline
+        })
         .collect();
     if !notable.is_empty() {
         println!("  [deviations since Round 1]");
         for d in notable.iter().take(5) {
-            let status = if d.born_after_baseline { "NEW" }
-                else if d.went_dormant { "DORMANT" }
-                else { "changed" };
-            println!("    entity#{:<3} {:8}  Δcoherence={:+.3}  Δmembers={:+}",
-                d.entity_id.0, status, d.coherence_delta, d.member_count_delta);
+            let status = if d.born_after_baseline {
+                "NEW"
+            } else if d.went_dormant {
+                "DORMANT"
+            } else {
+                "changed"
+            };
+            println!(
+                "    entity#{:<3} {:8}  Δcoherence={:+.3}  Δmembers={:+}",
+                d.entity_id.0, status, d.coherence_delta, d.member_count_delta
+            );
         }
     }
 
     // Counterfactual for nociception.
     let absent_r2 = relationships_absent_without(&*sim.world(), &r2_roots);
-    println!("  [counterfactual] {} relationship(s) born from nociception stimulus", absent_r2.len());
+    println!(
+        "  [counterfactual] {} relationship(s) born from nociception stimulus",
+        absent_r2.len()
+    );
 
     // ── Round 3: Chemosensory (olfaction) ────────────────────────────────
     println!("\n--- Round 3: Olfaction (AWC, AWA) ---");
     let pre_r3_batch = sim.world().current_batch();
     for _ in 0..5 {
-        stimulate(&mut sim, &name_to_id, &["AWCL", "AWCR", "AWAL", "AWAR"], 0.6);
+        stimulate(
+            &mut sim,
+            &name_to_id,
+            &["AWCL", "AWCR", "AWAL", "AWAR"],
+            0.6,
+        );
     }
     let post_r3_batch = sim.world().current_batch();
-    let r3_roots: Vec<_> = sim.world().log()
+    let r3_roots: Vec<_> = sim
+        .world()
+        .log()
         .batch(pre_r3_batch)
         .map(|c| c.id)
         .collect();
@@ -427,22 +507,37 @@ fn main() {
 
     // Entity deviations since end of Round 2.
     let deviations_r3 = entity_deviations_since(&*sim.world(), post_r2_batch);
-    let notable: Vec<_> = deviations_r3.iter()
-        .filter(|d| d.coherence_delta.abs() > 0.05 || d.membership_event_count > 0 || d.went_dormant || d.born_after_baseline)
+    let notable: Vec<_> = deviations_r3
+        .iter()
+        .filter(|d| {
+            d.coherence_delta.abs() > 0.05
+                || d.membership_event_count > 0
+                || d.went_dormant
+                || d.born_after_baseline
+        })
         .collect();
     if !notable.is_empty() {
         println!("  [deviations since Round 2]");
         for d in notable.iter().take(5) {
-            let status = if d.born_after_baseline { "NEW" }
-                else if d.went_dormant { "DORMANT" }
-                else { "changed" };
-            println!("    entity#{:<3} {:8}  Δcoherence={:+.3}  Δmembers={:+}",
-                d.entity_id.0, status, d.coherence_delta, d.member_count_delta);
+            let status = if d.born_after_baseline {
+                "NEW"
+            } else if d.went_dormant {
+                "DORMANT"
+            } else {
+                "changed"
+            };
+            println!(
+                "    entity#{:<3} {:8}  Δcoherence={:+.3}  Δmembers={:+}",
+                d.entity_id.0, status, d.coherence_delta, d.member_count_delta
+            );
         }
     }
 
     let absent_r3 = relationships_absent_without(&*sim.world(), &r3_roots);
-    println!("  [counterfactual] {} relationship(s) born from olfaction stimulus", absent_r3.len());
+    println!(
+        "  [counterfactual] {} relationship(s) born from olfaction stimulus",
+        absent_r3.len()
+    );
 
     // ── Cohere clusters ───────────────────────────────────────────────────
     println!("\n--- Cohere clusters ---");
@@ -468,7 +563,11 @@ fn main() {
     println!("\n--- Top 10 most active synapses ---");
     let world_for_rels = sim.world();
     let mut all_rels: Vec<_> = world_for_rels.relationships().iter().collect();
-    all_rels.sort_by(|a, b| b.activity().partial_cmp(&a.activity()).unwrap_or(std::cmp::Ordering::Equal));
+    all_rels.sort_by(|a, b| {
+        b.activity()
+            .partial_cmp(&a.activity())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let top10: Vec<_> = all_rels.iter().take(10).map(|r| r.id).collect();
     // Build a temporary filtered list using relationship_list then pick top 10.
     for rel in &all_rels[..10.min(all_rels.len())] {
@@ -479,8 +578,12 @@ fn main() {
         let kind_str = if rel.kind == KIND_EXC { "exc" } else { "inh" };
         println!(
             "  {:8} →{:4}→ {:8}  activity={:.3}  weight={:.4}  touches={}",
-            names.name(from), kind_str, names.name(to),
-            rel.activity(), rel.weight(), rel.lineage.change_count
+            names.name(from),
+            kind_str,
+            names.name(to),
+            rel.activity(),
+            rel.weight(),
+            rel.lineage.change_count
         );
     }
 
@@ -529,9 +632,19 @@ fn main() {
             }
             let total_edges = within_edges + cross_edges;
             let total_touches = within_touches + cross_touches;
-            let edge_pct = if total_edges > 0 { within_edges * 100 / total_edges } else { 0 };
-            let touch_pct = if total_touches > 0 { within_touches * 100 / total_touches } else { 0 };
-            println!("partition(P={p},N={n}): edges within%={edge_pct}% touches within%={touch_pct}% (edges={total_edges} touches={total_touches})");
+            let edge_pct = if total_edges > 0 {
+                within_edges * 100 / total_edges
+            } else {
+                0
+            };
+            let touch_pct = if total_touches > 0 {
+                within_touches * 100 / total_touches
+            } else {
+                0
+            };
+            println!(
+                "partition(P={p},N={n}): edges within%={edge_pct}% touches within%={touch_pct}% (edges={total_edges} touches={total_touches})"
+            );
         }
     }
 
@@ -550,8 +663,15 @@ fn print_emergence_events(
     use graph_core::WorldEvent;
     for ev in events {
         match ev {
-            WorldEvent::EntityBorn { entity, batch, member_count } => {
-                println!("  [BORN]    entity#{} batch={:?} members={}", entity.0, batch, member_count);
+            WorldEvent::EntityBorn {
+                entity,
+                batch,
+                member_count,
+            } => {
+                println!(
+                    "  [BORN]    entity#{} batch={:?} members={}",
+                    entity.0, batch, member_count
+                );
             }
             WorldEvent::EntityDormant { entity, batch } => {
                 println!("  [DORMANT] entity#{} batch={:?}", entity.0, batch);
@@ -559,18 +679,20 @@ fn print_emergence_events(
             WorldEvent::EntityRevived { entity, batch } => {
                 println!("  [REVIVED] entity#{} batch={:?}", entity.0, batch);
             }
-            WorldEvent::CoherenceShift { entity, from, to, .. } => {
-                println!("  [SHIFT]   entity#{} coherence {:.3}→{:.3}", entity.0, from, to);
+            WorldEvent::CoherenceShift {
+                entity, from, to, ..
+            } => {
+                println!(
+                    "  [SHIFT]   entity#{} coherence {:.3}→{:.3}",
+                    entity.0, from, to
+                );
             }
             _ => {}
         }
     }
 }
 
-fn print_entities(
-    sim: &graph_engine::Simulation,
-    id_to_name: &HashMap<LocusId, String>,
-) {
+fn print_entities(sim: &graph_engine::Simulation, id_to_name: &HashMap<LocusId, String>) {
     let world_guard = sim.world();
     let entities: Vec<_> = world_guard.entities().active().collect();
     if entities.is_empty() {
@@ -579,7 +701,10 @@ fn print_entities(
     }
     for e in &entities {
         // Map member IDs to names; truncate display at 8.
-        let mut member_names: Vec<&str> = e.current.members.iter()
+        let mut member_names: Vec<&str> = e
+            .current
+            .members
+            .iter()
             .filter_map(|id| id_to_name.get(id).map(String::as_str))
             .collect();
         member_names.sort();

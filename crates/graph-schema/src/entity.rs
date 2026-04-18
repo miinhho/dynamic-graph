@@ -24,7 +24,11 @@ pub struct DeclaredEntity {
 
 impl DeclaredEntity {
     pub fn new(id: DeclaredEntityId, name: impl Into<String>, members: Vec<LocusId>) -> Self {
-        DeclaredEntity { id, name: name.into(), members }
+        DeclaredEntity {
+            id,
+            name: name.into(),
+            members,
+        }
     }
 
     pub fn contains(&self, locus: LocusId) -> bool {

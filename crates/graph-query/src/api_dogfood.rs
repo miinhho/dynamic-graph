@@ -12,17 +12,17 @@ mod dogfood {
     use smallvec::smallvec;
 
     use crate::query_api::{
-        execute, EntityPredicate, EntitySort, LocusPredicate, LocusSort, Query, QueryResult,
-        RelSort, RelationshipPredicate,
+        EntityPredicate, EntitySort, LocusPredicate, LocusSort, Query, QueryResult, RelSort,
+        RelationshipPredicate, execute,
     };
 
     const KIND_SUPPLY: InfluenceKindId = InfluenceKindId(2);
-    const KIND_ORDER:  InfluenceKindId = InfluenceKindId(1);
+    const KIND_ORDER: InfluenceKindId = InfluenceKindId(1);
 
     const SUPPLIER_A: LocusId = LocusId(1);
     const SUPPLIER_B: LocusId = LocusId(2);
-    const FACTORY:    LocusId = LocusId(3);
-    const WAREHOUSE:  LocusId = LocusId(4);
+    const FACTORY: LocusId = LocusId(3);
+    const WAREHOUSE: LocusId = LocusId(4);
 
     fn supply_world() -> World {
         let mut w = World::new();
@@ -30,16 +30,16 @@ mod dogfood {
         for (id, stock) in [
             (SUPPLIER_A, 0.9f32),
             (SUPPLIER_B, 0.3f32),
-            (FACTORY,    0.5f32),
-            (WAREHOUSE,  1.4f32),
+            (FACTORY, 0.5f32),
+            (WAREHOUSE, 1.4f32),
         ] {
             w.insert_locus(Locus::new(id, lkind, StateVector::from_slice(&[stock])));
         }
         let edges = [
-            (SUPPLIER_A, FACTORY,    KIND_SUPPLY, 0.80f32, 0.60f32, 6u64),
-            (SUPPLIER_B, FACTORY,    KIND_SUPPLY, 0.20f32, 0.15f32, 2u64),
-            (FACTORY,    WAREHOUSE,  KIND_SUPPLY, 0.70f32, 0.55f32, 5u64),
-            (FACTORY,    SUPPLIER_A, KIND_ORDER,  0.30f32, 0.20f32, 3u64),
+            (SUPPLIER_A, FACTORY, KIND_SUPPLY, 0.80f32, 0.60f32, 6u64),
+            (SUPPLIER_B, FACTORY, KIND_SUPPLY, 0.20f32, 0.15f32, 2u64),
+            (FACTORY, WAREHOUSE, KIND_SUPPLY, 0.70f32, 0.55f32, 5u64),
+            (FACTORY, SUPPLIER_A, KIND_ORDER, 0.30f32, 0.20f32, 3u64),
         ];
         for (from, to, kind, activity, weight, touches) in edges {
             let id = w.relationships_mut().mint_id();
@@ -71,11 +71,14 @@ mod dogfood {
         let w = supply_world();
 
         // celegans 예시 패턴: "activity 기준 상위 10개 관계"
-        let result = execute(&w, &Query::FindRelationships {
-            predicates: vec![],
-            sort_by: Some(RelSort::ActivityDesc),
-            limit: Some(3),
-        });
+        let result = execute(
+            &w,
+            &Query::FindRelationships {
+                predicates: vec![],
+                sort_by: Some(RelSort::ActivityDesc),
+                limit: Some(3),
+            },
+        );
         match result {
             QueryResult::RelationshipSummaries(rows) => {
                 assert_eq!(rows.len(), 3);
@@ -95,11 +98,14 @@ mod dogfood {
         let w = supply_world();
 
         // celegans 예시: membrane potential 상위 2개 뉴런
-        let result = execute(&w, &Query::FindLoci {
-            predicates: vec![],
-            sort_by: Some(LocusSort::StateDesc(0)),
-            limit: Some(2),
-        });
+        let result = execute(
+            &w,
+            &Query::FindLoci {
+                predicates: vec![],
+                sort_by: Some(LocusSort::StateDesc(0)),
+                limit: Some(2),
+            },
+        );
         match result {
             QueryResult::LocusSummaries(rows) => {
                 assert_eq!(rows.len(), 2);
@@ -121,18 +127,33 @@ mod dogfood {
         let w = supply_world();
 
         // celegans 라인 473-484: activity, from, to, kind 가 모두 필요
-        let result = execute(&w, &Query::FindRelationships {
-            predicates: vec![RelationshipPredicate::ActivityAbove(0.5)],
-            sort_by: Some(RelSort::ActivityDesc),
-            limit: None,
-        });
+        let result = execute(
+            &w,
+            &Query::FindRelationships {
+                predicates: vec![RelationshipPredicate::ActivityAbove(0.5)],
+                sort_by: Some(RelSort::ActivityDesc),
+                limit: None,
+            },
+        );
         match result {
             QueryResult::RelationshipSummaries(rows) => {
                 for r in &rows {
                     // 모든 필드가 결과에 있다 — world.relationships().get() 불필요
-                    let _ = (r.from, r.to, r.kind, r.activity, r.weight, r.change_count, r.directed);
+                    let _ = (
+                        r.from,
+                        r.to,
+                        r.kind,
+                        r.activity,
+                        r.weight,
+                        r.change_count,
+                        r.directed,
+                    );
                     // supply_chain 예시의 루프와 동일한 패턴
-                    let kind_str = if r.kind == KIND_SUPPLY { "supply" } else { "order" };
+                    let kind_str = if r.kind == KIND_SUPPLY {
+                        "supply"
+                    } else {
+                        "order"
+                    };
                     let _ = format!(
                         "L{}→L{}  kind={}  activity={:.3}  weight={:.4}  touches={}",
                         r.from.0, r.to.0, kind_str, r.activity, r.weight, r.change_count
@@ -148,11 +169,14 @@ mod dogfood {
         let w = supply_world();
 
         // supply_chain: warehouse stock을 알기 위한 패턴
-        let result = execute(&w, &Query::FindLoci {
-            predicates: vec![LocusPredicate::OfKind(LocusKindId(1))],
-            sort_by: None,
-            limit: None,
-        });
+        let result = execute(
+            &w,
+            &Query::FindLoci {
+                predicates: vec![LocusPredicate::OfKind(LocusKindId(1))],
+                sort_by: None,
+                limit: None,
+            },
+        );
         match result {
             QueryResult::LocusSummaries(rows) => {
                 let warehouse = rows.iter().find(|r| r.id == WAREHOUSE).unwrap();
@@ -173,7 +197,13 @@ mod dogfood {
 
         // 이전: world.locus(WAREHOUSE).map(|l| l.state[0]).unwrap_or(0.0)
         // 이후:
-        let result = execute(&w, &Query::LocusStateSlot { locus: WAREHOUSE, slot: 0 });
+        let result = execute(
+            &w,
+            &Query::LocusStateSlot {
+                locus: WAREHOUSE,
+                slot: 0,
+            },
+        );
         match result {
             QueryResult::MaybeScore(Some(stock)) => {
                 assert!((stock - 1.4).abs() < 1e-5);
@@ -191,7 +221,13 @@ mod dogfood {
     fn relationship_profile_has_dominant_kind_and_breakdown() {
         let w = supply_world();
 
-        let result = execute(&w, &Query::RelationshipProfile { from: SUPPLIER_A, to: FACTORY });
+        let result = execute(
+            &w,
+            &Query::RelationshipProfile {
+                from: SUPPLIER_A,
+                to: FACTORY,
+            },
+        );
         match result {
             QueryResult::RelationshipProfile(p) => {
                 // supply_chain 라인 534: "dominant_kind=SUPPLY_KIND"
@@ -220,11 +256,14 @@ mod dogfood {
         let w = supply_world();
         // log 데이터 없음 → Insufficient (데이터 없이 트렌드 계산 불가)
         let rel_id = w.relationships().iter().next().map(|r| r.id).unwrap();
-        let result = execute(&w, &Query::ActivityTrend {
-            relationship: rel_id,
-            from_batch: BatchId(0),
-            to_batch: BatchId(10),
-        });
+        let result = execute(
+            &w,
+            &Query::ActivityTrend {
+                relationship: rel_id,
+                from_batch: BatchId(0),
+                to_batch: BatchId(10),
+            },
+        );
         match result {
             QueryResult::Trend(crate::query_api::TrendResult::Insufficient) => {}
             _ => panic!("expected Trend(Insufficient) for world with no change log"),
@@ -265,11 +304,14 @@ mod dogfood {
     #[test]
     fn find_entities_sort_coherence_desc() {
         let w = supply_world(); // 엔티티 없음 — 구조 테스트만
-        let result = execute(&w, &Query::FindEntities {
-            predicates: vec![EntityPredicate::CoherenceAbove(0.0)],
-            sort_by: Some(EntitySort::CoherenceDesc),
-            limit: Some(5),
-        });
+        let result = execute(
+            &w,
+            &Query::FindEntities {
+                predicates: vec![EntityPredicate::CoherenceAbove(0.0)],
+                sort_by: Some(EntitySort::CoherenceDesc),
+                limit: Some(5),
+            },
+        );
         match result {
             QueryResult::Entities(ids) => {
                 assert_eq!(ids.len(), 0); // 엔티티 없음
@@ -307,14 +349,17 @@ mod dogfood {
     #[test]
     fn compound_predicates_still_work() {
         let w = supply_world();
-        let result = execute(&w, &Query::FindRelationships {
-            predicates: vec![
-                RelationshipPredicate::OfKind(KIND_SUPPLY),
-                RelationshipPredicate::ActivityAbove(0.5),
-            ],
-            sort_by: Some(RelSort::ActivityDesc),
-            limit: None,
-        });
+        let result = execute(
+            &w,
+            &Query::FindRelationships {
+                predicates: vec![
+                    RelationshipPredicate::OfKind(KIND_SUPPLY),
+                    RelationshipPredicate::ActivityAbove(0.5),
+                ],
+                sort_by: Some(RelSort::ActivityDesc),
+                limit: None,
+            },
+        );
         match result {
             QueryResult::RelationshipSummaries(rows) => {
                 assert_eq!(rows.len(), 2); // A→FACTORY(0.80), FACTORY→WAREHOUSE(0.70)
@@ -332,14 +377,17 @@ mod dogfood {
         w.properties_mut().insert(SUPPLIER_A, props.clone());
         w.properties_mut().insert(SUPPLIER_B, props);
 
-        let result = execute(&w, &Query::FindLoci {
-            predicates: vec![LocusPredicate::StrPropertyEq {
-                key: "role".to_string(),
-                value: "supplier".to_string(),
-            }],
-            sort_by: None,
-            limit: None,
-        });
+        let result = execute(
+            &w,
+            &Query::FindLoci {
+                predicates: vec![LocusPredicate::StrPropertyEq {
+                    key: "role".to_string(),
+                    value: "supplier".to_string(),
+                }],
+                sort_by: None,
+                limit: None,
+            },
+        );
         match result {
             QueryResult::LocusSummaries(rows) => {
                 assert_eq!(rows.len(), 2);

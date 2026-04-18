@@ -30,7 +30,14 @@ impl fmt::Display for PropertyValue {
             Self::Int(i) => write!(f, "{i}"),
             Self::Float(v) => write!(f, "{v}"),
             Self::String(s) => write!(f, "\"{s}\""),
-            Self::List(l) => write!(f, "[{}]", l.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ")),
+            Self::List(l) => write!(
+                f,
+                "[{}]",
+                l.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Self::Map(m) => write!(f, "{m:?}"),
         }
     }
@@ -39,25 +46,39 @@ impl fmt::Display for PropertyValue {
 // ── From impls for ergonomic construction ─────────────────────────────
 
 impl From<bool> for PropertyValue {
-    fn from(v: bool) -> Self { Self::Bool(v) }
+    fn from(v: bool) -> Self {
+        Self::Bool(v)
+    }
 }
 impl From<i64> for PropertyValue {
-    fn from(v: i64) -> Self { Self::Int(v) }
+    fn from(v: i64) -> Self {
+        Self::Int(v)
+    }
 }
 impl From<i32> for PropertyValue {
-    fn from(v: i32) -> Self { Self::Int(v as i64) }
+    fn from(v: i32) -> Self {
+        Self::Int(v as i64)
+    }
 }
 impl From<f64> for PropertyValue {
-    fn from(v: f64) -> Self { Self::Float(v) }
+    fn from(v: f64) -> Self {
+        Self::Float(v)
+    }
 }
 impl From<f32> for PropertyValue {
-    fn from(v: f32) -> Self { Self::Float(v as f64) }
+    fn from(v: f32) -> Self {
+        Self::Float(v as f64)
+    }
 }
 impl From<&str> for PropertyValue {
-    fn from(v: &str) -> Self { Self::String(v.to_owned()) }
+    fn from(v: &str) -> Self {
+        Self::String(v.to_owned())
+    }
 }
 impl From<String> for PropertyValue {
-    fn from(v: String) -> Self { Self::String(v) }
+    fn from(v: String) -> Self {
+        Self::String(v)
+    }
 }
 impl<T: Into<PropertyValue>> From<Vec<T>> for PropertyValue {
     fn from(v: Vec<T>) -> Self {

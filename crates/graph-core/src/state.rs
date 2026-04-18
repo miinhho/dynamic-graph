@@ -38,7 +38,11 @@ pub struct StateSlotDef {
 
 impl StateSlotDef {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), description: None, range: None }
+        Self {
+            name: name.into(),
+            description: None,
+            range: None,
+        }
     }
 
     pub fn with_description(mut self, desc: impl Into<String>) -> Self {
@@ -68,7 +72,9 @@ pub struct StateVector {
 impl StateVector {
     /// Empty vector — equivalent to "no state observed yet".
     pub fn empty() -> Self {
-        Self { slots: SmallVec::new() }
+        Self {
+            slots: SmallVec::new(),
+        }
     }
 
     /// All-zero vector of a given dimensionality.

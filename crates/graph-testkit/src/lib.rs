@@ -27,3 +27,4 @@ pub mod fixture;
 pub mod fixtures;
 pub mod generators;
 pub mod programs;
+pub mod sociopatterns;

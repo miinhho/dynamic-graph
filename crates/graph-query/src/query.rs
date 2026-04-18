@@ -29,8 +29,7 @@
 //! ```
 
 use graph_core::{
-    BatchId, Endpoints, InfluenceKindId, Locus, LocusId, LocusKindId,
-    Relationship, RelationshipId,
+    BatchId, Endpoints, InfluenceKindId, Locus, LocusId, LocusKindId, Relationship, RelationshipId,
 };
 use graph_world::World;
 use rustc_hash::FxHashSet;
@@ -82,7 +81,10 @@ pub fn loci_from_ids<'w>(world: &'w World, ids: &[LocusId]) -> LociQuery<'w> {
 impl<'w> LociQuery<'w> {
     /// Create a query from a pre-built candidate list (used by cross-layer navigation).
     pub(crate) fn from_candidates(world: &'w World, candidates: Vec<&'w Locus>) -> Self {
-        Self { world, loci: candidates }
+        Self {
+            world,
+            loci: candidates,
+        }
     }
 
     // ── Filters ───────────────────────────────────────────────────────────────
@@ -150,33 +152,43 @@ impl<'w> LociQuery<'w> {
                 .collect();
         Self {
             world: self.world,
-            loci: self.loci.into_iter().filter(|l| reachable.contains(&l.id)).collect(),
+            loci: self
+                .loci
+                .into_iter()
+                .filter(|l| reachable.contains(&l.id))
+                .collect(),
         }
     }
 
     /// Keep only loci reachable by following edges **forward** from `start`
     /// within `depth` directed hops.
     pub fn downstream_of(self, start: LocusId, depth: usize) -> Self {
-        let set: FxHashSet<LocusId> =
-            crate::traversal::downstream_of(self.world, start, depth)
-                .into_iter()
-                .collect();
+        let set: FxHashSet<LocusId> = crate::traversal::downstream_of(self.world, start, depth)
+            .into_iter()
+            .collect();
         Self {
             world: self.world,
-            loci: self.loci.into_iter().filter(|l| set.contains(&l.id)).collect(),
+            loci: self
+                .loci
+                .into_iter()
+                .filter(|l| set.contains(&l.id))
+                .collect(),
         }
     }
 
     /// Keep only loci reachable by following edges **backward** from `start`
     /// within `depth` directed hops.
     pub fn upstream_of(self, start: LocusId, depth: usize) -> Self {
-        let set: FxHashSet<LocusId> =
-            crate::traversal::upstream_of(self.world, start, depth)
-                .into_iter()
-                .collect();
+        let set: FxHashSet<LocusId> = crate::traversal::upstream_of(self.world, start, depth)
+            .into_iter()
+            .collect();
         Self {
             world: self.world,
-            loci: self.loci.into_iter().filter(|l| set.contains(&l.id)).collect(),
+            loci: self
+                .loci
+                .into_iter()
+                .filter(|l| set.contains(&l.id))
+                .collect(),
         }
     }
 
@@ -187,8 +199,18 @@ impl<'w> LociQuery<'w> {
     /// Loci missing `slot` sort last. Equivalent to sorting then truncating.
     pub fn top_n_by_state(mut self, slot: usize, n: usize) -> Self {
         self.loci.sort_unstable_by(|a, b| {
-            let va = a.state.as_slice().get(slot).copied().unwrap_or(f32::NEG_INFINITY);
-            let vb = b.state.as_slice().get(slot).copied().unwrap_or(f32::NEG_INFINITY);
+            let va = a
+                .state
+                .as_slice()
+                .get(slot)
+                .copied()
+                .unwrap_or(f32::NEG_INFINITY);
+            let vb = b
+                .state
+                .as_slice()
+                .get(slot)
+                .copied()
+                .unwrap_or(f32::NEG_INFINITY);
             vb.total_cmp(&va)
         });
         self.loci.truncate(n);
@@ -198,8 +220,18 @@ impl<'w> LociQuery<'w> {
     /// Sort the current set by `state[slot]` descending (no truncation).
     pub fn sort_by_state(mut self, slot: usize) -> Self {
         self.loci.sort_unstable_by(|a, b| {
-            let va = a.state.as_slice().get(slot).copied().unwrap_or(f32::NEG_INFINITY);
-            let vb = b.state.as_slice().get(slot).copied().unwrap_or(f32::NEG_INFINITY);
+            let va = a
+                .state
+                .as_slice()
+                .get(slot)
+                .copied()
+                .unwrap_or(f32::NEG_INFINITY);
+            let vb = b
+                .state
+                .as_slice()
+                .get(slot)
+                .copied()
+                .unwrap_or(f32::NEG_INFINITY);
             vb.total_cmp(&va)
         });
         self
@@ -309,9 +341,9 @@ impl<'w> LociQuery<'w> {
                 .world
                 .relationships()
                 .iter()
-                .filter(|r| {
-                    matches!(r.endpoints, Endpoints::Directed { to, .. } if ids.contains(&to))
-                })
+                .filter(
+                    |r| matches!(r.endpoints, Endpoints::Directed { to, .. } if ids.contains(&to)),
+                )
                 .collect(),
         }
     }
@@ -395,7 +427,10 @@ pub fn relationships_from_ids<'w>(
 impl<'w> RelationshipsQuery<'w> {
     /// Create a query from a pre-built candidate list (used by cross-layer navigation).
     pub(crate) fn from_candidates(world: &'w World, candidates: Vec<&'w Relationship>) -> Self {
-        Self { world, rels: candidates }
+        Self {
+            world,
+            rels: candidates,
+        }
     }
 
     // ── Filters ───────────────────────────────────────────────────────────────
@@ -410,7 +445,8 @@ impl<'w> RelationshipsQuery<'w> {
     ///
     /// Symmetric edges are excluded (they have no single source).
     pub fn from(mut self, locus: LocusId) -> Self {
-        self.rels.retain(|r| matches!(r.endpoints, Endpoints::Directed { from, .. } if from == locus));
+        self.rels
+            .retain(|r| matches!(r.endpoints, Endpoints::Directed { from, .. } if from == locus));
         self
     }
 
@@ -418,7 +454,8 @@ impl<'w> RelationshipsQuery<'w> {
     ///
     /// Symmetric edges are excluded.
     pub fn to(mut self, locus: LocusId) -> Self {
-        self.rels.retain(|r| matches!(r.endpoints, Endpoints::Directed { to, .. } if to == locus));
+        self.rels
+            .retain(|r| matches!(r.endpoints, Endpoints::Directed { to, .. } if to == locus));
         self
     }
 
@@ -453,12 +490,8 @@ impl<'w> RelationshipsQuery<'w> {
     ///
     /// Relationships whose state vector is shorter than `slot_idx + 1` are excluded.
     pub fn where_slot(mut self, slot_idx: usize, pred: impl Fn(f32) -> bool) -> Self {
-        self.rels.retain(|r| {
-            r.state
-                .as_slice()
-                .get(slot_idx)
-                .is_some_and(|&v| pred(v))
-        });
+        self.rels
+            .retain(|r| r.state.as_slice().get(slot_idx).is_some_and(|&v| pred(v)));
         self
     }
 
@@ -473,9 +506,9 @@ impl<'w> RelationshipsQuery<'w> {
     /// Symmetric edges are excluded.
     pub fn from_any(mut self, loci: &[LocusId]) -> Self {
         let set: FxHashSet<LocusId> = loci.iter().copied().collect();
-        self.rels.retain(|r| {
-            matches!(r.endpoints, Endpoints::Directed { from, .. } if set.contains(&from))
-        });
+        self.rels.retain(
+            |r| matches!(r.endpoints, Endpoints::Directed { from, .. } if set.contains(&from)),
+        );
         self
     }
 
@@ -484,9 +517,8 @@ impl<'w> RelationshipsQuery<'w> {
     /// Symmetric edges are excluded.
     pub fn to_any(mut self, loci: &[LocusId]) -> Self {
         let set: FxHashSet<LocusId> = loci.iter().copied().collect();
-        self.rels.retain(|r| {
-            matches!(r.endpoints, Endpoints::Directed { to, .. } if set.contains(&to))
-        });
+        self.rels
+            .retain(|r| matches!(r.endpoints, Endpoints::Directed { to, .. } if set.contains(&to)));
         self
     }
 
@@ -520,9 +552,8 @@ impl<'w> RelationshipsQuery<'w> {
     /// Keep only relationships idle for at least `min_batches` batches
     /// (`current_batch − last_decayed_batch >= min_batches`).
     pub fn idle_for(mut self, current_batch: BatchId, min_batches: u64) -> Self {
-        self.rels.retain(|r| {
-            current_batch.0.saturating_sub(r.last_decayed_batch) >= min_batches
-        });
+        self.rels
+            .retain(|r| current_batch.0.saturating_sub(r.last_decayed_batch) >= min_batches);
         self
     }
 
@@ -633,7 +664,10 @@ impl<'w> RelationshipsQuery<'w> {
             .filter(|&id| seen.insert(id))
             .filter_map(|id| self.world.locus(id))
             .collect();
-        LociQuery { world: self.world, loci }
+        LociQuery {
+            world: self.world,
+            loci,
+        }
     }
 
     /// Pivot to a [`LociQuery`] over the **target** loci of all directed
@@ -649,7 +683,10 @@ impl<'w> RelationshipsQuery<'w> {
             .filter(|&id| seen.insert(id))
             .filter_map(|id| self.world.locus(id))
             .collect();
-        LociQuery { world: self.world, loci }
+        LociQuery {
+            world: self.world,
+            loci,
+        }
     }
 
     /// Pivot to a [`LociQuery`] over **all** endpoint loci of the current
@@ -701,7 +738,8 @@ mod tests {
                 StateVector::from_slice(&[v]),
             ));
         }
-        w.properties_mut().insert(LocusId(0), graph_core::props! { "tag" => "hub" });
+        w.properties_mut()
+            .insert(LocusId(0), graph_core::props! { "tag" => "hub" });
 
         for (from, to) in [(0u64, 1u64), (1, 2)] {
             let id = w.relationships_mut().mint_id();
@@ -738,7 +776,10 @@ mod tests {
     fn loci_query_where_state_chains() {
         let w = world();
         // kind=1 AND state > 0.5: only L0 (0.9), not L1 (0.4)
-        let result = loci(&w).of_kind(LocusKindId(1)).where_state(0, |v| v > 0.5).ids();
+        let result = loci(&w)
+            .of_kind(LocusKindId(1))
+            .where_state(0, |v| v > 0.5)
+            .ids();
         assert_eq!(result, vec![LocusId(0)]);
     }
 

@@ -29,7 +29,12 @@ pub struct ForwardProgram {
     pub gain: f32,
 }
 impl LocusProgram for ForwardProgram {
-    fn process(&self, _: &Locus, incoming: &[&Change], _: &dyn LocusContext) -> Vec<ProposedChange> {
+    fn process(
+        &self,
+        _: &Locus,
+        incoming: &[&Change],
+        _: &dyn LocusContext,
+    ) -> Vec<ProposedChange> {
         let total: f32 = incoming.iter().flat_map(|c| c.after.as_slice()).sum();
         if total.abs() < 0.001 {
             return Vec::new();
@@ -56,7 +61,12 @@ pub struct BroadcastProgram {
     pub gain: f32,
 }
 impl LocusProgram for BroadcastProgram {
-    fn process(&self, _: &Locus, incoming: &[&Change], _: &dyn LocusContext) -> Vec<ProposedChange> {
+    fn process(
+        &self,
+        _: &Locus,
+        incoming: &[&Change],
+        _: &dyn LocusContext,
+    ) -> Vec<ProposedChange> {
         let total: f32 = incoming.iter().flat_map(|c| c.after.as_slice()).sum();
         if total.abs() < 0.001 {
             return Vec::new();
@@ -75,7 +85,12 @@ impl LocusProgram for BroadcastProgram {
 }
 
 impl LocusProgram for AccumulatorProgram {
-    fn process(&self, locus: &Locus, incoming: &[&Change], _: &dyn LocusContext) -> Vec<ProposedChange> {
+    fn process(
+        &self,
+        locus: &Locus,
+        incoming: &[&Change],
+        _: &dyn LocusContext,
+    ) -> Vec<ProposedChange> {
         let total: f32 = incoming.iter().flat_map(|c| c.after.as_slice()).sum();
         if total.abs() < 0.001 {
             return Vec::new();
@@ -238,7 +253,11 @@ impl LocusProgram for EventLocusProgram {
 
         if incoming_activation + current_activation >= self.activation_threshold {
             for &participant in &self.participants {
-                proposals.push(StructuralProposal::create_directed(locus.id, participant, self.event_kind));
+                proposals.push(StructuralProposal::create_directed(
+                    locus.id,
+                    participant,
+                    self.event_kind,
+                ));
             }
         }
 
@@ -260,7 +279,12 @@ pub struct MultiDimAggregatorProgram {
 }
 
 impl LocusProgram for MultiDimAggregatorProgram {
-    fn process(&self, _: &Locus, incoming: &[&Change], _: &dyn LocusContext) -> Vec<ProposedChange> {
+    fn process(
+        &self,
+        _: &Locus,
+        incoming: &[&Change],
+        _: &dyn LocusContext,
+    ) -> Vec<ProposedChange> {
         if incoming.is_empty() {
             return Vec::new();
         }

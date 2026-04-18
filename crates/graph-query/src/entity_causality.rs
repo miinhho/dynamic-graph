@@ -64,7 +64,9 @@ pub fn cause_seed_changes(
 ) -> Vec<graph_core::ChangeId> {
     let rel_ids: &[RelationshipId] = match cause {
         graph_core::LifecycleCause::RelationshipCluster { key_relationships } => key_relationships,
-        graph_core::LifecycleCause::RelationshipDecay { decayed_relationships } => decayed_relationships,
+        graph_core::LifecycleCause::RelationshipDecay {
+            decayed_relationships,
+        } => decayed_relationships,
         graph_core::LifecycleCause::ComponentSplit { weak_bridges } => weak_bridges,
         _ => return Vec::new(),
     };
@@ -188,7 +190,11 @@ pub fn entity_layers_in_range(
     entity_id: EntityId,
     from: BatchId,
     to: BatchId,
-) -> Vec<(BatchId, graph_core::LayerTransition, graph_core::LifecycleCause)> {
+) -> Vec<(
+    BatchId,
+    graph_core::LayerTransition,
+    graph_core::LifecycleCause,
+)> {
     let entity = match world.entities().get(entity_id) {
         Some(e) => e,
         None => return Vec::new(),
@@ -261,7 +267,9 @@ mod tests {
         let world = empty_world();
         let seeds = cause_seed_changes(
             &world,
-            &LifecycleCause::MergedFrom { absorbed: vec![EntityId(2)] },
+            &LifecycleCause::MergedFrom {
+                absorbed: vec![EntityId(2)],
+            },
             BatchId(10),
         );
         assert!(seeds.is_empty());
@@ -284,10 +292,14 @@ mod tests {
                 member_relationships: vec![],
                 coherence: 0.9,
             };
-            e.deposit(BatchId(5), snap, LayerTransition::MembershipDelta {
-                added: vec![LocusId(1)],
-                removed: vec![],
-            });
+            e.deposit(
+                BatchId(5),
+                snap,
+                LayerTransition::MembershipDelta {
+                    added: vec![LocusId(1)],
+                    removed: vec![],
+                },
+            );
         }
 
         // Query [0, 4) → should include birth layer only.

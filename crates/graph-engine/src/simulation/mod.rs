@@ -33,11 +33,13 @@ use std::sync::{Arc, RwLock};
 use graph_core::{BatchId, InfluenceKindId, ProposedChange, RelationshipId, WorldEvent};
 use graph_world::World;
 
-use crate::regime::AdaptiveGuardRail;
 use crate::cohere::CoherePerspective;
 use crate::emergence::EmergencePerspective;
 use crate::engine::{self, Engine};
-use crate::regime::{BatchHistory, BatchMetrics, DefaultRegimeClassifier, DynamicsRegime, RegimeClassifier};
+use crate::regime::AdaptiveGuardRail;
+use crate::regime::{
+    BatchHistory, BatchMetrics, DefaultRegimeClassifier, DynamicsRegime, RegimeClassifier,
+};
 use crate::registry::{InfluenceKindRegistry, LocusKindRegistry};
 
 #[cfg(feature = "storage")]
@@ -231,7 +233,9 @@ impl Simulation {
     /// [`world_handle`]: Simulation::world_handle
     pub fn into_world(self) -> World {
         Arc::try_unwrap(self.world)
-            .unwrap_or_else(|_| panic!("world Arc has other owners; drop all world_handle clones first"))
+            .unwrap_or_else(|_| {
+                panic!("world Arc has other owners; drop all world_handle clones first")
+            })
             .into_inner()
             .unwrap()
     }
@@ -267,7 +271,7 @@ impl Simulation {
             engine: Engine::new(config.engine),
             guard_rail,
             classifier: DefaultRegimeClassifier::default(),
-            history: BatchHistory::new(config.history_window),
+            history: BatchHistory::new(config::HISTORY_WINDOW),
             prev_batch,
             prev_regime: DynamicsRegime::Initializing,
             #[cfg(feature = "storage")]
@@ -278,19 +282,15 @@ impl Simulation {
             last_flushed_batch: prev_batch,
             #[cfg(feature = "storage")]
             auto_commit,
-            change_retention_batches: config.change_retention_batches,
-            cold_relationship_threshold: config.cold_relationship_threshold,
-            cold_relationship_min_idle_batches: config.cold_relationship_min_idle_batches,
+            change_retention_batches: None,
+            cold_relationship_threshold: None,
+            cold_relationship_min_idle_batches: config::COLD_RELATIONSHIP_MIN_IDLE_BATCHES,
             pending_stimuli: Vec::new(),
-            pending_stimuli_capacity: config.pending_stimuli_capacity,
-            backpressure_policy: config.backpressure_policy,
+            pending_stimuli_capacity: 0,
+            backpressure_policy: config::BACKPRESSURE_POLICY,
             tick_count: 0,
-            event_history: if config.event_history_len > 0 {
-                Some(EventHistory::new(config.event_history_len))
-            } else {
-                None
-            },
-            auto_weather_every_ticks: config.auto_weather_every_ticks,
+            event_history: None,
+            auto_weather_every_ticks: None,
             auto_weather_policy: None,
             locus_kind_names: FxHashMap::default(),
             influence_kind_names: FxHashMap::default(),
@@ -338,7 +338,9 @@ impl Simulation {
         let (tick, current_batch, relationships, active_entities, summary) = {
             let mut world = self.world.write().unwrap();
 
-            let tick = self.engine.tick(&mut *world, &self.loci, &effective, stimuli);
+            let tick = self
+                .engine
+                .tick(&mut *world, &self.loci, &effective, stimuli);
             let current_batch = world.current_batch();
 
             // Inline tick_metrics: keeps the guard alive while we iterate the log.
@@ -420,7 +422,7 @@ impl Simulation {
                 prev_batch,
                 current_batch,
                 &*world,
-                &[],  // events not yet built; RegimeShift is added below
+                &[], // events not yet built; RegimeShift is added below
             );
             let relationships = world.relationships().len();
             let active_entities = world.entities().active_count();
@@ -504,7 +506,10 @@ impl Simulation {
         let mut stimuli = Some(stimuli);
         for _ in 0..max_steps {
             let s = self.step(stimuli.take().unwrap_or_default());
-            let done = { let w = self.world.read().unwrap(); pred(&s, &*w) };
+            let done = {
+                let w = self.world.read().unwrap();
+                pred(&s, &*w)
+            };
             observations.push(s);
             if done {
                 return (observations, true);
@@ -517,13 +522,24 @@ impl Simulation {
 
     /// Recognize entities using `perspective`. Convenience wrapper so
     /// the caller avoids split-borrow issues with `engine()` + `world`.
-    pub fn recognize_entities(&mut self, perspective: &dyn EmergencePerspective) -> Vec<WorldEvent> {
-        engine::world_ops::recognize_entities(&mut *self.world.write().unwrap(), &self.base_influences, perspective)
+    pub fn recognize_entities(
+        &mut self,
+        perspective: &dyn EmergencePerspective,
+    ) -> Vec<WorldEvent> {
+        engine::world_ops::recognize_entities(
+            &mut *self.world.write().unwrap(),
+            &self.base_influences,
+            perspective,
+        )
     }
 
     /// Extract cohere clusters using `perspective`.
     pub fn extract_cohere(&mut self, perspective: &dyn CoherePerspective) {
-        engine::world_ops::extract_cohere(&mut *self.world.write().unwrap(), &self.base_influences, perspective);
+        engine::world_ops::extract_cohere(
+            &mut *self.world.write().unwrap(),
+            &self.base_influences,
+            perspective,
+        );
     }
 
     /// Apply one round of per-kind activity and weight decay to all
@@ -535,18 +551,23 @@ impl Simulation {
     /// for example, to observe the fully-decayed relationship state before
     /// entity recognition or diagnostic output, without running a full tick.
     pub fn flush_relationship_decay(&mut self) {
-        engine::world_ops::flush_relationship_decay(&mut *self.world.write().unwrap(), &self.base_influences);
+        engine::world_ops::flush_relationship_decay(
+            &mut *self.world.write().unwrap(),
+            &self.base_influences,
+        );
     }
 
     /// Apply a weathering policy to every entity's sediment layer stack.
     pub fn weather_entities(&mut self, policy: &dyn graph_core::EntityWeatheringPolicy) {
-        self.engine.weather_entities(&mut *self.world.write().unwrap(), policy);
+        self.engine
+            .weather_entities(&mut *self.world.write().unwrap(), policy);
     }
 
     /// Trim the change log, dropping all changes in batches strictly
     /// older than `current_batch - retention_batches`. Returns count removed.
     pub fn trim_change_log(&mut self, retention_batches: u64) -> usize {
-        self.engine.trim_change_log(&mut *self.world.write().unwrap(), retention_batches)
+        self.engine
+            .trim_change_log(&mut *self.world.write().unwrap(), retention_batches)
     }
 
     /// Point-in-time entity query: returns all entities with their
@@ -555,8 +576,13 @@ impl Simulation {
     /// Returns owned `EntityLayer` values (cloned from the store). Use
     /// `sim.world().entities_at_batch(batch)` if you need borrowed references
     /// and can keep the read guard alive.
-    pub fn entities_at_batch(&self, batch: BatchId) -> Vec<(graph_core::EntityId, graph_core::EntityLayer)> {
-        self.world.read().unwrap()
+    pub fn entities_at_batch(
+        &self,
+        batch: BatchId,
+    ) -> Vec<(graph_core::EntityId, graph_core::EntityLayer)> {
+        self.world
+            .read()
+            .unwrap()
             .entities_at_batch(batch)
             .into_iter()
             .map(|(id, layer)| (id, layer.clone()))
@@ -574,7 +600,9 @@ impl Simulation {
     /// No-op and returns `false` if storage is not configured.
     #[cfg(feature = "storage")]
     pub fn promote_relationship(&mut self, rel_id: graph_core::RelationshipId) -> bool {
-        let Some(ref storage) = self.storage else { return false; };
+        let Some(ref storage) = self.storage else {
+            return false;
+        };
         match storage.get_relationship(rel_id) {
             Ok(Some(rel)) => self.world.write().unwrap().restore_relationship(rel),
             _ => false,
@@ -593,11 +621,15 @@ impl Simulation {
     /// No-op and returns 0 if storage is not configured.
     #[cfg(feature = "storage")]
     pub fn promote_relationships_for_locus(&mut self, locus_id: graph_core::LocusId) -> usize {
-        let Some(ref storage) = self.storage else { return 0; };
+        let Some(ref storage) = self.storage else {
+            return 0;
+        };
         match storage.relationships_for_locus(locus_id) {
             Ok(rels) => {
                 let mut world = self.world.write().unwrap();
-                rels.into_iter().filter(|r| world.restore_relationship(r.clone())).count()
+                rels.into_iter()
+                    .filter(|r| world.restore_relationship(r.clone()))
+                    .count()
             }
             Err(e) => {
                 self.last_storage_error = Some(e);
@@ -619,11 +651,15 @@ impl Simulation {
     /// No-op and returns 0 if storage is not configured.
     #[cfg(feature = "storage")]
     pub fn promote_all_cold(&mut self) -> usize {
-        let Some(ref storage) = self.storage else { return 0; };
+        let Some(ref storage) = self.storage else {
+            return 0;
+        };
         match storage.all_relationships() {
             Ok(rels) => {
                 let mut world = self.world.write().unwrap();
-                rels.into_iter().filter(|r| world.restore_relationship(r.clone())).count()
+                rels.into_iter()
+                    .filter(|r| world.restore_relationship(r.clone()))
+                    .count()
             }
             Err(e) => {
                 self.last_storage_error = Some(e);
@@ -646,7 +682,11 @@ impl Simulation {
     ) -> Vec<WorldEvent> {
         #[cfg(feature = "storage")]
         self.promote_all_cold();
-        engine::world_ops::recognize_entities(&mut *self.world.write().unwrap(), &self.base_influences, perspective)
+        engine::world_ops::recognize_entities(
+            &mut *self.world.write().unwrap(),
+            &self.base_influences,
+            perspective,
+        )
     }
 
     // ── slot queries ─────────────────────────────────────────────────────
@@ -664,7 +704,9 @@ impl Simulation {
         let world = self.world.read().unwrap();
         let rel_state = world.relationships().get(rel_id)?.state.clone();
         drop(world);
-        self.base_influences.get(kind)?.read_slot(&rel_state, slot_name)
+        self.base_influences
+            .get(kind)?
+            .read_slot(&rel_state, slot_name)
     }
 
     /// History of a named slot for a relationship, newest-first, back to `since`.
@@ -681,7 +723,11 @@ impl Simulation {
         slot_name: &str,
         since: BatchId,
     ) -> Vec<(BatchId, f32)> {
-        let slot_idx = match self.base_influences.get(kind).and_then(|c| c.slot_index(slot_name)) {
+        let slot_idx = match self
+            .base_influences
+            .get(kind)
+            .and_then(|c| c.slot_index(slot_name))
+        {
             Some(idx) => idx,
             None => return Vec::new(),
         };
@@ -689,7 +735,13 @@ impl Simulation {
         world
             .changes_to_relationship(rel_id)
             .take_while(|c| c.batch.0 >= since.0)
-            .filter_map(|c| c.after.as_slice().get(slot_idx).copied().map(|v| (c.batch, v)))
+            .filter_map(|c| {
+                c.after
+                    .as_slice()
+                    .get(slot_idx)
+                    .copied()
+                    .map(|v| (c.batch, v))
+            })
             .collect()
     }
 
@@ -729,7 +781,9 @@ impl Simulation {
         a: graph_core::LocusId,
         b: graph_core::LocusId,
     ) -> Option<graph_core::Relationship> {
-        self.world.read().unwrap()
+        self.world
+            .read()
+            .unwrap()
             .relationships()
             .relationships_between(a, b)
             .next()
@@ -783,7 +837,12 @@ mod tests {
         downstream: LocusId,
     }
     impl LocusProgram for ForwardProgram {
-        fn process(&self, _: &Locus, incoming: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+        fn process(
+            &self,
+            _: &Locus,
+            incoming: &[&Change],
+            _: &dyn graph_core::LocusContext,
+        ) -> Vec<ProposedChange> {
             let total: f32 = incoming.iter().flat_map(|c| c.after.as_slice()).sum();
             if total < 0.001 {
                 return Vec::new();
@@ -798,7 +857,12 @@ mod tests {
 
     struct InertProgram;
     impl LocusProgram for InertProgram {
-        fn process(&self, _: &Locus, _: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+        fn process(
+            &self,
+            _: &Locus,
+            _: &[&Change],
+            _: &dyn graph_core::LocusContext,
+        ) -> Vec<ProposedChange> {
             Vec::new()
         }
     }
@@ -809,10 +873,18 @@ mod tests {
         world.insert_locus(Locus::new(LocusId(0), KIND, StateVector::zeros(1)));
         world.insert_locus(Locus::new(LocusId(1), SINK_KIND, StateVector::zeros(1)));
         let mut loci = LocusKindRegistry::new();
-        loci.insert(KIND, Box::new(ForwardProgram { downstream: LocusId(1) }));
+        loci.insert(
+            KIND,
+            Box::new(ForwardProgram {
+                downstream: LocusId(1),
+            }),
+        );
         loci.insert(SINK_KIND, Box::new(InertProgram));
         let mut influences = InfluenceKindRegistry::new();
-        influences.insert(SIGNAL, crate::registry::InfluenceKindConfig::new("test").with_decay(0.9));
+        influences.insert(
+            SIGNAL,
+            crate::registry::InfluenceKindConfig::new("test").with_decay(0.9),
+        );
         (world, loci, influences)
     }
 
@@ -927,10 +999,15 @@ mod tests {
     fn ingest_creates_locus_and_stores_properties() {
         let (world, loci, influences) = two_locus_world();
         let mut sim = Simulation::new(world, loci, influences);
-        let id = sim.ingest("Apple", KIND, SIGNAL, graph_core::props! {
-            "type" => "ORG",
-            "confidence" => 0.92_f64,
-        });
+        let id = sim.ingest(
+            "Apple",
+            KIND,
+            SIGNAL,
+            graph_core::props! {
+                "type" => "ORG",
+                "confidence" => 0.92_f64,
+            },
+        );
         assert!(sim.world().locus(id).is_some());
         assert_eq!(sim.name_of(id).as_deref(), Some("Apple"));
         assert_eq!(sim.resolve("Apple"), Some(id));
@@ -942,13 +1019,23 @@ mod tests {
     fn ingest_same_name_reuses_locus() {
         let (world, loci, influences) = two_locus_world();
         let mut sim = Simulation::new(world, loci, influences);
-        let id1 = sim.ingest("Apple", KIND, SIGNAL, graph_core::props! {
-            "confidence" => 0.8_f64,
-        });
-        let id2 = sim.ingest("Apple", KIND, SIGNAL, graph_core::props! {
-            "confidence" => 0.95_f64,
-            "source" => "Reuters",
-        });
+        let id1 = sim.ingest(
+            "Apple",
+            KIND,
+            SIGNAL,
+            graph_core::props! {
+                "confidence" => 0.8_f64,
+            },
+        );
+        let id2 = sim.ingest(
+            "Apple",
+            KIND,
+            SIGNAL,
+            graph_core::props! {
+                "confidence" => 0.95_f64,
+                "source" => "Reuters",
+            },
+        );
         assert_eq!(id1, id2);
         let props = sim.properties_of(id1).unwrap();
         assert_eq!(props.get_f64("confidence"), Some(0.95));
@@ -959,8 +1046,18 @@ mod tests {
     fn flush_ingested_commits_pending_stimuli() {
         let (world, loci, influences) = two_locus_world();
         let mut sim = Simulation::new(world, loci, influences);
-        sim.ingest("Apple", KIND, SIGNAL, graph_core::props! { "confidence" => 0.9_f64 });
-        sim.ingest("Google", KIND, SIGNAL, graph_core::props! { "confidence" => 0.8_f64 });
+        sim.ingest(
+            "Apple",
+            KIND,
+            SIGNAL,
+            graph_core::props! { "confidence" => 0.9_f64 },
+        );
+        sim.ingest(
+            "Google",
+            KIND,
+            SIGNAL,
+            graph_core::props! { "confidence" => 0.8_f64 },
+        );
         let obs = sim.flush_ingested();
         assert!(obs.tick.changes_committed >= 2);
     }
@@ -969,10 +1066,21 @@ mod tests {
     fn ingest_batch_creates_cooccurrence_relationships() {
         let (world, loci, influences) = two_locus_world();
         let mut sim = Simulation::new(world, loci, influences);
-        let ids = sim.ingest_batch(vec![
-            ("Apple", KIND, graph_core::props! { "confidence" => 0.9_f64 }),
-            ("Tim Cook", KIND, graph_core::props! { "confidence" => 0.95_f64 }),
-        ], SIGNAL);
+        let ids = sim.ingest_batch(
+            vec![
+                (
+                    "Apple",
+                    KIND,
+                    graph_core::props! { "confidence" => 0.9_f64 },
+                ),
+                (
+                    "Tim Cook",
+                    KIND,
+                    graph_core::props! { "confidence" => 0.95_f64 },
+                ),
+            ],
+            SIGNAL,
+        );
         assert_eq!(ids.len(), 2);
         let obs = sim.flush_ingested();
         assert!(obs.tick.changes_committed >= 2);
@@ -984,19 +1092,28 @@ mod tests {
 
     #[test]
     fn rel_slot_value_and_slot_history_work() {
-        use graph_core::{RelationshipSlotDef, RelationshipId};
         use crate::registry::InfluenceKindConfig;
+        use graph_core::{RelationshipId, RelationshipSlotDef};
 
         const SLOTTED: InfluenceKindId = InfluenceKindId(99);
         const SLOT_KIND: LocusKindId = LocusKindId(10);
 
         // Two loci with a program that emits a relationship-subject change
         // carrying an extra slot value.
-        struct SlotProgram { peer: LocusId }
+        struct SlotProgram {
+            peer: LocusId,
+        }
         impl LocusProgram for SlotProgram {
-            fn process(&self, locus: &Locus, _: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+            fn process(
+                &self,
+                locus: &Locus,
+                _: &[&Change],
+                _: &dyn graph_core::LocusContext,
+            ) -> Vec<ProposedChange> {
                 let val = locus.state.as_slice().first().copied().unwrap_or(0.0);
-                if val < 0.001 { return Vec::new(); }
+                if val < 0.001 {
+                    return Vec::new();
+                }
                 // Emit a relationship-subject change with extra slot at index 2.
                 vec![ProposedChange::new(
                     ChangeSubject::Locus(self.peer),
@@ -1014,8 +1131,11 @@ mod tests {
         loci.insert(SLOT_KIND, Box::new(SlotProgram { peer: LocusId(1) }));
 
         let mut influences = InfluenceKindRegistry::new();
-        influences.insert(SLOTTED, InfluenceKindConfig::new("slotted")
-            .with_extra_slots(vec![RelationshipSlotDef::new("pressure", 0.0)]));
+        influences.insert(
+            SLOTTED,
+            InfluenceKindConfig::new("slotted")
+                .with_extra_slots(vec![RelationshipSlotDef::new("pressure", 0.0)]),
+        );
 
         let mut sim = Simulation::new(world, loci, influences);
 
@@ -1071,7 +1191,9 @@ mod tests {
             }
 
             let (_, loci2, influences2) = two_locus_world();
-            let sim2 = Simulation::from_storage(f.path(), loci2, influences2, SimulationConfig::default()).unwrap();
+            let sim2 =
+                Simulation::from_storage(f.path(), loci2, influences2, SimulationConfig::default())
+                    .unwrap();
             assert_eq!(expected_meta, sim2.world().world_meta());
             assert_eq!(expected_rels, sim2.world().relationships().len());
         }
@@ -1092,10 +1214,15 @@ mod tests {
             let f = NamedTempFile::new().unwrap();
             let (world, loci, influences) = two_locus_world();
             let mut sim = Simulation::with_config(world, loci, influences, storage_config(&f));
-            let id = sim.ingest("Apple", KIND, SIGNAL, graph_core::props! {
-                "type" => "ORG",
-                "confidence" => 0.92_f64,
-            });
+            let id = sim.ingest(
+                "Apple",
+                KIND,
+                SIGNAL,
+                graph_core::props! {
+                    "type" => "ORG",
+                    "confidence" => 0.92_f64,
+                },
+            );
             sim.flush_ingested();
 
             let storage = sim.storage().unwrap();
@@ -1131,7 +1258,9 @@ mod tests {
             }
 
             let (_, loci2, influences2) = two_locus_world();
-            let sim2 = Simulation::from_storage(f.path(), loci2, influences2, SimulationConfig::default()).unwrap();
+            let sim2 =
+                Simulation::from_storage(f.path(), loci2, influences2, SimulationConfig::default())
+                    .unwrap();
             assert_eq!(expected_meta, sim2.world().world_meta());
         }
 
@@ -1189,7 +1318,10 @@ mod tests {
 
             // Relationships were evicted from memory but exist in storage.
             assert_eq!(rels_in_memory, 0, "all relationships should be evicted");
-            assert!(counts.relationships > 0, "storage should still have relationships");
+            assert!(
+                counts.relationships > 0,
+                "storage should still have relationships"
+            );
         }
 
         #[test]

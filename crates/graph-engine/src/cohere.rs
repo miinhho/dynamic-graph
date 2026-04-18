@@ -44,17 +44,51 @@ pub trait CoherePerspective: Send + Sync {
 pub struct DefaultCoherePerspective {
     pub name: String,
     /// Minimum summed activity across all relationships connecting any
-    /// two entities' member loci. Default: 0.3.
-    pub min_bridge_activity: f32,
+    /// two entities' member loci, above which a bridge counts as a
+    /// cohere link in the single-linkage BFS.
+    ///
+    /// **Default**: `None` — distribution-based auto. Adopted in Phase 2
+    /// of the 2026-04-18 complexity sweep (`docs/complexity-audit.md`).
+    /// Replaced the former karate-tuned `0.3` constant that silently
+    /// dropped legitimate weak bridges in sparse regimes.
+    ///
+    /// **Override when**: the domain has a semantically meaningful
+    /// absolute bridge-activity floor (e.g. "ignore any bridge below
+    /// one interaction per day") and you want thresholding independent
+    /// of the current bridge distribution. Leave `None` otherwise.
+    ///
+    /// **None semantics**: per `cluster()` call, compute the median of
+    /// nonzero inter-entity bridge activities and use it as the
+    /// threshold. Robust across sparse/dense regimes and scale-free.
+    /// Setting `Some(x)` pins the threshold and bypasses the median
+    /// computation.
+    pub min_bridge_activity: Option<f32>,
 }
 
 impl Default for DefaultCoherePerspective {
     fn default() -> Self {
         Self {
             name: "default".to_string(),
-            min_bridge_activity: 0.3,
+            min_bridge_activity: None,
         }
     }
+}
+
+/// Median of nonzero bridge activities. Cheap, scale-free, well-defined
+/// whenever there is at least one cross-entity relationship.
+fn auto_bridge_threshold(
+    pair_activity: &rustc_hash::FxHashMap<(graph_core::EntityId, graph_core::EntityId), f32>,
+) -> f32 {
+    let mut values: Vec<f32> = pair_activity
+        .values()
+        .copied()
+        .filter(|&a| a > 0.0)
+        .collect();
+    if values.is_empty() {
+        return 0.0;
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    values[values.len() / 2]
 }
 
 impl CoherePerspective for DefaultCoherePerspective {
@@ -68,9 +102,9 @@ impl CoherePerspective for DefaultCoherePerspective {
         relationships: &RelationshipStore,
         next_id: &mut dyn FnMut() -> graph_core::CohereId,
     ) -> Vec<Cohere> {
-        use std::collections::VecDeque;
         use graph_core::Endpoints;
         use rustc_hash::{FxHashMap, FxHashSet};
+        use std::collections::VecDeque;
 
         let active: Vec<EntityId> = entities.active().map(|e| e.id).collect();
         if active.is_empty() {
@@ -80,8 +114,7 @@ impl CoherePerspective for DefaultCoherePerspective {
         // Build locus → entity index once: O(E × avg_members).
         // Avoids O(E² × R) inner scan — instead scan relationships once O(R)
         // and look up which entity pair each relationship bridges.
-        let mut locus_to_entity: FxHashMap<graph_core::LocusId, EntityId> =
-            FxHashMap::default();
+        let mut locus_to_entity: FxHashMap<graph_core::LocusId, EntityId> = FxHashMap::default();
         for &eid in &active {
             if let Some(e) = entities.get(eid) {
                 for &locus in &e.current.members {
@@ -98,8 +131,12 @@ impl CoherePerspective for DefaultCoherePerspective {
                 Endpoints::Directed { from, to } => (*from, *to),
                 Endpoints::Symmetric { a, b } => (*a, *b),
             };
-            let Some(&ea) = locus_to_entity.get(&from) else { continue };
-            let Some(&eb) = locus_to_entity.get(&to) else { continue };
+            let Some(&ea) = locus_to_entity.get(&from) else {
+                continue;
+            };
+            let Some(&eb) = locus_to_entity.get(&to) else {
+                continue;
+            };
             if ea == eb {
                 continue;
             }
@@ -107,10 +144,14 @@ impl CoherePerspective for DefaultCoherePerspective {
             *pair_activity.entry(key).or_default() += rel.activity();
         }
 
+        let threshold = self
+            .min_bridge_activity
+            .unwrap_or_else(|| auto_bridge_threshold(&pair_activity));
+
         // Build bridge adjacency from pairs above threshold.
         let mut bridges: FxHashMap<EntityId, Vec<EntityId>> = FxHashMap::default();
         for ((ea, eb), activity) in &pair_activity {
-            if *activity >= self.min_bridge_activity {
+            if *activity >= threshold {
                 bridges.entry(*ea).or_default().push(*eb);
                 bridges.entry(*eb).or_default().push(*ea);
             }
@@ -144,11 +185,7 @@ impl CoherePerspective for DefaultCoherePerspective {
                 // Strength = average bridge activity across all pairs in
                 // this cohere — a proxy for how tightly bound the group is.
                 let pair_count = component.len() * (component.len() - 1) / 2;
-                let total_activity: f32 = bridges
-                    .values()
-                    .flatten()
-                    .count() as f32
-                    / 2.0; // each bridge counted twice above
+                let total_activity: f32 = bridges.values().flatten().count() as f32 / 2.0; // each bridge counted twice above
                 let strength = if pair_count > 0 {
                     (total_activity / pair_count as f32).min(1.0)
                 } else {
@@ -174,8 +211,8 @@ impl CoherePerspective for DefaultCoherePerspective {
 mod tests {
     use super::*;
     use graph_core::{
-        BatchId, Entity, EntitySnapshot, Endpoints, InfluenceKindId, KindObservation,
-        LocusId, Relationship, RelationshipLineage, StateVector,
+        BatchId, Endpoints, Entity, EntitySnapshot, InfluenceKindId, KindObservation, LocusId,
+        Relationship, RelationshipLineage, StateVector,
     };
     use graph_world::{EntityStore, RelationshipStore};
 
@@ -257,18 +294,11 @@ mod tests {
         assert!(coheres.is_empty());
     }
 
-    #[test]
-    fn weak_bridge_below_threshold_suppressed() {
-        let mut entities = EntityStore::new();
-        let mut rels = RelationshipStore::new();
-        active_entity(&mut entities, &[1]);
-        active_entity(&mut entities, &[2]);
-        relationship(&mut rels, 1, 2, 0.1); // below 0.3 threshold
-        let perspective = DefaultCoherePerspective::default();
-        let mut mint = mint_id_fn();
-        let coheres = perspective.cluster(&entities, &rels, &mut mint);
-        assert!(coheres.is_empty());
-    }
+    // Old test `weak_bridge_below_threshold_suppressed` removed with
+    // Phase 2 (auto bridge threshold): "weak" is now relative (median of
+    // nonzero bridges). A world with only one 0.1 bridge sees 0.1 as
+    // its baseline and does not suppress it. Realistic multi-bridge
+    // scenarios are covered by higher-level benchmarks.
 
     #[test]
     fn three_entities_in_chain_form_one_cohere() {

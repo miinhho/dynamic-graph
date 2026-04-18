@@ -37,12 +37,14 @@
 //! A score of 0.0 means the static and dynamic worlds are perfectly aligned;
 //! 1.0 means no overlap at all.
 
-pub mod report;
 pub mod analysis;
-pub mod prescribe;
 pub mod layer;
+pub mod prescribe;
+pub mod report;
 
+pub use analysis::{SignalMode, analyze_boundary, analyze_boundary_with_mode};
+pub use layer::{LayerReport, LayerTension, layer_tension};
+pub use prescribe::{
+    BoundaryAction, PrescriptionConfig, RetractReason, apply_prescriptions, prescribe_updates,
+};
 pub use report::{BoundaryEdge, BoundaryReport};
-pub use analysis::{analyze_boundary, analyze_boundary_with_mode, SignalMode};
-pub use prescribe::{BoundaryAction, RetractReason, PrescriptionConfig, prescribe_updates, apply_prescriptions};
-pub use layer::{LayerTension, LayerReport, layer_tension};

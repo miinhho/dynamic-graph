@@ -196,12 +196,16 @@ async fn multiple_subscribers_each_receive_all_events() {
 
     let count1 = {
         let mut n = 0usize;
-        while rx1.try_recv().is_ok() { n += 1; }
+        while rx1.try_recv().is_ok() {
+            n += 1;
+        }
         n
     };
     let count2 = {
         let mut n = 0usize;
-        while rx2.try_recv().is_ok() { n += 1; }
+        while rx2.try_recv().is_ok() {
+            n += 1;
+        }
         n
     };
 
@@ -237,7 +241,12 @@ async fn background_loop_events_delivered_to_subscriber() {
     let mut rx = h.subscribe_world_events();
 
     // Ingest — background loop wakes and steps.
-    h.ingest("n", LocusKindId(1), graph_core::InfluenceKindId(1), Properties::default());
+    h.ingest(
+        "n",
+        LocusKindId(1),
+        graph_core::InfluenceKindId(1),
+        Properties::default(),
+    );
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     ctrl.stop();
 

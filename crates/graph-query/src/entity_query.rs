@@ -60,13 +60,15 @@ impl<'w> EntitiesQuery<'w> {
 
     /// Keep only dormant entities.
     pub fn dormant(mut self) -> Self {
-        self.candidates.retain(|e| e.status == EntityStatus::Dormant);
+        self.candidates
+            .retain(|e| e.status == EntityStatus::Dormant);
         self
     }
 
     /// Keep only entities whose current member set contains `locus`.
     pub fn with_member(mut self, locus: LocusId) -> Self {
-        self.candidates.retain(|e| e.current.members.contains(&locus));
+        self.candidates
+            .retain(|e| e.current.members.contains(&locus));
         self
     }
 
@@ -88,9 +90,8 @@ impl<'w> EntitiesQuery<'w> {
     /// The birth batch is taken from the first layer in the sediment stack
     /// (the `Born` transition layer). Entities with no layers are excluded.
     pub fn born_after(mut self, batch: BatchId) -> Self {
-        self.candidates.retain(|e| {
-            e.layers.first().map(|l| l.batch >= batch).unwrap_or(false)
-        });
+        self.candidates
+            .retain(|e| e.layers.first().map(|l| l.batch >= batch).unwrap_or(false));
         self
     }
 
@@ -154,9 +155,12 @@ impl<'w> EntitiesQuery<'w> {
 
     /// The entity with the highest current coherence score, or `None` if empty.
     pub fn strongest(self) -> Option<&'w Entity> {
-        self.candidates
-            .into_iter()
-            .max_by(|a, b| a.current.coherence.partial_cmp(&b.current.coherence).unwrap_or(std::cmp::Ordering::Equal))
+        self.candidates.into_iter().max_by(|a, b| {
+            a.current
+                .coherence
+                .partial_cmp(&b.current.coherence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     }
 
     // ── Cross-layer navigation ────────────────────────────────────────────────
@@ -215,11 +219,7 @@ impl<'w> CohereQuery<'w> {
     }
 
     pub(crate) fn from_all(world: &'w World) -> Self {
-        let candidates = world
-            .coheres()
-            .iter_all()
-            .map(|(_, c)| c)
-            .collect();
+        let candidates = world.coheres().iter_all().map(|(_, c)| c).collect();
         Self { world, candidates }
     }
 
@@ -259,7 +259,8 @@ impl<'w> CohereQuery<'w> {
 
     /// Keep only coheres with at least `min` relationship members.
     pub fn with_min_relationship_count(mut self, min: usize) -> Self {
-        self.candidates.retain(|c| c.members.relationship_count() >= min);
+        self.candidates
+            .retain(|c| c.members.relationship_count() >= min);
         self
     }
 
@@ -374,7 +375,13 @@ mod tests {
         entity
     }
 
-    fn add_cohere(world: &mut World, perspective: &str, id: u64, entities: Vec<u64>, strength: f32) {
+    fn add_cohere(
+        world: &mut World,
+        perspective: &str,
+        id: u64,
+        entities: Vec<u64>,
+        strength: f32,
+    ) {
         let c = Cohere {
             id: CohereId(id),
             members: CohereMembers::Entities(entities.iter().map(|&e| EntityId(e)).collect()),
@@ -406,7 +413,8 @@ mod tests {
     #[test]
     fn entities_with_member_filter() {
         let mut w = World::new();
-        w.entities_mut().insert(make_entity(0, vec![10, 20], 0.8, true));
+        w.entities_mut()
+            .insert(make_entity(0, vec![10, 20], 0.8, true));
         w.entities_mut().insert(make_entity(1, vec![30], 0.5, true));
         assert_eq!(entities(&w).with_member(LocusId(10)).count(), 1);
         assert_eq!(entities(&w).with_member(LocusId(30)).count(), 1);
@@ -452,8 +460,10 @@ mod tests {
         add_locus(&mut w, 10);
         add_locus(&mut w, 20);
         add_locus(&mut w, 30);
-        w.entities_mut().insert(make_entity(0, vec![10, 20], 0.8, true));
-        w.entities_mut().insert(make_entity(1, vec![20, 30], 0.6, true));
+        w.entities_mut()
+            .insert(make_entity(0, vec![10, 20], 0.8, true));
+        w.entities_mut()
+            .insert(make_entity(1, vec![20, 30], 0.6, true));
 
         // Should include loci 10, 20, 30 — 20 deduplicated
         let loci = entities(&w).active().member_loci().collect();
@@ -524,8 +534,18 @@ mod tests {
         let mut w = World::new();
         add_cohere(&mut w, "default", 0, vec![5, 6], 0.9);
         add_cohere(&mut w, "default", 1, vec![7], 0.5);
-        assert_eq!(coheres(&w, "default").with_entity_member(EntityId(5)).count(), 1);
-        assert_eq!(coheres(&w, "default").with_entity_member(EntityId(99)).count(), 0);
+        assert_eq!(
+            coheres(&w, "default")
+                .with_entity_member(EntityId(5))
+                .count(),
+            1
+        );
+        assert_eq!(
+            coheres(&w, "default")
+                .with_entity_member(EntityId(99))
+                .count(),
+            0
+        );
     }
 
     #[test]

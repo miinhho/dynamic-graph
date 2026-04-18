@@ -49,15 +49,18 @@ use super::config::StepObservation;
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use graph_core::{Change, ChangeSubject, InfluenceKindId, Locus, LocusContext, LocusId, ProposedChange, StateVector};
+    use graph_core::{
+        Change, ChangeSubject, InfluenceKindId, Locus, LocusContext, LocusId, ProposedChange,
+        StateVector,
+    };
 
     use crate::simulation::SimulationBuilder;
 
     struct NoopProgram;
     impl graph_core::LocusProgram for NoopProgram {
-        fn process(
-            &self, _: &Locus, _: &[&Change], _: &dyn LocusContext,
-        ) -> Vec<ProposedChange> { vec![] }
+        fn process(&self, _: &Locus, _: &[&Change], _: &dyn LocusContext) -> Vec<ProposedChange> {
+            vec![]
+        }
     }
 
     fn minimal_sim() -> crate::simulation::Simulation {
@@ -100,7 +103,11 @@ mod tests {
             let mut guard = f.lock().unwrap();
             if !*guard {
                 *guard = true;
-                vec![ProposedChange::new(ChangeSubject::Locus(locus_id), kind, StateVector::from_slice(&[0.5]))]
+                vec![ProposedChange::new(
+                    ChangeSubject::Locus(locus_id),
+                    kind,
+                    StateVector::from_slice(&[0.5]),
+                )]
             } else {
                 vec![]
             }
@@ -197,7 +204,9 @@ mod tests {
 
         sim.observe_once(
             |obs| obs.summary.tick_id >= 2,
-            move |_obs| { *cc.lock().unwrap() += 1; },
+            move |_obs| {
+                *cc.lock().unwrap() += 1;
+            },
         );
 
         sim.step(vec![]); // tick 1 — pred false

@@ -18,6 +18,7 @@
 //! `ProcessingContext` (typed inbox grouped by influence kind, read
 //! tracking, kind registry access) lands when the batch loop does.
 
+use crate::BatchId;
 use crate::change::{Change, ChangeSubject};
 use crate::cohere::Cohere;
 use crate::entity::{Entity, EntityId};
@@ -26,7 +27,6 @@ use crate::locus::Locus;
 use crate::property::Properties;
 use crate::relationship::{Endpoints, Relationship, RelationshipId, RelationshipSlotDef};
 use crate::state::StateVector;
-use crate::BatchId;
 
 /// Read-only snapshot of the world state made available to
 /// `LocusProgram::process` and `structural_proposals`. Programs use
@@ -58,8 +58,7 @@ pub trait LocusContext {
     /// Find a specific relationship between two loci, if one exists.
     /// Checks both directions and symmetric edges.
     fn relationship_between(&self, a: LocusId, b: LocusId) -> Option<&Relationship> {
-        self.relationships_for(a)
-            .find(|r| r.endpoints.involves(b))
+        self.relationships_for(a).find(|r| r.endpoints.involves(b))
     }
 
     /// Iterate **all** relationships connecting `a` and `b`, across all
@@ -72,7 +71,10 @@ pub trait LocusContext {
         a: LocusId,
         b: LocusId,
     ) -> Box<dyn Iterator<Item = &'a Relationship> + 'a> {
-        Box::new(self.relationships_for(a).filter(move |r| r.endpoints.involves(b)))
+        Box::new(
+            self.relationships_for(a)
+                .filter(move |r| r.endpoints.involves(b)),
+        )
     }
 
     /// Recent changes that targeted `locus`, newest first, limited to
@@ -179,7 +181,10 @@ pub trait LocusContext {
         locus: LocusId,
         kind: RelationshipKindId,
     ) -> Box<dyn Iterator<Item = &'a Relationship> + 'a> {
-        Box::new(self.relationships_for(locus).filter(move |r| r.kind == kind))
+        Box::new(
+            self.relationships_for(locus)
+                .filter(move |r| r.kind == kind),
+        )
     }
 
     /// Iterate relationships that arrive **at** `locus`:
@@ -328,7 +333,11 @@ pub trait LocusContext {
 /// }
 /// ```
 pub fn changes_of_kind<'a>(incoming: &[&'a Change], kind: InfluenceKindId) -> Vec<&'a Change> {
-    incoming.iter().copied().filter(|c| c.kind == kind).collect()
+    incoming
+        .iter()
+        .copied()
+        .filter(|c| c.kind == kind)
+        .collect()
 }
 
 /// Filter `incoming` to changes whose subject is a `Relationship`.
@@ -726,16 +735,22 @@ impl StructuralProposal {
     /// ```
     pub fn with_initial_activity(self, activity: f32) -> Self {
         match self {
-            StructuralProposal::CreateRelationship { endpoints, kind, initial_state, .. } => {
-                StructuralProposal::CreateRelationship {
-                    endpoints,
-                    kind,
-                    initial_activity: Some(activity),
-                    initial_state,
-                }
-            }
+            StructuralProposal::CreateRelationship {
+                endpoints,
+                kind,
+                initial_state,
+                ..
+            } => StructuralProposal::CreateRelationship {
+                endpoints,
+                kind,
+                initial_activity: Some(activity),
+                initial_state,
+            },
             other => {
-                debug_assert!(false, "with_initial_activity called on non-CreateRelationship variant");
+                debug_assert!(
+                    false,
+                    "with_initial_activity called on non-CreateRelationship variant"
+                );
                 other
             }
         }
@@ -754,16 +769,22 @@ impl StructuralProposal {
     /// ```
     pub fn with_initial_state(self, state: StateVector) -> Self {
         match self {
-            StructuralProposal::CreateRelationship { endpoints, kind, initial_activity, .. } => {
-                StructuralProposal::CreateRelationship {
-                    endpoints,
-                    kind,
-                    initial_activity,
-                    initial_state: Some(state),
-                }
-            }
+            StructuralProposal::CreateRelationship {
+                endpoints,
+                kind,
+                initial_activity,
+                ..
+            } => StructuralProposal::CreateRelationship {
+                endpoints,
+                kind,
+                initial_activity,
+                initial_state: Some(state),
+            },
             other => {
-                debug_assert!(false, "with_initial_state called on non-CreateRelationship variant");
+                debug_assert!(
+                    false,
+                    "with_initial_state called on non-CreateRelationship variant"
+                );
                 other
             }
         }
@@ -801,7 +822,11 @@ impl StructuralProposal {
         anchor: LocusId,
         kind: InfluenceKindId,
     ) -> Self {
-        StructuralProposal::SubscribeToAnchorKind { subscriber, anchor, kind }
+        StructuralProposal::SubscribeToAnchorKind {
+            subscriber,
+            anchor,
+            kind,
+        }
     }
 
     /// Cancel a TouchingLocus subscription.
@@ -810,7 +835,11 @@ impl StructuralProposal {
         anchor: LocusId,
         kind: InfluenceKindId,
     ) -> Self {
-        StructuralProposal::UnsubscribeFromAnchorKind { subscriber, anchor, kind }
+        StructuralProposal::UnsubscribeFromAnchorKind {
+            subscriber,
+            anchor,
+            kind,
+        }
     }
 
     /// Remove a locus and all its associated data.
@@ -868,7 +897,12 @@ pub trait LocusProgram: Send + Sync {
     /// states when deciding whether to create or remove relationships.
     /// The default implementation returns an empty vec — programs only
     /// override this when they need topology mutation.
-    fn structural_proposals(&self, _locus: &Locus, _incoming: &[&Change], _ctx: &dyn LocusContext) -> Vec<StructuralProposal> {
+    fn structural_proposals(
+        &self,
+        _locus: &Locus,
+        _incoming: &[&Change],
+        _ctx: &dyn LocusContext,
+    ) -> Vec<StructuralProposal> {
         Vec::new()
     }
 

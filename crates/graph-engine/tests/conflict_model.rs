@@ -228,7 +228,12 @@ impl LocusProgram for AnalystProgram {
 
 // ─── World builder ───────────────────────────────────────────────────────────
 
-fn build_conflict_world() -> (World, LocusKindRegistry, InfluenceKindRegistry, RelationshipId) {
+fn build_conflict_world() -> (
+    World,
+    LocusKindRegistry,
+    InfluenceKindRegistry,
+    RelationshipId,
+) {
     let mut world = World::new();
     let mut loci_reg = LocusKindRegistry::new();
     let mut inf_reg = InfluenceKindRegistry::new();
@@ -255,14 +260,25 @@ fn build_conflict_world() -> (World, LocusKindRegistry, InfluenceKindRegistry, R
     // `add_relationship` sets last_decayed_batch = current_batch(), preventing
     // spurious decay debt on first touch.
     let ab_rel_id = world.add_relationship(
-        Endpoints::Symmetric { a: FORCE_A, b: FORCE_B },
+        Endpoints::Symmetric {
+            a: FORCE_A,
+            b: FORCE_B,
+        },
         CONFLICT_KIND,
         StateVector::from_slice(&[1.0, 0.0, 0.3, 0.0]),
     );
 
     // ── Loci ─────────────────────────────────────────────────────────────
-    world.insert_locus(Locus::new(FORCE_A, FORCE_A_KIND, StateVector::from_slice(&[1.0])));
-    world.insert_locus(Locus::new(FORCE_B, FORCE_B_KIND, StateVector::from_slice(&[1.0])));
+    world.insert_locus(Locus::new(
+        FORCE_A,
+        FORCE_A_KIND,
+        StateVector::from_slice(&[1.0]),
+    ));
+    world.insert_locus(Locus::new(
+        FORCE_B,
+        FORCE_B_KIND,
+        StateVector::from_slice(&[1.0]),
+    ));
     world.insert_locus(Locus::new(
         EVENT_LOCUS,
         EVENT_KIND_ID,
@@ -298,7 +314,9 @@ fn build_conflict_world() -> (World, LocusKindRegistry, InfluenceKindRegistry, R
 
     loci_reg.insert(
         ANALYST_KIND,
-        Box::new(AnalystProgram { watch_rel: ab_rel_id }),
+        Box::new(AnalystProgram {
+            watch_rel: ab_rel_id,
+        }),
     );
 
     let engine = Engine::new(EngineConfig::default());
@@ -465,7 +483,11 @@ fn extra_slots_present_and_initialised() {
     let slots = rel.state.as_slice();
 
     // The relationship was manually inserted with [1.0, 0.0, 0.3, 0.0].
-    assert_eq!(slots.len(), 4, "4 slots: activity, weight, hostility, engagement_count");
+    assert_eq!(
+        slots.len(),
+        4,
+        "4 slots: activity, weight, hostility, engagement_count"
+    );
     assert!((slots[0] - 1.0).abs() < 1e-6, "activity = 1.0");
     assert!((slots[1] - 0.0).abs() < 1e-6, "weight = 0.0");
     assert!((slots[2] - 0.3).abs() < 1e-6, "hostility = 0.3");

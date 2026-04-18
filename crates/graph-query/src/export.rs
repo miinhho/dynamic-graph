@@ -101,7 +101,12 @@ fn to_dot_impl(world: &World, filter_kind: Option<InfluenceKindId>) -> String {
             graph_core::Endpoints::Directed { from, to } => {
                 out.push_str(&format!(
                     "  n{} -> n{} [label=\"k{}\\na={:.2} w={:.2}\" color=\"{}\"];\n",
-                    from.0, to.0, rel.kind.0, activity, weight, activity_color(activity),
+                    from.0,
+                    to.0,
+                    rel.kind.0,
+                    activity,
+                    weight,
+                    activity_color(activity),
                 ));
             }
             graph_core::Endpoints::Symmetric { a, b } => {
@@ -139,20 +144,31 @@ fn activity_color(activity: f32) -> &'static str {
 mod tests {
     use super::*;
     use graph_core::{
-        Endpoints, InfluenceKindId, Locus, LocusId, LocusKindId, Relationship,
-        RelationshipLineage, StateVector,
+        Endpoints, InfluenceKindId, Locus, LocusId, LocusKindId, Relationship, RelationshipLineage,
+        StateVector,
     };
     use graph_world::World;
 
     fn make_world_with_edge(activity: f32) -> World {
         let mut w = World::new();
-        w.insert_locus(Locus::new(LocusId(0), LocusKindId(1), StateVector::from_slice(&[0.3])));
-        w.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::from_slice(&[0.7])));
+        w.insert_locus(Locus::new(
+            LocusId(0),
+            LocusKindId(1),
+            StateVector::from_slice(&[0.3]),
+        ));
+        w.insert_locus(Locus::new(
+            LocusId(1),
+            LocusKindId(1),
+            StateVector::from_slice(&[0.7]),
+        ));
         let rel_id = w.relationships_mut().mint_id();
         w.relationships_mut().insert(Relationship {
             id: rel_id,
             kind: InfluenceKindId(1),
-            endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(1) },
+            endpoints: Endpoints::Directed {
+                from: LocusId(0),
+                to: LocusId(1),
+            },
             state: StateVector::from_slice(&[activity, 0.5]),
             lineage: RelationshipLineage {
                 created_by: None,
@@ -193,8 +209,14 @@ mod tests {
     fn dot_edge_contains_activity_and_weight() {
         let w = make_world_with_edge(0.75);
         let dot = to_dot(&w);
-        assert!(dot.contains("a=0.75") || dot.contains("a=0.7"), "got: {dot}");
-        assert!(dot.contains("w=0.50") || dot.contains("w=0.5"), "got: {dot}");
+        assert!(
+            dot.contains("a=0.75") || dot.contains("a=0.7"),
+            "got: {dot}"
+        );
+        assert!(
+            dot.contains("w=0.50") || dot.contains("w=0.5"),
+            "got: {dot}"
+        );
     }
 
     #[test]

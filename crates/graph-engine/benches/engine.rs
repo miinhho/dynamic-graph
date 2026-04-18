@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
+use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use graph_core::{
     BatchId, Change, ChangeSubject, Endpoints, InfluenceKindId, KindObservation, Locus,
     LocusContext, LocusId, LocusKindId, LocusProgram, ProposedChange, Relationship,
@@ -188,9 +188,7 @@ fn bench_changelog_queries(c: &mut Criterion) {
     use graph_core::LocusId;
     let mid_locus = LocusId(128);
 
-    group.bench_function("get_by_id", |b| {
-        b.iter(|| world.log().get(mid_id))
-    });
+    group.bench_function("get_by_id", |b| b.iter(|| world.log().get(mid_id)));
     group.bench_function("batch_scan", |b| {
         b.iter(|| world.log().batch(mid_batch).count())
     });
@@ -374,11 +372,7 @@ fn bench_ingest_batch(c: &mut Criterion) {
                         .default_influence("signal")
                         .build();
                     for name in &names {
-                        sim.ingest_named(
-                            name,
-                            "ENT",
-                            props! { "confidence" => 0.5_f64 },
-                        );
+                        sim.ingest_named(name, "ENT", props! { "confidence" => 0.5_f64 });
                     }
                     sim.flush_ingested();
                     sim
@@ -386,9 +380,7 @@ fn bench_ingest_batch(c: &mut Criterion) {
                 |mut sim| {
                     let entries: Vec<(&str, &str, graph_core::Properties)> = names
                         .iter()
-                        .map(|name| {
-                            (name.as_str(), "ENT", props! { "confidence" => 0.8_f64 })
-                        })
+                        .map(|name| (name.as_str(), "ENT", props! { "confidence" => 0.8_f64 }))
                         .collect();
                     sim.ingest_batch_named(entries);
                     sim.flush_ingested()
@@ -430,9 +422,7 @@ fn bench_ingest_steady(c: &mut Criterion) {
             b.iter(|| {
                 let entries: Vec<(&str, &str, graph_core::Properties)> = names
                     .iter()
-                    .map(|name| {
-                        (name.as_str(), "ENT", props! { "confidence" => 0.9_f64 })
-                    })
+                    .map(|name| (name.as_str(), "ENT", props! { "confidence" => 0.9_f64 }))
                     .collect();
                 sim.ingest_batch_named(entries);
                 sim.flush_ingested()
@@ -457,19 +447,13 @@ fn bench_name_lookup(c: &mut Criterion) {
             .default_influence("signal")
             .build();
         for name in &names {
-            sim.ingest_named(
-                name,
-                "ENT",
-                props! { "confidence" => 0.5_f64 },
-            );
+            sim.ingest_named(name, "ENT", props! { "confidence" => 0.5_f64 });
         }
         sim.flush_ingested();
 
         // Lookup middle element.
         let target = format!("entity_{}", n / 2);
-        group.bench_function(&label, |b| {
-            b.iter(|| sim.resolve(&target))
-        });
+        group.bench_function(&label, |b| b.iter(|| sim.resolve(&target)));
     }
     group.finish();
 }
@@ -522,11 +506,10 @@ fn bench_subscriber_fanout(c: &mut Criterion) {
 
                     inf_reg.insert(
                         conflict_kind,
-                        InfluenceKindConfig::new("conflict")
-                            .with_extra_slots(vec![
-                                RelationshipSlotDef::new("hostility", 0.0),
-                                RelationshipSlotDef::new("engagement_count", 0.0),
-                            ]),
+                        InfluenceKindConfig::new("conflict").with_extra_slots(vec![
+                            RelationshipSlotDef::new("hostility", 0.0),
+                            RelationshipSlotDef::new("engagement_count", 0.0),
+                        ]),
                     );
 
                     // Two endpoint loci for the trigger relationship.
@@ -541,11 +524,18 @@ fn bench_subscriber_fanout(c: &mut Criterion) {
                     world.relationships_mut().insert(Relationship {
                         id: rel_id,
                         kind: conflict_kind,
-                        endpoints: Endpoints::Directed { from: ep_a, to: ep_b },
+                        endpoints: Endpoints::Directed {
+                            from: ep_a,
+                            to: ep_b,
+                        },
                         state: StateVector::from_slice(&[1.0, 0.0, 0.3, 0.0]),
                         lineage: RelationshipLineage {
-                            created_by: None, last_touched_by: None,
-                            change_count: 0, kinds_observed: smallvec::smallvec![KindObservation::synthetic(conflict_kind)],
+                            created_by: None,
+                            last_touched_by: None,
+                            change_count: 0,
+                            kinds_observed: smallvec::smallvec![KindObservation::synthetic(
+                                conflict_kind
+                            )],
                         },
                         created_batch: BatchId(0),
                         last_decayed_batch: 0,
@@ -621,8 +611,12 @@ fn bench_subscriber_cold_path(c: &mut Criterion) {
                                 },
                                 state: StateVector::from_slice(&[1.0, 0.0]),
                                 lineage: RelationshipLineage {
-                                    created_by: None, last_touched_by: None,
-                                    change_count: 0, kinds_observed: smallvec::smallvec![KindObservation::synthetic(kind)],
+                                    created_by: None,
+                                    last_touched_by: None,
+                                    change_count: 0,
+                                    kinds_observed: smallvec::smallvec![
+                                        KindObservation::synthetic(kind)
+                                    ],
                                 },
                                 created_batch: BatchId(0),
                                 last_decayed_batch: 0,
@@ -637,11 +631,13 @@ fn bench_subscriber_cold_path(c: &mut Criterion) {
                     let engine = Engine::new(EngineConfig::default());
                     let stimuli = rel_ids
                         .iter()
-                        .map(|&id| ProposedChange::new(
-                            ChangeSubject::Relationship(id),
-                            kind,
-                            StateVector::from_slice(&[2.0, 0.0]),
-                        ))
+                        .map(|&id| {
+                            ProposedChange::new(
+                                ChangeSubject::Relationship(id),
+                                kind,
+                                StateVector::from_slice(&[2.0, 0.0]),
+                            )
+                        })
                         .collect();
                     engine.tick(&mut world, &loci_reg, &inf_reg, stimuli)
                 },
@@ -676,8 +672,7 @@ fn bench_extra_slot_decay_flush(c: &mut Criterion) {
                         .map(|i| {
                             RelationshipSlotDef::new(
                                 // 'static str — use a fixed name; slot index is the distinguisher.
-                                "metric",
-                                1.0,
+                                "metric", 1.0,
                             )
                             .with_decay(0.95 - i as f32 * 0.01)
                         })
@@ -685,7 +680,9 @@ fn bench_extra_slot_decay_flush(c: &mut Criterion) {
 
                     inf_reg.insert(
                         kind,
-                        InfluenceKindConfig::new("k").with_decay(0.95).with_extra_slots(slots),
+                        InfluenceKindConfig::new("k")
+                            .with_decay(0.95)
+                            .with_extra_slots(slots),
                     );
                     loci_reg.insert(lk, Box::new(InertProgram));
 
@@ -706,8 +703,12 @@ fn bench_extra_slot_decay_flush(c: &mut Criterion) {
                             },
                             state: StateVector::from_slice(&initial),
                             lineage: RelationshipLineage {
-                                created_by: None, last_touched_by: None,
-                                change_count: 0, kinds_observed: smallvec::smallvec![KindObservation::synthetic(kind)],
+                                created_by: None,
+                                last_touched_by: None,
+                                change_count: 0,
+                                kinds_observed: smallvec::smallvec![KindObservation::synthetic(
+                                    kind
+                                )],
                             },
                             created_batch: BatchId(0),
                             last_decayed_batch: 0,
@@ -755,10 +756,10 @@ fn bench_domain_parallel(c: &mut Criterion) {
     // n_sources × n_sinks = batch 2의 pending 개수
     // n_sinks × n_sources × dims = 전체 float 연산
     for (label, n_sources, n_sinks, dims) in [
-        ("src16_sink64_d32",   16u64,  64u64,  32usize),   //   ~33K float ops/tick
-        ("src32_sink128_d64",  32u64, 128u64,  64usize),   //  ~262K float ops/tick
-        ("src64_sink256_d128", 64u64, 256u64, 128usize),   //    ~2M float ops/tick
-        ("src128_sink512_d128",128u64, 512u64, 128usize),  //    ~8M float ops/tick
+        ("src16_sink64_d32", 16u64, 64u64, 32usize), //   ~33K float ops/tick
+        ("src32_sink128_d64", 32u64, 128u64, 64usize), //  ~262K float ops/tick
+        ("src64_sink256_d128", 64u64, 256u64, 128usize), //    ~2M float ops/tick
+        ("src128_sink512_d128", 128u64, 512u64, 128usize), //    ~8M float ops/tick
     ] {
         group.bench_function(label, |b| {
             b.iter_batched(
@@ -766,11 +767,13 @@ fn bench_domain_parallel(c: &mut Criterion) {
                     let (world, loci, influences) = fan_in_world(n_sources, n_sinks, dims, 0.9);
                     // 모든 소스를 동시에 발화 — 각 sink가 n_sources 개의 inbox를 받게 됨
                     let all_source_stimuli: Vec<ProposedChange> = (0..n_sources)
-                        .map(|i| ProposedChange::new(
-                            ChangeSubject::Locus(LocusId(i)),
-                            TEST_KIND,
-                            StateVector::from_slice(&vec![1.0f32 / n_sources as f32; dims]),
-                        ))
+                        .map(|i| {
+                            ProposedChange::new(
+                                ChangeSubject::Locus(LocusId(i)),
+                                TEST_KIND,
+                                StateVector::from_slice(&vec![1.0f32 / n_sources as f32; dims]),
+                            )
+                        })
                         .collect();
                     (world, loci, influences, all_source_stimuli)
                 },
@@ -949,7 +952,9 @@ fn bench_dispatch_expensive_e4(c: &mut Criterion) {
             incoming: &[&graph_core::Change],
             _: &dyn graph_core::LocusContext,
         ) -> Vec<ProposedChange> {
-            if incoming.is_empty() { return vec![]; }
+            if incoming.is_empty() {
+                return vec![];
+            }
             let mut x = locus.state.as_slice()[0]
                 + incoming.iter().map(|c| c.after.as_slice()[0]).sum::<f32>();
             for _ in 0..self.work {
@@ -974,7 +979,9 @@ fn bench_dispatch_expensive_e4(c: &mut Criterion) {
         for i in 0..N {
             let kind = LocusKindId(i);
             world.insert_locus(graph_core::Locus::new(
-                LocusId(i), kind, StateVector::zeros(1),
+                LocusId(i),
+                kind,
+                StateVector::zeros(1),
             ));
             loci_reg.insert(kind, Box::new(WorkloadProgram { work: WORK_UNITS }));
         }
@@ -983,11 +990,13 @@ fn bench_dispatch_expensive_e4(c: &mut Criterion) {
 
     let make_stimuli = || -> Vec<ProposedChange> {
         (0..N)
-            .map(|i| ProposedChange::new(
-                graph_core::ChangeSubject::Locus(LocusId(i)),
-                graph_testkit::programs::TEST_KIND,
-                StateVector::from_slice(&[1.0]),
-            ))
+            .map(|i| {
+                ProposedChange::new(
+                    graph_core::ChangeSubject::Locus(LocusId(i)),
+                    graph_testkit::programs::TEST_KIND,
+                    StateVector::from_slice(&[1.0]),
+                )
+            })
             .collect()
     };
 
@@ -1009,9 +1018,9 @@ fn bench_dispatch_expensive_e4(c: &mut Criterion) {
         b.iter_batched(
             || {
                 let (mut world, loci, influences) = build_world();
-                world.set_partition_fn(Some(Arc::new(
-                    move |locus: &graph_core::Locus| locus.id.0 * P / N,
-                )));
+                world.set_partition_fn(Some(Arc::new(move |locus: &graph_core::Locus| {
+                    locus.id.0 * P / N
+                })));
                 (Simulation::new(world, loci, influences), make_stimuli())
             },
             |(mut sim, stims)| sim.step(stims),

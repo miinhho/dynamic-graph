@@ -41,7 +41,10 @@ impl CohereStore {
 
     /// Create a store with history enabled.
     pub fn with_history(max_history: usize) -> Self {
-        Self { max_history, ..Self::default() }
+        Self {
+            max_history,
+            ..Self::default()
+        }
     }
 
     /// Set the maximum history window. Existing history entries beyond
@@ -68,7 +71,10 @@ impl CohereStore {
             let ring = self.history.entry(key.clone()).or_default();
             // We don't have the batch here; use BatchId(0) as placeholder.
             // Use update_at() for batch-tagged snapshots.
-            ring.push_back(CohereSnapshot { batch: BatchId(0), coheres: prev.clone() });
+            ring.push_back(CohereSnapshot {
+                batch: BatchId(0),
+                coheres: prev.clone(),
+            });
             while ring.len() > self.max_history {
                 ring.pop_front();
             }
@@ -89,7 +95,10 @@ impl CohereStore {
             && !prev.is_empty()
         {
             let ring = self.history.entry(key.clone()).or_default();
-            ring.push_back(CohereSnapshot { batch, coheres: prev.clone() });
+            ring.push_back(CohereSnapshot {
+                batch,
+                coheres: prev.clone(),
+            });
             while ring.len() > self.max_history {
                 ring.pop_front();
             }
@@ -146,7 +155,10 @@ mod tests {
 
         let id2 = store.mint_id();
         let id3 = store.mint_id();
-        store.update("default", vec![cohere(id2, vec![1], 0.8), cohere(id3, vec![2], 0.6)]);
+        store.update(
+            "default",
+            vec![cohere(id2, vec![1], 0.8), cohere(id3, vec![2], 0.6)],
+        );
         assert_eq!(store.get("default").unwrap().len(), 2);
     }
 

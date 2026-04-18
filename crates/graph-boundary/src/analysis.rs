@@ -3,8 +3,8 @@
 use rustc_hash::FxHashSet;
 
 use graph_core::{Relationship, RelationshipId};
-use graph_world::World;
 use graph_schema::SchemaWorld;
+use graph_world::World;
 
 use crate::report::{BoundaryEdge, BoundaryReport};
 use graph_world::metrics::ACTIVITY_THRESHOLD;
@@ -36,9 +36,9 @@ impl Default for SignalMode {
 
 pub(crate) fn signal(rel: &Relationship, mode: SignalMode) -> f32 {
     match mode {
-        SignalMode::Activity  => rel.activity(),
-        SignalMode::Weight    => rel.weight(),
-        SignalMode::Strength  => rel.strength(),
+        SignalMode::Activity => rel.activity(),
+        SignalMode::Weight => rel.weight(),
+        SignalMode::Strength => rel.strength(),
     }
 }
 
@@ -124,15 +124,20 @@ pub fn analyze_boundary_with_mode(
     let divergence = (ghost.len() + shadow.len()) as f32;
     let tension = divergence / total;
 
-    BoundaryReport { confirmed, ghost, shadow, tension }
+    BoundaryReport {
+        confirmed,
+        ghost,
+        shadow,
+        tension,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use graph_core::{
-        BatchId, Endpoints, InfluenceKindId, Locus, LocusId, LocusKindId,
-        Relationship, RelationshipId, RelationshipLineage, StateVector,
+        BatchId, Endpoints, InfluenceKindId, Locus, LocusId, LocusKindId, Relationship,
+        RelationshipId, RelationshipLineage, StateVector,
     };
     use graph_schema::{DeclaredRelKind, SchemaWorld};
     use graph_world::World;

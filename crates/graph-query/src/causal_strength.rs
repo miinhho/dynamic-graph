@@ -23,11 +23,7 @@ pub fn causal_direction(world: &World, from: LocusId, to: LocusId, kind: Influen
     let ab = directed_weight(world, from, to, kind);
     let ba = directed_weight(world, to, from, kind);
     let total = ab + ba;
-    if total < 1e-9 {
-        0.0
-    } else {
-        (ab - ba) / total
-    }
+    if total < 1e-9 { 0.0 } else { (ab - ba) / total }
 }
 
 /// Top-N loci that most consistently cause `target` (highest directed incoming weight).
@@ -108,11 +104,17 @@ pub fn feedback_pairs(
     let mut seen: rustc_hash::FxHashSet<(LocusId, LocusId)> = rustc_hash::FxHashSet::default();
 
     for (&(from, to), &w_ab) in &weights {
-        if w_ab < min_weight { continue; }
+        if w_ab < min_weight {
+            continue;
+        }
         let canonical = if from <= to { (from, to) } else { (to, from) };
-        if seen.contains(&canonical) { continue; }
+        if seen.contains(&canonical) {
+            continue;
+        }
         let w_ba = weights.get(&(to, from)).copied().unwrap_or(0.0);
-        if w_ba < min_weight { continue; }
+        if w_ba < min_weight {
+            continue;
+        }
         let max_w = w_ab.max(w_ba);
         let balance = w_ab.min(w_ba) / max_w;
         if balance >= min_balance {
@@ -277,12 +279,18 @@ fn neighbors_of_kind(world: &World, locus: LocusId, kind: InfluenceKindId) -> Ve
         }
         match rel.endpoints {
             Endpoints::Directed { from, to } => {
-                if from == locus { seen.insert(to); }
-                else if to == locus { seen.insert(from); }
+                if from == locus {
+                    seen.insert(to);
+                } else if to == locus {
+                    seen.insert(from);
+                }
             }
             Endpoints::Symmetric { a, b } => {
-                if a == locus { seen.insert(b); }
-                else if b == locus { seen.insert(a); }
+                if a == locus {
+                    seen.insert(b);
+                } else if b == locus {
+                    seen.insert(a);
+                }
             }
         }
     }
@@ -312,9 +320,15 @@ mod tests {
     const KIND: InfluenceKindId = InfluenceKindId(1);
     const OTHER_KIND: InfluenceKindId = InfluenceKindId(2);
 
-    fn a() -> LocusId { LocusId(0) }
-    fn b() -> LocusId { LocusId(1) }
-    fn c() -> LocusId { LocusId(2) }
+    fn a() -> LocusId {
+        LocusId(0)
+    }
+    fn b() -> LocusId {
+        LocusId(1)
+    }
+    fn c() -> LocusId {
+        LocusId(2)
+    }
 
     /// Add a directed relationship with explicit weight (slot 1).
     fn add_directed(world: &mut World, from: LocusId, to: LocusId, weight: f32) {
@@ -439,7 +453,10 @@ mod tests {
     fn granger_score_perfect_lag_one() {
         let w = make_world_with_changes();
         let score = granger_score(&w, a(), b(), KIND, 1);
-        assert!((score - 1.0).abs() < 1e-6, "A always precedes B within 1 batch, got {score}");
+        assert!(
+            (score - 1.0).abs() < 1e-6,
+            "A always precedes B within 1 batch, got {score}"
+        );
     }
 
     #[test]
@@ -451,7 +468,10 @@ mod tests {
         // B at 2 — does A fire in [3,3]? Yes! A at 3. So this is 1.0, not 0.0.
         // Actually b→a lag=1: B at 2, A at 3 (within 1). So score should be 1.0 too.
         // Let's just verify it's between 0 and 1.
-        assert!((0.0..=1.0).contains(&score), "score should be in [0,1], got {score}");
+        assert!(
+            (0.0..=1.0).contains(&score),
+            "score should be in [0,1], got {score}"
+        );
     }
 
     #[test]
@@ -481,24 +501,34 @@ mod tests {
 
     #[test]
     fn granger_query_variants_dispatch_correctly() {
-        use crate::query_api::{execute, Query, QueryResult};
+        use crate::query_api::{Query, QueryResult, execute};
         let w = make_world_with_changes();
-        let result = execute(&w, &Query::GrangerScore {
-            from: a(),
-            to: b(),
-            kind: KIND,
-            lag_batches: 1,
-        });
-        let QueryResult::Score(s) = result else { panic!("expected Score") };
+        let result = execute(
+            &w,
+            &Query::GrangerScore {
+                from: a(),
+                to: b(),
+                kind: KIND,
+                lag_batches: 1,
+            },
+        );
+        let QueryResult::Score(s) = result else {
+            panic!("expected Score")
+        };
         assert!((s - 1.0).abs() < 1e-6);
 
-        let result2 = execute(&w, &Query::GrangerDominantCauses {
-            target: b(),
-            kind: KIND,
-            lag_batches: 1,
-            n: 3,
-        });
-        let QueryResult::LocusScores(scores) = result2 else { panic!("expected LocusScores") };
+        let result2 = execute(
+            &w,
+            &Query::GrangerDominantCauses {
+                target: b(),
+                kind: KIND,
+                lag_batches: 1,
+                n: 3,
+            },
+        );
+        let QueryResult::LocusScores(scores) = result2 else {
+            panic!("expected LocusScores")
+        };
         assert!(!scores.is_empty());
     }
 

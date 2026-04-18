@@ -72,10 +72,7 @@ impl NameMap {
         I: IntoIterator<Item = (LocusId, S)>,
         S: Into<String>,
     {
-        let names = pairs
-            .into_iter()
-            .map(|(id, s)| (id, s.into()))
-            .collect();
+        let names = pairs.into_iter().map(|(id, s)| (id, s.into())).collect();
         Self { names }
     }
 
@@ -126,7 +123,11 @@ pub fn to_dot_named_filtered(world: &World, names: &NameMap, kind: InfluenceKind
     to_dot_named_impl(world, names, Some(kind))
 }
 
-fn to_dot_named_impl(world: &World, names: &NameMap, filter_kind: Option<InfluenceKindId>) -> String {
+fn to_dot_named_impl(
+    world: &World,
+    names: &NameMap,
+    filter_kind: Option<InfluenceKindId>,
+) -> String {
     let mut out = String::with_capacity(512);
     out.push_str("digraph {\n");
     out.push_str("  graph [rankdir=LR];\n");
@@ -201,24 +202,34 @@ pub fn relationship_list(world: &World, names: &NameMap) -> Vec<String> {
     let mut rels: Vec<_> = world.relationships().iter().collect();
     rels.sort_by_key(|r| r.id.0);
 
-    rels.iter().map(|rel| {
-        let activity = rel.state.as_slice().first().copied().unwrap_or(0.0);
-        let weight = rel.state.as_slice().get(1).copied().unwrap_or(0.0);
-        match rel.endpoints {
-            graph_core::Endpoints::Directed { from, to } => {
-                format!(
-                    "\"{}\" → \"{}\"   activity={:.3}  weight={:.3}  kind={}",
-                    names.name(from), names.name(to), activity, weight, rel.kind.0,
-                )
+    rels.iter()
+        .map(|rel| {
+            let activity = rel.state.as_slice().first().copied().unwrap_or(0.0);
+            let weight = rel.state.as_slice().get(1).copied().unwrap_or(0.0);
+            match rel.endpoints {
+                graph_core::Endpoints::Directed { from, to } => {
+                    format!(
+                        "\"{}\" → \"{}\"   activity={:.3}  weight={:.3}  kind={}",
+                        names.name(from),
+                        names.name(to),
+                        activity,
+                        weight,
+                        rel.kind.0,
+                    )
+                }
+                graph_core::Endpoints::Symmetric { a, b } => {
+                    format!(
+                        "\"{}\" ↔ \"{}\"   activity={:.3}  weight={:.3}  kind={}",
+                        names.name(a),
+                        names.name(b),
+                        activity,
+                        weight,
+                        rel.kind.0,
+                    )
+                }
             }
-            graph_core::Endpoints::Symmetric { a, b } => {
-                format!(
-                    "\"{}\" ↔ \"{}\"   activity={:.3}  weight={:.3}  kind={}",
-                    names.name(a), names.name(b), activity, weight, rel.kind.0,
-                )
-            }
-        }
-    }).collect()
+        })
+        .collect()
 }
 
 // ─── Named entity summary ─────────────────────────────────────────────────────
@@ -257,7 +268,11 @@ impl std::fmt::Display for EntitySummary {
 /// Produce a named summary for a single entity.
 ///
 /// Returns `None` if the entity is not found.
-pub fn entity_summary(world: &World, entity_id: EntityId, names: &NameMap) -> Option<EntitySummary> {
+pub fn entity_summary(
+    world: &World,
+    entity_id: EntityId,
+    names: &NameMap,
+) -> Option<EntitySummary> {
     let entity = world.entities().get(entity_id)?;
     Some(make_summary(entity, names))
 }
@@ -327,15 +342,22 @@ fn activity_color(activity: f32) -> &'static str {
 mod tests {
     use super::*;
     use graph_core::{
-        BatchId, Entity, EntityId, EntitySnapshot, Locus, LocusId,
-        LocusKindId, StateVector,
+        BatchId, Entity, EntityId, EntitySnapshot, Locus, LocusId, LocusKindId, StateVector,
     };
     use graph_world::World;
 
     fn make_world_with_names() -> World {
         let mut w = World::new();
-        w.insert_locus(Locus::new(LocusId(0), LocusKindId(1), StateVector::from_slice(&[0.3])));
-        w.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::from_slice(&[0.7])));
+        w.insert_locus(Locus::new(
+            LocusId(0),
+            LocusKindId(1),
+            StateVector::from_slice(&[0.3]),
+        ));
+        w.insert_locus(Locus::new(
+            LocusId(1),
+            LocusKindId(1),
+            StateVector::from_slice(&[0.7]),
+        ));
         // Add names via properties.
         let mut p0 = graph_core::Properties::new();
         p0.set("name", "Alice");
@@ -381,7 +403,10 @@ mod tests {
         w.relationships_mut().insert(graph_core::Relationship {
             id: rel_id,
             kind: graph_core::InfluenceKindId(1),
-            endpoints: graph_core::Endpoints::Directed { from: LocusId(0), to: LocusId(1) },
+            endpoints: graph_core::Endpoints::Directed {
+                from: LocusId(0),
+                to: LocusId(1),
+            },
             state: StateVector::from_slice(&[0.5, 0.3]),
             lineage: graph_core::RelationshipLineage {
                 created_by: None,
@@ -409,19 +434,36 @@ mod tests {
         };
         let entity = Entity::born(EntityId(0), BatchId(1), snapshot);
         let map = NameMap::from_pairs([
-            (LocusId(0), "A"), (LocusId(1), "B"), (LocusId(2), "C"), (LocusId(3), "D"),
+            (LocusId(0), "A"),
+            (LocusId(1), "B"),
+            (LocusId(2), "C"),
+            (LocusId(3), "D"),
         ]);
         let summary = make_summary(&entity, &map);
-        assert!(summary.display_name.contains('…'), "expected truncation: {}", summary.display_name);
+        assert!(
+            summary.display_name.contains('…'),
+            "expected truncation: {}",
+            summary.display_name
+        );
     }
 
     #[test]
     fn entities_summary_sorted_by_coherence_descending() {
         let mut w = World::new();
-        let s1 = EntitySnapshot { members: vec![], member_relationships: vec![], coherence: 0.3 };
-        let s2 = EntitySnapshot { members: vec![], member_relationships: vec![], coherence: 0.9 };
-        w.entities_mut().insert(Entity::born(EntityId(0), BatchId(1), s1));
-        w.entities_mut().insert(Entity::born(EntityId(1), BatchId(1), s2));
+        let s1 = EntitySnapshot {
+            members: vec![],
+            member_relationships: vec![],
+            coherence: 0.3,
+        };
+        let s2 = EntitySnapshot {
+            members: vec![],
+            member_relationships: vec![],
+            coherence: 0.9,
+        };
+        w.entities_mut()
+            .insert(Entity::born(EntityId(0), BatchId(1), s1));
+        w.entities_mut()
+            .insert(Entity::born(EntityId(1), BatchId(1), s2));
         let map = NameMap::default();
         let summaries = entities_summary(&w, &map);
         assert_eq!(summaries[0].entity_id, EntityId(1)); // highest coherence first

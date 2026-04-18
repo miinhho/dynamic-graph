@@ -50,7 +50,8 @@ impl SchemaWorld {
     ) -> DeclaredEntityId {
         let id = DeclaredEntityId(self.next_entity_id);
         self.next_entity_id += 1;
-        self.entities.insert(id, DeclaredEntity::new(id, name, members));
+        self.entities
+            .insert(id, DeclaredEntity::new(id, name, members));
         id
     }
 

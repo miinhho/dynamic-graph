@@ -1,31 +1,51 @@
-//! Per-kind adaptive guard rail.
+//! Per-kind learnable state framework — `Learnable` trait + `PerKindLearnable<L>`.
 //!
-//! Ported from `AdaptiveStabilizer` in phase 1+2, now operating per
-//! `InfluenceKindId` instead of globally. The framing is unchanged
-//! from `docs/identity.md` and `docs/adaptive.rs`:
+//! This file generalises what `AdaptiveGuardRail` used to do privately.
+//! The pattern "for each `InfluenceKindId`, observe a stream of
+//! observations and maintain a per-kind `f32` state" recurs whenever
+//! an engine parameter is driven by what the engine sees. By factoring
+//! it out, future auto-tuning work (e.g. a reopened Phase 9 where
+//! `plasticity.learning_rate` is observation-driven) plugs in by writing
+//! a new `impl Learnable` rather than re-implementing the atomic-state /
+//! register-kind scaffolding.
 //!
-//! - Only `Diverging` shrinks the scale → tightens the guard rail.
-//! - Only `Quiescent` recovers the scale → loosens the guard rail.
-//! - All other regimes (Oscillating, LimitCycleSuspect, Settling,
-//!   Initializing) leave the scale alone — those are valid observation
-//!   modes, not failures to suppress.
+//! ## Framework
 //!
-//! Each kind has its own `AtomicU32`-held scale (bit-pattern of an
-//! f32), so `observe()` can be called from any thread without a mutex.
+//! - [`Learnable`] — describes the *semantics* of one auto-tuned value:
+//!   what observation type it consumes, what initial value a fresh kind
+//!   starts with, the [floor, ceiling] clamping range, and the update
+//!   rule.
+//! - [`PerKindLearnable<L>`] — owns the `FxHashMap<InfluenceKindId,
+//!   AtomicU32>` state. Generic over any [`Learnable`]. `observe`,
+//!   `current`, `register`, `reset`, and `reset_all` delegate to `L`'s
+//!   semantics.
 //!
-//! ## Integration pattern
+//! ## First concrete instance: `RegimeAlphaScale`
 //!
-//! ```text
-//! let guard = AdaptiveGuardRail::new(AdaptiveConfig::default());
-//! // after each tick:
-//! let metrics = engine.last_tick_metrics();
-//! history.push(metrics);
-//! let regime = classifier.classify(&history);
-//! guard.observe(kind_id, regime);
-//! // effective alpha for the next tick:
-//! let alpha = guard.effective_alpha(kind_id, base_alpha);
+//! The historical `AdaptiveGuardRail` behaviour survives intact, now as
+//! a thin newtype around `PerKindLearnable<RegimeAlphaScale>`. The
+//! regime-classifier → alpha-scale mapping (Diverging shrinks,
+//! Quiescent recovers) is captured by `RegimeAlphaScale`'s
+//! [`Learnable`] impl.
+//!
+//! ## Adding a second instance
+//!
+//! ```ignore
+//! struct MyKnob;
+//! impl Learnable for MyKnob {
+//!     type Observation = MyObservation;
+//!     fn initial() -> f32 { … }
+//!     fn clamp_range() -> (f32, f32) { … }
+//!     fn step(current: f32, obs: Self::Observation) -> f32 { … }
+//! }
+//!
+//! let learner: PerKindLearnable<MyKnob> = PerKindLearnable::new();
 //! ```
+//!
+//! No new atomic-state or register-kind boilerplate — the framework
+//! carries it.
 
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use graph_core::InfluenceKindId;
@@ -33,107 +53,189 @@ use rustc_hash::FxHashMap;
 
 use super::DynamicsRegime;
 
-/// Tuning knobs for the adaptive feedback loop.
-#[derive(Debug, Clone, Copy)]
-pub struct AdaptiveConfig {
-    /// Floor for the alpha multiplier. Effective alpha never falls
-    /// below `base_alpha * min_scale`.
-    pub min_scale: f32,
-    /// Ceiling for the alpha multiplier. Recovery never raises
-    /// effective alpha above `base_alpha * max_scale`.
-    pub max_scale: f32,
-    /// Multiplier applied when `Diverging` is observed. Must be in
-    /// `(0, 1)`.
-    pub shrink_factor: f32,
-    /// Multiplier applied when `Quiescent` is observed. Must be
-    /// `>= 1`.
-    pub recovery_factor: f32,
+// ── Framework ───────────────────────────────────────────────────────────────
+
+/// A value learned per `InfluenceKindId` from a stream of observations.
+///
+/// Implementations describe *what* they consume and *how* each
+/// observation updates the state. The generic [`PerKindLearnable<L>`]
+/// container handles atomic storage, per-kind registration, and
+/// clamping.
+pub trait Learnable {
+    /// What [`PerKindLearnable::observe`] accepts. For
+    /// [`RegimeAlphaScale`] this is [`DynamicsRegime`]; for a future
+    /// learning-rate learner it might be a distribution summary.
+    type Observation: Copy;
+
+    /// Initial value when a kind is first registered.
+    fn initial() -> f32;
+
+    /// `(floor, ceiling)` applied after each update.
+    fn clamp_range() -> (f32, f32);
+
+    /// Update rule: given the current value and an observation,
+    /// return the next value (before clamping).
+    fn step(current: f32, obs: Self::Observation) -> f32;
 }
 
-impl Default for AdaptiveConfig {
-    fn default() -> Self {
-        Self {
-            min_scale: 0.1,
-            max_scale: 1.0,
-            shrink_factor: 0.5,
-            recovery_factor: 1.1,
-        }
-    }
-}
-
-/// Per-kind adaptive alpha scales.
+/// Per-kind atomic `f32` state driven by a [`Learnable`] semantics.
 ///
 /// Maintains one `AtomicU32` (bit-pattern of a `f32`) per registered
-/// kind. Kinds are initialized to `config.max_scale` on first access
-/// via `observe` or `effective_alpha`.
-pub struct AdaptiveGuardRail {
-    config: AdaptiveConfig,
+/// kind. `observe` can be called from any thread without a mutex —
+/// it uses `Ordering::Relaxed` because the value is a soft control
+/// signal, not a synchronisation fence.
+pub struct PerKindLearnable<L: Learnable> {
     scales: FxHashMap<InfluenceKindId, AtomicU32>,
+    _phantom: PhantomData<L>,
 }
 
-impl AdaptiveGuardRail {
-    pub fn new(config: AdaptiveConfig) -> Self {
+impl<L: Learnable> Default for PerKindLearnable<L> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<L: Learnable> PerKindLearnable<L> {
+    pub fn new() -> Self {
         Self {
-            config,
             scales: FxHashMap::default(),
+            _phantom: PhantomData,
         }
     }
 
-    /// Pre-register a kind so its scale is initialized before the
-    /// first tick. Optional — the guard rail auto-initializes on first
-    /// `observe` or `effective_alpha` call too, but explicit
-    /// registration makes the "known kinds" set visible.
+    /// Pre-register a kind so its value is initialised before the first
+    /// observation. Optional — `observe` auto-skips unregistered kinds
+    /// to avoid crashing on first-seen kinds.
     pub fn register(&mut self, kind: InfluenceKindId) {
         self.scales
             .entry(kind)
-            .or_insert_with(|| AtomicU32::new(self.config.max_scale.to_bits()));
+            .or_insert_with(|| AtomicU32::new(L::initial().to_bits()));
     }
 
-    /// Apply a regime observation to one kind's scale.
+    /// Apply one observation to a kind's state.
     ///
-    /// Safe to call concurrently (uses `Relaxed` atomics — this is a
-    /// soft control signal, not a synchronization fence).
-    pub fn observe(&self, kind: InfluenceKindId, regime: DynamicsRegime) {
-        // If the kind isn't registered yet we silently skip — a new
-        // kind that hasn't been seen in the registry shouldn't crash
-        // the adaptive loop.
+    /// No-op if the kind is unregistered (soft control signal — a new
+    /// kind should not crash the adaptive loop).
+    pub fn observe(&self, kind: InfluenceKindId, obs: L::Observation) {
         let Some(atomic) = self.scales.get(&kind) else {
             return;
         };
         let current = f32::from_bits(atomic.load(Ordering::Relaxed));
-        let next = match regime {
-            DynamicsRegime::Diverging => current * self.config.shrink_factor,
-            DynamicsRegime::Quiescent => current * self.config.recovery_factor,
+        let next = L::step(current, obs);
+        let (floor, ceil) = L::clamp_range();
+        atomic.store(next.clamp(floor, ceil).to_bits(), Ordering::Relaxed);
+    }
+
+    /// Current value for `kind`. Returns `L::initial()` if the kind is
+    /// not registered (safe default — unobserved = starting value).
+    pub fn current(&self, kind: InfluenceKindId) -> f32 {
+        self.scales
+            .get(&kind)
+            .map(|a| f32::from_bits(a.load(Ordering::Relaxed)))
+            .unwrap_or_else(L::initial)
+    }
+
+    /// Reset one kind's value back to [`Learnable::initial`].
+    pub fn reset(&self, kind: InfluenceKindId) {
+        if let Some(atomic) = self.scales.get(&kind) {
+            atomic.store(L::initial().to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// Reset all registered kinds to [`Learnable::initial`].
+    pub fn reset_all(&self) {
+        for atomic in self.scales.values() {
+            atomic.store(L::initial().to_bits(), Ordering::Relaxed);
+        }
+    }
+}
+
+// ── First concrete `Learnable`: alpha scale driven by regime ────────────────
+
+/// The historical [`AdaptiveGuardRail`] semantics, expressed as a
+/// [`Learnable`]:
+///
+/// - Only [`DynamicsRegime::Diverging`] shrinks the scale (tighten
+///   the guard rail).
+/// - Only [`DynamicsRegime::Quiescent`] recovers the scale (loosen).
+/// - All other regimes leave the scale alone.
+///
+/// Constants are hard-coded (Phase 7). No benchmark used non-default
+/// values.
+pub struct RegimeAlphaScale;
+
+const MIN_SCALE: f32 = 0.1;
+const MAX_SCALE: f32 = 1.0;
+const SHRINK_FACTOR: f32 = 0.5;
+const RECOVERY_FACTOR: f32 = 1.1;
+
+impl Learnable for RegimeAlphaScale {
+    type Observation = DynamicsRegime;
+
+    fn initial() -> f32 {
+        MAX_SCALE
+    }
+
+    fn clamp_range() -> (f32, f32) {
+        (MIN_SCALE, MAX_SCALE)
+    }
+
+    fn step(current: f32, obs: DynamicsRegime) -> f32 {
+        match obs {
+            DynamicsRegime::Diverging => current * SHRINK_FACTOR,
+            DynamicsRegime::Quiescent => current * RECOVERY_FACTOR,
             DynamicsRegime::Initializing
             | DynamicsRegime::Settling
             | DynamicsRegime::Oscillating
             | DynamicsRegime::LimitCycleSuspect => current,
-        };
-        let clamped = next.clamp(self.config.min_scale, self.config.max_scale);
-        atomic.store(clamped.to_bits(), Ordering::Relaxed);
+        }
+    }
+}
+
+// ── Public surface: AdaptiveConfig (ZST) + AdaptiveGuardRail newtype ────────
+
+/// Adaptive-feedback knobs collapsed into hard-coded constants (Phase 7).
+/// Kept as a ZST so call sites that pass `AdaptiveConfig::default()`
+/// continue to compile; the constants live inside [`RegimeAlphaScale`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AdaptiveConfig;
+
+/// Per-kind adaptive alpha scales — historical API preserved.
+///
+/// Thin newtype over `PerKindLearnable<RegimeAlphaScale>`. Methods
+/// delegate straight through; the stabilization-config helpers
+/// (`effective_alpha`, `effective_stabilization_config`) live here
+/// because they are not part of the generic framework.
+pub struct AdaptiveGuardRail {
+    inner: PerKindLearnable<RegimeAlphaScale>,
+}
+
+impl AdaptiveGuardRail {
+    pub fn new(_config: AdaptiveConfig) -> Self {
+        Self {
+            inner: PerKindLearnable::new(),
+        }
     }
 
-    /// Current scale for `kind`. Returns `max_scale` if the kind is
-    /// not yet registered (safe default — unobserved = no tightening).
+    pub fn register(&mut self, kind: InfluenceKindId) {
+        self.inner.register(kind);
+    }
+
+    pub fn observe(&self, kind: InfluenceKindId, regime: DynamicsRegime) {
+        self.inner.observe(kind, regime);
+    }
+
     pub fn current_scale(&self, kind: InfluenceKindId) -> f32 {
-        self.scales
-            .get(&kind)
-            .map(|a| f32::from_bits(a.load(Ordering::Relaxed)))
-            .unwrap_or(self.config.max_scale)
+        self.inner.current(kind)
     }
 
     /// Effective alpha: `base_alpha * current_scale(kind)`.
-    ///
-    /// The caller is responsible for applying this to the kind's
-    /// `StabilizationConfig.alpha` before passing the config to the
-    /// engine, or by calling `effective_stabilization_config()`.
     pub fn effective_alpha(&self, kind: InfluenceKindId, base_alpha: f32) -> f32 {
         base_alpha * self.current_scale(kind)
     }
 
-    /// Return a copy of `base_config` with alpha replaced by
-    /// `effective_alpha(kind, base_config.alpha)`. Convenience wrapper
-    /// for building the per-tick config to hand to the engine.
+    /// Return a copy of `base_config` with `alpha` replaced by
+    /// `effective_alpha(kind, base_config.alpha)`.
     pub fn effective_stabilization_config(
         &self,
         kind: InfluenceKindId,
@@ -141,24 +243,16 @@ impl AdaptiveGuardRail {
     ) -> graph_core::StabilizationConfig {
         graph_core::StabilizationConfig {
             alpha: self.effective_alpha(kind, base_config.alpha),
-            ..base_config.clone()
+            ..*base_config
         }
     }
 
-    /// Reset one kind's scale back to `max_scale`. Useful after a
-    /// world reset or an external command that invalidates prior
-    /// history (mirrors `AdaptiveStabilizer::reset()` from phase 1+2).
     pub fn reset(&self, kind: InfluenceKindId) {
-        if let Some(atomic) = self.scales.get(&kind) {
-            atomic.store(self.config.max_scale.to_bits(), Ordering::Relaxed);
-        }
+        self.inner.reset(kind);
     }
 
-    /// Reset all registered kinds to `max_scale`.
     pub fn reset_all(&self) {
-        for atomic in self.scales.values() {
-            atomic.store(self.config.max_scale.to_bits(), Ordering::Relaxed);
-        }
+        self.inner.reset_all();
     }
 }
 
@@ -230,12 +324,13 @@ mod tests {
             g.observe(k, DynamicsRegime::Diverging);
         }
         // scale = 1.0 * 0.5 * 0.5 = 0.25
-        let base = graph_core::StabilizationConfig {
-            alpha: 0.8,
-            ..Default::default()
-        };
+        let base = graph_core::StabilizationConfig { alpha: 0.8 };
         let effective = g.effective_stabilization_config(k, &base);
-        assert!((effective.alpha - 0.2).abs() < 1e-5, "alpha={}", effective.alpha);
+        assert!(
+            (effective.alpha - 0.2).abs() < 1e-5,
+            "alpha={}",
+            effective.alpha
+        );
     }
 
     #[test]

@@ -28,7 +28,9 @@ fn is_feedback_in_dag(
     target_locus: LocusId,
     max_hops: u32,
 ) -> bool {
-    let Some(start) = log.get(start_id) else { return false };
+    let Some(start) = log.get(start_id) else {
+        return false;
+    };
     let mut stack: Vec<(ChangeId, u32)> = start
         .predecessors
         .iter()
@@ -111,13 +113,13 @@ pub(crate) enum TimingOrder {
 /// One Hebbian/STDP plasticity observation collected during a batch.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PlasticityObs {
-    pub(crate) rel_id:      graph_core::RelationshipId,
-    pub(crate) kind:        graph_core::InfluenceKindId,
-    pub(crate) pre:         f32,
-    pub(crate) post:        f32,
-    pub(crate) timing:      TimingOrder,
+    pub(crate) rel_id: graph_core::RelationshipId,
+    pub(crate) kind: graph_core::InfluenceKindId,
+    pub(crate) pre: f32,
+    pub(crate) post: f32,
+    pub(crate) timing: TimingOrder,
     /// The postsynaptic locus — needed by the BCM rule to read/update θ_M.
-    pub(crate) post_locus:  graph_core::LocusId,
+    pub(crate) post_locus: graph_core::LocusId,
 }
 
 /// Pre-resolved emergence decision for one cross-locus predecessor.
@@ -145,10 +147,7 @@ pub(crate) enum EmergenceResolution {
         /// update in the apply phase.
         pre_signal: f32,
         activity_contribution: f32,
-        max_activity: Option<f32>,
     },
-    /// Blocked by `min_emerge_activity` — no relationship change needed.
-    Blocked,
 }
 
 /// A cross-locus predecessor extracted in the compute phase.
@@ -201,7 +200,6 @@ pub(crate) fn resolve_emergence(
     pre_signal: f32,
 ) -> EmergenceResolution {
     let activity_contribution = cfg.map(|c| c.activity_contribution).unwrap_or(1.0);
-    let max_activity          = cfg.and_then(|c| c.max_activity);
 
     let endpoints = if cfg.map(|c| c.symmetric).unwrap_or(false) {
         Endpoints::Symmetric { a: from, b: to }
@@ -211,26 +209,17 @@ pub(crate) fn resolve_emergence(
     let key = endpoints.key();
     let store = world.relationships();
 
-    debug_assert!(cfg.is_some(), "resolve_emergence: InfluenceKindId {kind:?} is not registered — call influence_registry.register() before ticking");
+    debug_assert!(
+        cfg.is_some(),
+        "resolve_emergence: InfluenceKindId {kind:?} is not registered — call influence_registry.register() before ticking"
+    );
 
-    // Single lookup reused for both the min_emerge gate and the Update/Create branch.
     let existing = store.lookup(&key, kind);
 
-    // min_emerge_activity gate — only blocks *creation* of new relationships.
-    let min_emerge = cfg.map(|c| c.min_emerge_activity).unwrap_or(0.0);
-    if min_emerge > 0.0 && existing.is_none() && pre_signal.abs() < min_emerge {
-        return EmergenceResolution::Blocked;
-    }
-
     if let Some(rel_id) = existing {
-        // Decay and activity contribution are applied in-place during the
-        // sequential apply phase (no allocation here).
         EmergenceResolution::Update { rel_id }
     } else {
-        let initial_activity = {
-            let a = activity_contribution * pre_signal.abs();
-            match max_activity { Some(cap) => a.clamp(-cap, cap), None => a }
-        };
+        let initial_activity = activity_contribution * pre_signal.abs();
         let mut values = vec![initial_activity, 0.0f32];
         for slot in resolved_slots {
             values.push(slot.default);
@@ -241,7 +230,6 @@ pub(crate) fn resolve_emergence(
             initial_state: StateVector::from_slice(&values),
             pre_signal,
             activity_contribution,
-            max_activity,
         }
     }
 }
@@ -405,16 +393,31 @@ pub(crate) fn compute_pending_change(
     world: &World,
     influence_registry: &InfluenceKindRegistry,
 ) -> ComputedChange {
-    let PendingChange { proposed, derived_predecessors } = pending;
+    let PendingChange {
+        proposed,
+        derived_predecessors,
+    } = pending;
     let mut predecessors = derived_predecessors;
     predecessors.extend(proposed.extra_predecessors.iter().copied());
     let kind = proposed.kind;
 
     match proposed.subject {
-        ChangeSubject::Locus(locus_id) =>
-            compute_locus_change(locus_id, kind, predecessors, proposed, world, influence_registry),
-        ChangeSubject::Relationship(rel_id) =>
-            compute_relationship_change(rel_id, kind, predecessors, proposed, world, influence_registry),
+        ChangeSubject::Locus(locus_id) => compute_locus_change(
+            locus_id,
+            kind,
+            predecessors,
+            proposed,
+            world,
+            influence_registry,
+        ),
+        ChangeSubject::Relationship(rel_id) => compute_relationship_change(
+            rel_id,
+            kind,
+            predecessors,
+            proposed,
+            world,
+            influence_registry,
+        ),
     }
 }
 
@@ -435,9 +438,7 @@ fn compute_locus_change(
         .iter()
         .filter_map(|pid| world.log().get(*pid))
         .filter_map(|pred| match pred.subject {
-            ChangeSubject::Locus(pl)
-                if pl != locus_id && world.locus(pl).is_some() =>
-            {
+            ChangeSubject::Locus(pl) if pl != locus_id && world.locus(pl).is_some() => {
                 let pre = pred.after.as_slice().first().copied().unwrap_or(0.0);
                 Some((pl, pre, pred.batch, pred.id))
             }
@@ -488,23 +489,33 @@ fn compute_locus_change(
                 let from_kind = world.locus(from_locus).map(|l| l.kind);
                 let to_kind = world.locus(locus_id).map(|l| l.kind);
                 match (from_kind, to_kind) {
-                    (Some(fk), Some(tk)) if !cfg.allows_endpoint_kinds(fk, tk) => {
-                        Some((fk, tk))
-                    }
+                    (Some(fk), Some(tk)) if !cfg.allows_endpoint_kinds(fk, tk) => Some((fk, tk)),
                     _ => None,
                 }
             } else {
                 None
             };
             let emergence = resolve_emergence(
-                world, from_locus, locus_id, kind,
-                kind_cfg, &resolved_slots, pre_signal,
+                world,
+                from_locus,
+                locus_id,
+                kind,
+                kind_cfg,
+                &resolved_slots,
+                pre_signal,
             );
-            let is_feedback = kind_cfg
-                .map(|k| k.plasticity.stdp && k.plasticity.is_active())
-                .unwrap_or(false)
-                && is_feedback_in_dag(world.log(), pred_change_id, locus_id, STDP_MAX_FEEDBACK_HOPS);
-            CrossLocusPred { from_locus, pre_signal, pred_batch, pred_change_id, is_feedback, schema_violation, emergence }
+            // STDP removed in Phase 3 — feedback detection no longer drives
+            // LTD. Kept as `false` so downstream consumers don't diverge.
+            let is_feedback = false;
+            CrossLocusPred {
+                from_locus,
+                pre_signal,
+                pred_batch,
+                pred_change_id,
+                is_feedback,
+                schema_violation,
+                emergence,
+            }
         })
         .collect();
     ComputedChange::Locus(ComputedLocusChange {
@@ -543,17 +554,18 @@ fn compute_relationship_change(
         None => return ComputedChange::Elided,
     };
     let raw_after = match proposed.slot_patches {
-        Some(patches) => patches
-            .into_iter()
-            .fold(before.clone(), |s, (idx, delta)| s.with_slot_delta(idx, delta)),
+        Some(patches) => patches.into_iter().fold(before.clone(), |s, (idx, delta)| {
+            s.with_slot_delta(idx, delta)
+        }),
         None => proposed.after,
     };
     let stabilized_after = match influence_registry.get(kind) {
         Some(cfg) => cfg.stabilization.stabilize(&before, raw_after),
         None => raw_after,
     };
-    let has_subscribers =
-        world.subscriptions().has_any_subscribers(rel_id, kind, from, to);
+    let has_subscribers = world
+        .subscriptions()
+        .has_any_subscribers(rel_id, kind, from, to);
     ComputedChange::Relationship(ComputedRelChange {
         rel_id,
         kind,
@@ -567,7 +579,6 @@ fn compute_relationship_change(
         has_subscribers,
     })
 }
-
 
 /// Apply structural proposals collected during a batch's program-dispatch phase.
 ///
@@ -610,7 +621,12 @@ pub(crate) fn apply_structural_proposals(
 
     for proposal in proposals {
         match proposal {
-            StructuralProposal::CreateRelationship { endpoints, kind, initial_activity, initial_state } => {
+            StructuralProposal::CreateRelationship {
+                endpoints,
+                kind,
+                initial_activity,
+                initial_state,
+            } => {
                 let key = endpoints.key();
                 let store = world.relationships_mut();
                 if let Some(rel_id) = store.lookup(&key, kind) {
@@ -620,7 +636,11 @@ pub(crate) fn apply_structural_proposals(
                         .map(|c| c.activity_contribution)
                         .unwrap_or(1.0);
                     let rel = store.get_mut(rel_id).expect("indexed id must exist");
-                    if let Some(a) = rel.state.as_mut_slice().get_mut(Relationship::ACTIVITY_SLOT) {
+                    if let Some(a) = rel
+                        .state
+                        .as_mut_slice()
+                        .get_mut(Relationship::ACTIVITY_SLOT)
+                    {
                         *a += contribution;
                     }
                     rel.lineage.change_count += 1;
@@ -665,28 +685,46 @@ pub(crate) fn apply_structural_proposals(
                 let specific_subs = world.subscriptions_mut().remove_relationship(rel_id);
                 world.relationships_mut().remove(rel_id);
                 if let Some(kind) = rel_kind {
-                    tombstones.extend(
-                        make_tombstones(world, rel_id, kind, specific_subs),
-                    );
+                    tombstones.extend(make_tombstones(world, rel_id, kind, specific_subs));
                 }
             }
             StructuralProposal::SubscribeToRelationship { subscriber, rel_id } => {
-                world.subscriptions_mut().subscribe_at(subscriber, rel_id, Some(batch_id));
+                world
+                    .subscriptions_mut()
+                    .subscribe_at(subscriber, rel_id, Some(batch_id));
             }
             StructuralProposal::UnsubscribeFromRelationship { subscriber, rel_id } => {
-                world.subscriptions_mut().unsubscribe_at(subscriber, rel_id, Some(batch_id));
+                world
+                    .subscriptions_mut()
+                    .unsubscribe_at(subscriber, rel_id, Some(batch_id));
             }
             StructuralProposal::SubscribeToKind { subscriber, kind } => {
-                world.subscriptions_mut().subscribe_to_kind(subscriber, kind);
+                world
+                    .subscriptions_mut()
+                    .subscribe_to_kind(subscriber, kind);
             }
             StructuralProposal::UnsubscribeFromKind { subscriber, kind } => {
-                world.subscriptions_mut().unsubscribe_from_kind(subscriber, kind);
+                world
+                    .subscriptions_mut()
+                    .unsubscribe_from_kind(subscriber, kind);
             }
-            StructuralProposal::SubscribeToAnchorKind { subscriber, anchor, kind } => {
-                world.subscriptions_mut().subscribe_to_anchor_kind(subscriber, anchor, kind);
+            StructuralProposal::SubscribeToAnchorKind {
+                subscriber,
+                anchor,
+                kind,
+            } => {
+                world
+                    .subscriptions_mut()
+                    .subscribe_to_anchor_kind(subscriber, anchor, kind);
             }
-            StructuralProposal::UnsubscribeFromAnchorKind { subscriber, anchor, kind } => {
-                world.subscriptions_mut().unsubscribe_from_anchor_kind(subscriber, anchor, kind);
+            StructuralProposal::UnsubscribeFromAnchorKind {
+                subscriber,
+                anchor,
+                kind,
+            } => {
+                world
+                    .subscriptions_mut()
+                    .unsubscribe_from_anchor_kind(subscriber, anchor, kind);
             }
             StructuralProposal::DeleteLocus { locus_id } => {
                 // Collect all relationship ids touching this locus first to avoid
@@ -714,10 +752,16 @@ pub(crate) fn apply_structural_proposals(
                 world.subscriptions_mut().remove_anchor_locus(locus_id);
                 world.properties_mut().remove(locus_id);
                 world.names_mut().remove(locus_id);
-                world.bcm_thresholds_mut().remove(&locus_id);
+                // BCM removed in Phase 3 — no per-locus threshold to clean up.
                 world.loci_mut().remove(locus_id);
             }
-            StructuralProposal::CreateLocus { locus_id, kind, state, name, properties } => {
+            StructuralProposal::CreateLocus {
+                locus_id,
+                kind,
+                state,
+                name,
+                properties,
+            } => {
                 // Resolve the target ID: explicit or auto-assigned.
                 let id = locus_id.unwrap_or_else(|| world.loci().next_id());
                 world.insert_locus(Locus::new(id, kind, state));
@@ -793,9 +837,11 @@ pub(crate) struct PartitionAccumulator {
     pub plasticity_obs: Vec<PlasticityObs>,
     pub structural_proposals: Vec<StructuralProposal>,
     /// (endpoint_key → (kinds_touched, rel_ids)) for interaction effects.
-    pub batch_kind_touches: FxHashMap<EndpointKey, (FxHashSet<InfluenceKindId>, FxHashSet<RelationshipId>)>,
+    pub batch_kind_touches:
+        FxHashMap<EndpointKey, (FxHashSet<InfluenceKindId>, FxHashSet<RelationshipId>)>,
     /// (rel_id, change_id, kind, from, to) — resolved to subscribers after Apply.
-    pub pending_rel_notifications: Vec<(RelationshipId, ChangeId, InfluenceKindId, LocusId, LocusId)>,
+    pub pending_rel_notifications:
+        Vec<(RelationshipId, ChangeId, InfluenceKindId, LocusId, LocusId)>,
     pub events: Vec<WorldEvent>,
 }
 
@@ -827,19 +873,17 @@ impl PartitionAccumulator {
         self.pending_rel_notifications.clear();
         self.events.clear();
     }
-
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry::InfluenceKindRegistry;
     use graph_core::{
-        ChangeSubject, Endpoints, InfluenceKindId, KindObservation, Locus, LocusId,
-        LocusKindId, ProposedChange, Relationship, RelationshipId, RelationshipLineage,
-        StateVector,
+        ChangeSubject, Endpoints, InfluenceKindId, KindObservation, Locus, LocusId, LocusKindId,
+        ProposedChange, Relationship, RelationshipId, RelationshipLineage, StateVector,
     };
     use graph_world::World;
-    use crate::registry::InfluenceKindRegistry;
 
     fn pending(subject: ChangeSubject, after: StateVector) -> PendingChange {
         PendingChange {
@@ -859,7 +903,10 @@ mod tests {
 
     fn reg() -> InfluenceKindRegistry {
         let mut r = InfluenceKindRegistry::new();
-        r.insert(InfluenceKindId(1), crate::registry::InfluenceKindConfig::new("t"));
+        r.insert(
+            InfluenceKindId(1),
+            crate::registry::InfluenceKindConfig::new("t"),
+        );
         r
     }
 
@@ -867,10 +914,15 @@ mod tests {
     fn locus_change_captures_before_and_after() {
         let mut world = World::new();
         world.insert_locus(Locus::new(
-            LocusId(1), LocusKindId(0), StateVector::from_slice(&[0.5]),
+            LocusId(1),
+            LocusKindId(0),
+            StateVector::from_slice(&[0.5]),
         ));
 
-        let p = pending(ChangeSubject::Locus(LocusId(1)), StateVector::from_slice(&[1.0]));
+        let p = pending(
+            ChangeSubject::Locus(LocusId(1)),
+            StateVector::from_slice(&[1.0]),
+        );
         let result = compute_pending_change(p, &world, &reg());
 
         match result {
@@ -879,14 +931,20 @@ mod tests {
                 assert!((c.before.as_slice()[0] - 0.5).abs() < 1e-6);
                 assert!((c.after.as_slice()[0] - 1.0).abs() < 1e-6);
             }
-            other => panic!("expected Locus variant, got {:?}", std::mem::discriminant(&other)),
+            other => panic!(
+                "expected Locus variant, got {:?}",
+                std::mem::discriminant(&other)
+            ),
         }
     }
 
     #[test]
     fn locus_change_elided_when_locus_missing() {
         let world = World::new(); // empty — no loci
-        let p = pending(ChangeSubject::Locus(LocusId(99)), StateVector::from_slice(&[1.0]));
+        let p = pending(
+            ChangeSubject::Locus(LocusId(99)),
+            StateVector::from_slice(&[1.0]),
+        );
         let result = compute_pending_change(p, &world, &reg());
         assert!(matches!(result, ComputedChange::Elided));
     }
@@ -894,21 +952,30 @@ mod tests {
     #[test]
     fn relationship_change_captures_before_and_after() {
         let mut world = World::new();
-        world.insert_locus(Locus::new(LocusId(1), LocusKindId(0), StateVector::zeros(1)));
-        world.insert_locus(Locus::new(LocusId(2), LocusKindId(0), StateVector::zeros(1)));
+        world.insert_locus(Locus::new(
+            LocusId(1),
+            LocusKindId(0),
+            StateVector::zeros(1),
+        ));
+        world.insert_locus(Locus::new(
+            LocusId(2),
+            LocusKindId(0),
+            StateVector::zeros(1),
+        ));
         let rel_id = world.relationships_mut().mint_id();
         world.relationships_mut().insert(Relationship {
             id: rel_id,
             kind: InfluenceKindId(1),
-            endpoints: Endpoints::Symmetric { a: LocusId(1), b: LocusId(2) },
+            endpoints: Endpoints::Symmetric {
+                a: LocusId(1),
+                b: LocusId(2),
+            },
             state: StateVector::from_slice(&[2.0, 0.0]),
             lineage: RelationshipLineage {
                 created_by: None,
                 last_touched_by: None,
                 change_count: 1,
-                kinds_observed: smallvec::smallvec![
-                    KindObservation::synthetic(InfluenceKindId(1))
-                ],
+                kinds_observed: smallvec::smallvec![KindObservation::synthetic(InfluenceKindId(1))],
             },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
@@ -927,7 +994,10 @@ mod tests {
                 assert!((c.before.as_slice()[0] - 2.0).abs() < 1e-6);
                 assert!((c.after.as_slice()[0] - 3.0).abs() < 1e-6);
             }
-            other => panic!("expected Relationship variant, got {:?}", std::mem::discriminant(&other)),
+            other => panic!(
+                "expected Relationship variant, got {:?}",
+                std::mem::discriminant(&other)
+            ),
         }
     }
 }

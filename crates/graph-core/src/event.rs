@@ -19,15 +19,9 @@ pub enum WorldEvent {
         member_count: usize,
     },
     /// An active entity became dormant.
-    EntityDormant {
-        entity: EntityId,
-        batch: BatchId,
-    },
+    EntityDormant { entity: EntityId, batch: BatchId },
     /// A dormant entity was revived.
-    EntityRevived {
-        entity: EntityId,
-        batch: BatchId,
-    },
+    EntityRevived { entity: EntityId, batch: BatchId },
     /// An entity split into offspring.
     EntitySplit {
         source: EntityId,
@@ -58,9 +52,7 @@ pub enum WorldEvent {
         trigger_change_id: ChangeId,
     },
     /// A relationship was auto-pruned due to low activity.
-    RelationshipPruned {
-        relationship: RelationshipId,
-    },
+    RelationshipPruned { relationship: RelationshipId },
     /// A relationship of `kind` emerged between loci whose kinds are not
     /// listed in `applies_between` for that influence kind.
     /// Soft violation — the relationship is still created; this is advisory.

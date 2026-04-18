@@ -27,12 +27,12 @@
 //! are expressed in these versions, making point-in-time queries reproducible
 //! without tying them to the dynamic world's clock.
 
-pub mod fact;
 pub mod entity;
+pub mod fact;
 pub mod store;
 pub mod world;
 
-pub use fact::{DeclaredFact, DeclaredFactId, DeclaredRelKind};
 pub use entity::{DeclaredEntity, DeclaredEntityId};
+pub use fact::{DeclaredFact, DeclaredFactId, DeclaredRelKind};
 pub use store::DeclarationStore;
 pub use world::SchemaWorld;

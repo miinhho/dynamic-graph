@@ -103,9 +103,7 @@ impl LlmClient for AnthropicClient {
 
         let text = resp_body["content"][0]["text"]
             .as_str()
-            .ok_or_else(|| {
-                LlmError::ParseError("missing content[0].text in response".to_owned())
-            })?
+            .ok_or_else(|| LlmError::ParseError("missing content[0].text in response".to_owned()))?
             .to_owned();
 
         Ok(text)
@@ -190,9 +188,7 @@ impl LlmClient for OllamaClient {
 
         let text = resp_body["message"]["content"]
             .as_str()
-            .ok_or_else(|| {
-                LlmError::ParseError("missing message.content in response".to_owned())
-            })?
+            .ok_or_else(|| LlmError::ParseError("missing message.content in response".to_owned()))?
             .to_owned();
 
         Ok(text)

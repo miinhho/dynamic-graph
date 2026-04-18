@@ -51,8 +51,8 @@ use std::cell::Cell;
 use std::path::Path;
 
 use graph_core::{
-    BatchId, Change, ChangeId, Entity, EntityId, Locus, LocusId, Properties,
-    Relationship, RelationshipId,
+    BatchId, Change, ChangeId, Entity, EntityId, Locus, LocusId, Properties, Relationship,
+    RelationshipId,
 };
 use graph_world::World;
 use redb::{Database, ReadableMultimapTable, ReadableTable, ReadableTableMetadata};
@@ -144,7 +144,6 @@ impl Storage {
         })
     }
 
-
     /// Open or create a database, dropping and recreating it on schema mismatch.
     ///
     /// Use this during development: schema changes are frequent and migration
@@ -173,32 +172,101 @@ impl Storage {
     pub fn reset(&self) -> Result<(), StorageError> {
         let txn = self.db.begin_write()?;
         {
-            { let mut t = txn.open_table(LOCI)?; while let Some(g) = t.pop_last()? { drop(g); } }
-            { let mut t = txn.open_table(RELATIONSHIPS)?; while let Some(g) = t.pop_last()? { drop(g); } }
-            { let mut t = txn.open_table(ENTITIES)?; while let Some(g) = t.pop_last()? { drop(g); } }
-            { let mut t = txn.open_table(CHANGES)?; while let Some(g) = t.pop_last()? { drop(g); } }
+            {
+                let mut t = txn.open_table(LOCI)?;
+                while let Some(g) = t.pop_last()? {
+                    drop(g);
+                }
+            }
+            {
+                let mut t = txn.open_table(RELATIONSHIPS)?;
+                while let Some(g) = t.pop_last()? {
+                    drop(g);
+                }
+            }
+            {
+                let mut t = txn.open_table(ENTITIES)?;
+                while let Some(g) = t.pop_last()? {
+                    drop(g);
+                }
+            }
+            {
+                let mut t = txn.open_table(CHANGES)?;
+                while let Some(g) = t.pop_last()? {
+                    drop(g);
+                }
+            }
             {
                 let mut t = txn.open_multimap_table(CHANGES_BY_BATCH)?;
-                let keys: Vec<u64> = { let mut k = Vec::new(); let mut it = t.iter()?; while let Some(e) = it.next() { k.push(e?.0.value()); } k };
-                for key in keys { t.remove_all(key)?; }
+                let keys: Vec<u64> = {
+                    let mut k = Vec::new();
+                    let mut it = t.iter()?;
+                    while let Some(e) = it.next() {
+                        k.push(e?.0.value());
+                    }
+                    k
+                };
+                for key in keys {
+                    t.remove_all(key)?;
+                }
             }
-            { let mut t = txn.open_table(PROPERTIES)?; while let Some(g) = t.pop_last()? { drop(g); } }
-            { let mut t = txn.open_table(NAMES)?; while let Some(g) = t.pop_last()? { drop(g); } }
-            { let mut t = txn.open_table(ALIASES)?; while let Some(g) = t.pop_last()? { drop(g); } }
+            {
+                let mut t = txn.open_table(PROPERTIES)?;
+                while let Some(g) = t.pop_last()? {
+                    drop(g);
+                }
+            }
+            {
+                let mut t = txn.open_table(NAMES)?;
+                while let Some(g) = t.pop_last()? {
+                    drop(g);
+                }
+            }
+            {
+                let mut t = txn.open_table(ALIASES)?;
+                while let Some(g) = t.pop_last()? {
+                    drop(g);
+                }
+            }
             {
                 let mut t = txn.open_multimap_table(SUBSCRIPTIONS)?;
-                let keys: Vec<u64> = { let mut k = Vec::new(); let mut it = t.iter()?; while let Some(e) = it.next() { k.push(e?.0.value()); } k };
-                for key in keys { t.remove_all(key)?; }
+                let keys: Vec<u64> = {
+                    let mut k = Vec::new();
+                    let mut it = t.iter()?;
+                    while let Some(e) = it.next() {
+                        k.push(e?.0.value());
+                    }
+                    k
+                };
+                for key in keys {
+                    t.remove_all(key)?;
+                }
             }
             {
                 let mut t = txn.open_multimap_table(REL_BY_LOCUS)?;
-                let keys: Vec<u64> = { let mut k = Vec::new(); let mut it = t.iter()?; while let Some(e) = it.next() { k.push(e?.0.value()); } k };
-                for key in keys { t.remove_all(key)?; }
+                let keys: Vec<u64> = {
+                    let mut k = Vec::new();
+                    let mut it = t.iter()?;
+                    while let Some(e) = it.next() {
+                        k.push(e?.0.value());
+                    }
+                    k
+                };
+                for key in keys {
+                    t.remove_all(key)?;
+                }
             }
-            { let mut t = txn.open_table(BCM_THRESHOLDS)?; while let Some(g) = t.pop_last()? { drop(g); } }
+            {
+                let mut t = txn.open_table(BCM_THRESHOLDS)?;
+                while let Some(g) = t.pop_last()? {
+                    drop(g);
+                }
+            }
             let mut meta = txn.open_table(META)?;
             // Clear all meta keys.
-            while let Some(g) = meta.pop_last()? { drop(g); }
+            while let Some(g) = meta.pop_last()? {
+                drop(g);
+            }
             meta.insert(META_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION)?;
         }
         txn.commit()?;
@@ -226,15 +294,21 @@ impl Storage {
             }
             {
                 let mut t = txn.open_table(RELATIONSHIPS)?;
-                while let Some(g) = t.pop_last()? { drop(g); }
+                while let Some(g) = t.pop_last()? {
+                    drop(g);
+                }
             }
             {
                 let mut t = txn.open_table(ENTITIES)?;
-                while let Some(g) = t.pop_last()? { drop(g); }
+                while let Some(g) = t.pop_last()? {
+                    drop(g);
+                }
             }
             {
                 let mut t = txn.open_table(CHANGES)?;
-                while let Some(g) = t.pop_last()? { drop(g); }
+                while let Some(g) = t.pop_last()? {
+                    drop(g);
+                }
             }
             {
                 let mut t = txn.open_multimap_table(CHANGES_BY_BATCH)?;
@@ -255,15 +329,21 @@ impl Storage {
             }
             {
                 let mut t = txn.open_table(PROPERTIES)?;
-                while let Some(g) = t.pop_last()? { drop(g); }
+                while let Some(g) = t.pop_last()? {
+                    drop(g);
+                }
             }
             {
                 let mut t = txn.open_table(NAMES)?;
-                while let Some(g) = t.pop_last()? { drop(g); }
+                while let Some(g) = t.pop_last()? {
+                    drop(g);
+                }
             }
             {
                 let mut t = txn.open_table(ALIASES)?;
-                while let Some(g) = t.pop_last()? { drop(g); }
+                while let Some(g) = t.pop_last()? {
+                    drop(g);
+                }
             }
             {
                 let mut t = txn.open_multimap_table(SUBSCRIPTIONS)?;
@@ -314,7 +394,8 @@ impl Storage {
                     t.insert(rel.id.0, bytes.as_slice())?;
                     insert_rel_by_locus(&mut idx, rel)?;
                 }
-                self.last_relationship_gen.set(world.relationships().generation());
+                self.last_relationship_gen
+                    .set(world.relationships().generation());
             }
 
             // Write entities.
@@ -365,13 +446,16 @@ impl Storage {
                 for (rel_id, locus_id) in world.subscriptions().iter() {
                     t.insert(locus_id.0, rel_id.0)?;
                 }
-                self.last_subscription_gen.set(world.subscriptions().generation());
+                self.last_subscription_gen
+                    .set(world.subscriptions().generation());
             }
 
             // Write BCM thresholds (clear then write all).
             {
                 let mut t = txn.open_table(BCM_THRESHOLDS)?;
-                while let Some(g) = t.pop_last()? { drop(g); }
+                while let Some(g) = t.pop_last()? {
+                    drop(g);
+                }
                 for (&id, &theta) in world.bcm_thresholds() {
                     let bytes = postcard::to_allocvec(&theta)?;
                     t.insert(id.0, bytes.as_slice())?;
@@ -402,14 +486,12 @@ impl Storage {
         // Read meta first to check if DB has data.
         {
             let t = txn.open_table(META)?;
-            let batch = t.get(META_CURRENT_BATCH)?
+            let batch = t.get(META_CURRENT_BATCH)?.ok_or(StorageError::Empty)?;
+            let next_cid = t.get(META_NEXT_CHANGE_ID)?.ok_or(StorageError::Empty)?;
+            let next_rid = t
+                .get(META_NEXT_RELATIONSHIP_ID)?
                 .ok_or(StorageError::Empty)?;
-            let next_cid = t.get(META_NEXT_CHANGE_ID)?
-                .ok_or(StorageError::Empty)?;
-            let next_rid = t.get(META_NEXT_RELATIONSHIP_ID)?
-                .ok_or(StorageError::Empty)?;
-            let next_eid = t.get(META_NEXT_ENTITY_ID)?
-                .ok_or(StorageError::Empty)?;
+            let next_eid = t.get(META_NEXT_ENTITY_ID)?.ok_or(StorageError::Empty)?;
 
             let meta = graph_world::WorldMeta {
                 current_batch: BatchId(batch.value()),
@@ -481,7 +563,9 @@ impl Storage {
             let mut iter = t.iter()?;
             while let Some(entry) = iter.next() {
                 let (key, val) = entry?;
-                world.names_mut().insert(key.value().to_owned(), LocusId(val.value()));
+                world
+                    .names_mut()
+                    .insert(key.value().to_owned(), LocusId(val.value()));
             }
         }
         {
@@ -489,7 +573,9 @@ impl Storage {
             let mut iter = t.iter()?;
             while let Some(entry) = iter.next() {
                 let (key, val) = entry?;
-                world.names_mut().add_alias(key.value().to_owned(), LocusId(val.value()));
+                world
+                    .names_mut()
+                    .add_alias(key.value().to_owned(), LocusId(val.value()));
             }
         }
 
@@ -514,14 +600,18 @@ impl Storage {
             while let Some(entry) = iter.next() {
                 let (key, val) = entry?;
                 let theta: f32 = postcard::from_bytes(val.value())?;
-                world.bcm_thresholds_mut().insert(LocusId(key.value()), theta);
+                world
+                    .bcm_thresholds_mut()
+                    .insert(LocusId(key.value()), theta);
             }
         }
 
         // Sync generations so the first commit_batch() after load skips
         // tables that haven't changed.
-        self.last_subscription_gen.set(world.subscriptions().generation());
-        self.last_relationship_gen.set(world.relationships().generation());
+        self.last_subscription_gen
+            .set(world.subscriptions().generation());
+        self.last_relationship_gen
+            .set(world.relationships().generation());
         self.last_entity_gen.set(world.entities().generation());
 
         Ok(world)
@@ -587,7 +677,9 @@ impl Storage {
                     let mut t = txn.open_table(RELATIONSHIPS)?;
                     let mut idx = txn.open_multimap_table(REL_BY_LOCUS)?;
                     for rel in world.relationships().iter() {
-                        let dominated_by_this_batch = rel.lineage.created_by
+                        let dominated_by_this_batch = rel
+                            .lineage
+                            .created_by
                             .or(rel.lineage.last_touched_by)
                             .and_then(|cid| world.log().get(cid))
                             .is_some_and(|c| c.batch == committed_batch);
@@ -608,7 +700,11 @@ impl Storage {
                 if current_entity_gen != self.last_entity_gen.get() {
                     let mut t = txn.open_table(ENTITIES)?;
                     for entity in world.entities().iter() {
-                        if entity.layers.last().is_some_and(|l| l.batch == committed_batch) {
+                        if entity
+                            .layers
+                            .last()
+                            .is_some_and(|l| l.batch == committed_batch)
+                        {
                             let bytes = postcard::to_allocvec(entity)?;
                             t.insert(entity.id.0, bytes.as_slice())?;
                         }
@@ -725,7 +821,10 @@ impl Storage {
         Ok(out)
     }
 
-    pub fn get_relationship(&self, id: RelationshipId) -> Result<Option<Relationship>, StorageError> {
+    pub fn get_relationship(
+        &self,
+        id: RelationshipId,
+    ) -> Result<Option<Relationship>, StorageError> {
         let txn = self.db.begin_read()?;
         let t = txn.open_table(RELATIONSHIPS)?;
         match t.get(id.0)? {
@@ -891,9 +990,17 @@ mod tests {
         let id0 = LocusId(0);
         let id1 = LocusId(1);
         world.insert_locus(Locus::new(id0, LocusKindId(1), StateVector::zeros(2)));
-        world.insert_locus(Locus::new(id1, LocusKindId(1), StateVector::from_slice(&[0.5, 1.0])));
-        world.properties_mut().insert(id0, props! { "name" => "Alpha", "score" => 0.8_f64 });
-        world.properties_mut().insert(id1, props! { "name" => "Beta" });
+        world.insert_locus(Locus::new(
+            id1,
+            LocusKindId(1),
+            StateVector::from_slice(&[0.5, 1.0]),
+        ));
+        world
+            .properties_mut()
+            .insert(id0, props! { "name" => "Alpha", "score" => 0.8_f64 });
+        world
+            .properties_mut()
+            .insert(id1, props! { "name" => "Beta" });
         world.names_mut().insert("Alpha", id0);
         world.names_mut().insert("Beta", id1);
         world.names_mut().add_alias("A", id0);
@@ -919,15 +1026,27 @@ mod tests {
 
         // Properties.
         assert_eq!(
-            restored.properties().get(LocusId(0)).unwrap().get_str("name"),
+            restored
+                .properties()
+                .get(LocusId(0))
+                .unwrap()
+                .get_str("name"),
             Some("Alpha")
         );
         assert_eq!(
-            restored.properties().get(LocusId(0)).unwrap().get_f64("score"),
+            restored
+                .properties()
+                .get(LocusId(0))
+                .unwrap()
+                .get_f64("score"),
             Some(0.8)
         );
         assert_eq!(
-            restored.properties().get(LocusId(1)).unwrap().get_str("name"),
+            restored
+                .properties()
+                .get(LocusId(1))
+                .unwrap()
+                .get_str("name"),
             Some("Beta")
         );
 
@@ -1003,7 +1122,11 @@ mod tests {
 
         // Save a different world with 1 locus.
         let mut world2 = World::new();
-        world2.insert_locus(Locus::new(LocusId(99), LocusKindId(1), StateVector::zeros(1)));
+        world2.insert_locus(Locus::new(
+            LocusId(99),
+            LocusKindId(1),
+            StateVector::zeros(1),
+        ));
         storage.save_world(&world2).unwrap();
 
         let counts = storage.table_counts().unwrap();
@@ -1015,7 +1138,9 @@ mod tests {
 
     #[test]
     fn change_with_wall_time_and_metadata_round_trips() {
-        use graph_core::{BatchId, Change, ChangeId, ChangeSubject, InfluenceKindId, StateVector, props};
+        use graph_core::{
+            BatchId, Change, ChangeId, ChangeSubject, InfluenceKindId, StateVector, props,
+        };
 
         let (_f, storage) = temp_db();
         let mut world = sample_world();

@@ -148,8 +148,16 @@ mod tests {
 
     fn two_locus_world() -> World {
         let mut w = World::new();
-        w.insert_locus(Locus::new(LocusId(0), LocusKindId(1), StateVector::zeros(1)));
-        w.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+        w.insert_locus(Locus::new(
+            LocusId(0),
+            LocusKindId(1),
+            StateVector::zeros(1),
+        ));
+        w.insert_locus(Locus::new(
+            LocusId(1),
+            LocusKindId(1),
+            StateVector::zeros(1),
+        ));
         w
     }
 
@@ -176,7 +184,10 @@ mod tests {
         world.relationships_mut().insert(Relationship {
             id: rel_id,
             kind: InfluenceKindId(1),
-            endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(1) },
+            endpoints: Endpoints::Directed {
+                from: LocusId(0),
+                to: LocusId(1),
+            },
             state: StateVector::from_slice(&[0.5, 0.0]),
             lineage: RelationshipLineage {
                 created_by: Some(created_by),
@@ -220,8 +231,10 @@ mod tests {
         w.advance_batch();
 
         let result = time_travel(&w, target);
-        assert!(result.relationships_to_remove.contains(&rel_id),
-            "relationship created after target should be in to_remove");
+        assert!(
+            result.relationships_to_remove.contains(&rel_id),
+            "relationship created after target should be in to_remove"
+        );
     }
 
     #[test]
@@ -233,8 +246,12 @@ mod tests {
         w.advance_batch();
 
         let result = time_travel(&w, target);
-        assert!(result.relationships_irrecoverable.contains(&RelationshipId(99)),
-            "pruned relationship should be irrecoverable");
+        assert!(
+            result
+                .relationships_irrecoverable
+                .contains(&RelationshipId(99)),
+            "pruned relationship should be irrecoverable"
+        );
     }
 
     #[test]
@@ -245,7 +262,10 @@ mod tests {
         w.advance_batch();
 
         let result = time_travel(&w, target);
-        assert!(result.trimmed_at.is_none(), "should be exact without trimming");
+        assert!(
+            result.trimmed_at.is_none(),
+            "should be exact without trimming"
+        );
         assert!(result.is_exact() || !result.entities_approximate.is_empty());
     }
 
@@ -263,7 +283,9 @@ mod tests {
         // Request batch 1 — earlier than trim boundary (batch 3).
         let result = time_travel(&w, BatchId(1));
         assert!(result.trimmed_at.is_some(), "should report trim boundary");
-        assert!(result.trimmed_at.unwrap().0 >= 3,
-            "trimmed_at should be at or after the trim boundary");
+        assert!(
+            result.trimmed_at.unwrap().0 >= 3,
+            "trimmed_at should be at or after the trim boundary"
+        );
     }
 }

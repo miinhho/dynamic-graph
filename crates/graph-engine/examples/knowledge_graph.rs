@@ -32,8 +32,8 @@
 //! Run: `cargo run -p graph-engine --example knowledge_graph`
 
 use graph_core::{
-    Change, ChangeId, InfluenceKindId, Locus, LocusContext, LocusId, LocusProgram,
-    ProposedChange, SaturationMode, StabilizationConfig,
+    Change, ChangeId, InfluenceKindId, Locus, LocusContext, LocusId, LocusProgram, ProposedChange,
+    SaturationMode, StabilizationConfig,
     inbox::{locus_signals, of_kind},
     props,
 };
@@ -143,17 +143,13 @@ fn main() {
         .locus_kind("PERSON", EntityProgram)
         .influence("cooccurrence", |cfg: InfluenceKindConfig| {
             cfg.with_decay(0.9)
-                .with_stabilization(StabilizationConfig {
-                    alpha: 0.7,
-                    saturation: SaturationMode::Clip,
-                    ..StabilizationConfig::default()
-                })
+                .with_stabilization(StabilizationConfig { alpha: 0.7 })
                 .with_plasticity(PlasticityConfig {
                     learning_rate: 0.05,
                     weight_decay: 0.005,
                     max_weight: 5.0,
-                    stdp: false,
-            ..Default::default()
+
+                    ..Default::default()
                 })
         })
         .default_influence("cooccurrence")
@@ -163,43 +159,106 @@ fn main() {
 
     println!("=== Ingesting documents ===");
 
-    ingest_document(&mut sim, vec![
-        ("Apple",    "ORG",    props! { "name" => "Apple",    "type" => "tech" }),
-        ("Tim_Cook", "PERSON", props! { "name" => "Tim_Cook", "role" => "CEO"  }),
-    ]);
-    println!("Doc 1: Apple + Tim_Cook  → {} relationships", sim.world().relationships().len());
+    ingest_document(
+        &mut sim,
+        vec![
+            (
+                "Apple",
+                "ORG",
+                props! { "name" => "Apple",    "type" => "tech" },
+            ),
+            (
+                "Tim_Cook",
+                "PERSON",
+                props! { "name" => "Tim_Cook", "role" => "CEO"  },
+            ),
+        ],
+    );
+    println!(
+        "Doc 1: Apple + Tim_Cook  → {} relationships",
+        sim.world().relationships().len()
+    );
 
-    ingest_document(&mut sim, vec![
-        ("Elon_Musk", "PERSON", props! { "name" => "Elon_Musk", "role" => "CEO"  }),
-        ("Tesla",     "ORG",    props! { "name" => "Tesla",     "type" => "tech" }),
-    ]);
-    println!("Doc 2: Elon_Musk + Tesla → {} relationships", sim.world().relationships().len());
+    ingest_document(
+        &mut sim,
+        vec![
+            (
+                "Elon_Musk",
+                "PERSON",
+                props! { "name" => "Elon_Musk", "role" => "CEO"  },
+            ),
+            (
+                "Tesla",
+                "ORG",
+                props! { "name" => "Tesla",     "type" => "tech" },
+            ),
+        ],
+    );
+    println!(
+        "Doc 2: Elon_Musk + Tesla → {} relationships",
+        sim.world().relationships().len()
+    );
 
-    ingest_document(&mut sim, vec![
-        ("Apple",  "ORG", props! { "name" => "Apple",  "type" => "tech" }),
-        ("OpenAI", "ORG", props! { "name" => "OpenAI", "type" => "ai"   }),
-    ]);
-    println!("Doc 3: Apple + OpenAI    → {} relationships", sim.world().relationships().len());
+    ingest_document(
+        &mut sim,
+        vec![
+            (
+                "Apple",
+                "ORG",
+                props! { "name" => "Apple",  "type" => "tech" },
+            ),
+            (
+                "OpenAI",
+                "ORG",
+                props! { "name" => "OpenAI", "type" => "ai"   },
+            ),
+        ],
+    );
+    println!(
+        "Doc 3: Apple + OpenAI    → {} relationships",
+        sim.world().relationships().len()
+    );
 
     // Bridge documents: connect the two clusters.
-    ingest_document(&mut sim, vec![
-        ("Tim_Cook", "PERSON", props! { "name" => "Tim_Cook" }),
-        ("Tesla",    "ORG",    props! { "name" => "Tesla"    }),
-    ]);
-    println!("Doc 4: Tim_Cook + Tesla  → {} relationships", sim.world().relationships().len());
+    ingest_document(
+        &mut sim,
+        vec![
+            ("Tim_Cook", "PERSON", props! { "name" => "Tim_Cook" }),
+            ("Tesla", "ORG", props! { "name" => "Tesla"    }),
+        ],
+    );
+    println!(
+        "Doc 4: Tim_Cook + Tesla  → {} relationships",
+        sim.world().relationships().len()
+    );
 
-    ingest_document(&mut sim, vec![
-        ("Elon_Musk", "PERSON", props! { "name" => "Elon_Musk" }),
-        ("OpenAI",    "ORG",    props! { "name" => "OpenAI"    }),
-    ]);
-    println!("Doc 5: Elon_Musk + OpenAI→ {} relationships", sim.world().relationships().len());
+    ingest_document(
+        &mut sim,
+        vec![
+            ("Elon_Musk", "PERSON", props! { "name" => "Elon_Musk" }),
+            ("OpenAI", "ORG", props! { "name" => "OpenAI"    }),
+        ],
+    );
+    println!(
+        "Doc 5: Elon_Musk + OpenAI→ {} relationships",
+        sim.world().relationships().len()
+    );
 
     // ── Run a few more ticks to let Hebbian plasticity reinforce weights ──────
     println!("\n=== Reinforcement ticks ===");
     for doc in [
-        vec![("Apple", "ORG", props! { "name" => "Apple" }), ("Tim_Cook", "PERSON", props! { "name" => "Tim_Cook" })],
-        vec![("Elon_Musk", "PERSON", props! { "name" => "Elon_Musk" }), ("Tesla", "ORG", props! { "name" => "Tesla" })],
-        vec![("Apple", "ORG", props! { "name" => "Apple" }), ("OpenAI", "ORG", props! { "name" => "OpenAI" })],
+        vec![
+            ("Apple", "ORG", props! { "name" => "Apple" }),
+            ("Tim_Cook", "PERSON", props! { "name" => "Tim_Cook" }),
+        ],
+        vec![
+            ("Elon_Musk", "PERSON", props! { "name" => "Elon_Musk" }),
+            ("Tesla", "ORG", props! { "name" => "Tesla" }),
+        ],
+        vec![
+            ("Apple", "ORG", props! { "name" => "Apple" }),
+            ("OpenAI", "ORG", props! { "name" => "OpenAI" }),
+        ],
     ] {
         ingest_document(&mut sim, doc);
     }
@@ -224,7 +283,11 @@ fn main() {
         };
         let activity = rel.state.as_slice().first().copied().unwrap_or(0.0);
         let weight = rel.state.as_slice().get(1).copied().unwrap_or(0.0);
-        println!("  {} ↔ {}  activity={activity:.3}  weight={weight:.3}", name_of(a), name_of(b));
+        println!(
+            "  {} ↔ {}  activity={activity:.3}  weight={weight:.3}",
+            name_of(a),
+            name_of(b)
+        );
     }
 
     println!("\n=== Connected components ===");
@@ -267,7 +330,10 @@ fn main() {
             .get(locus.id)
             .and_then(|p| p.get_str("type").or_else(|| p.get_str("role")))
             .unwrap_or("?");
-        println!("  [{}] ({entity_type})  activation={activation:.3}", name_of(locus.id));
+        println!(
+            "  [{}] ({entity_type})  activation={activation:.3}",
+            name_of(locus.id)
+        );
     }
 
     println!(

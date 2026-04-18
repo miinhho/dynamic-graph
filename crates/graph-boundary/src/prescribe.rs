@@ -40,7 +40,7 @@ use graph_core::{LocusId, RelationshipId};
 use graph_schema::{DeclaredFactId, DeclaredRelKind, SchemaWorld};
 use graph_world::World;
 
-use crate::analysis::{signal, SignalMode};
+use crate::analysis::{SignalMode, signal};
 use crate::report::BoundaryReport;
 
 /// Configuration for [`prescribe_updates`].
@@ -184,10 +184,7 @@ pub fn prescribe_updates(
 ///
 /// Returns the number of actions that resulted in an actual mutation
 /// (retractions of already-retracted facts are no-ops and not counted).
-pub fn apply_prescriptions(
-    actions: &[BoundaryAction],
-    schema: &mut SchemaWorld,
-) -> usize {
+pub fn apply_prescriptions(actions: &[BoundaryAction], schema: &mut SchemaWorld) -> usize {
     let mut applied = 0;
     for action in actions {
         match action {
@@ -198,7 +195,12 @@ pub fn apply_prescriptions(
                     applied += 1;
                 }
             }
-            BoundaryAction::AssertFact { subject, predicate, object, .. } => {
+            BoundaryAction::AssertFact {
+                subject,
+                predicate,
+                object,
+                ..
+            } => {
                 let before = schema.facts.version();
                 schema.assert_fact(*subject, predicate.clone(), *object);
                 if schema.facts.version() > before {
@@ -214,19 +216,29 @@ pub fn apply_prescriptions(
 mod tests {
     use super::*;
     use graph_core::{
-        BatchId, Endpoints, InfluenceKindId, Locus, LocusId, LocusKindId,
-        Relationship, RelationshipLineage, StateVector,
+        BatchId, Endpoints, InfluenceKindId, Locus, LocusId, LocusKindId, Relationship,
+        RelationshipLineage, StateVector,
     };
     use graph_schema::{DeclaredRelKind, SchemaWorld};
     use graph_world::World;
     use smallvec::SmallVec;
 
-    fn kind(s: &str) -> DeclaredRelKind { DeclaredRelKind::new(s) }
+    fn kind(s: &str) -> DeclaredRelKind {
+        DeclaredRelKind::new(s)
+    }
 
     fn make_world_with_rel(a: u64, b: u64, strength: f32) -> (World, RelationshipId) {
         let mut world = World::default();
-        world.loci_mut().insert(Locus::new(LocusId(a), LocusKindId(0), StateVector::zeros(1)));
-        world.loci_mut().insert(Locus::new(LocusId(b), LocusKindId(0), StateVector::zeros(1)));
+        world.loci_mut().insert(Locus::new(
+            LocusId(a),
+            LocusKindId(0),
+            StateVector::zeros(1),
+        ));
+        world.loci_mut().insert(Locus::new(
+            LocusId(b),
+            LocusKindId(0),
+            StateVector::zeros(1),
+        ));
         let rel = Relationship {
             id: RelationshipId(0),
             kind: InfluenceKindId(0),
@@ -264,8 +276,12 @@ mod tests {
         // Add more bumps to make the fact "old".
         for _ in 0..6 {
             schema.assert_fact(LocusId(98), kind("dummy2"), LocusId(97));
-            let fid = schema.facts.active_facts()
-                .find(|f| f.subject == LocusId(98)).unwrap().id;
+            let fid = schema
+                .facts
+                .active_facts()
+                .find(|f| f.subject == LocusId(98))
+                .unwrap()
+                .id;
             schema.retract_fact(fid);
         }
         // fact.asserted_at < current_version - 5
@@ -282,7 +298,10 @@ mod tests {
         let actions = prescribe_updates(&report, &schema, &dynamic, &cfg);
 
         // Should propose retraction of the reports_to fact.
-        let retract_count = actions.iter().filter(|a| matches!(a, BoundaryAction::RetractFact { fact_id, .. } if *fact_id == id)).count();
+        let retract_count = actions
+            .iter()
+            .filter(|a| matches!(a, BoundaryAction::RetractFact { fact_id, .. } if *fact_id == id))
+            .count();
         assert_eq!(retract_count, 1);
     }
 
@@ -309,7 +328,10 @@ mod tests {
         let schema = SchemaWorld::new();
 
         let report = crate::analysis::analyze_boundary_with_mode(
-            &dynamic, &schema, Some(0.1), SignalMode::Activity,
+            &dynamic,
+            &schema,
+            Some(0.1),
+            SignalMode::Activity,
         );
         assert_eq!(report.shadow.len(), 1);
 
@@ -333,7 +355,10 @@ mod tests {
         let schema = SchemaWorld::new();
 
         let report = crate::analysis::analyze_boundary_with_mode(
-            &dynamic, &schema, Some(0.01), SignalMode::Activity,
+            &dynamic,
+            &schema,
+            Some(0.01),
+            SignalMode::Activity,
         );
 
         let cfg = PrescriptionConfig {
@@ -352,7 +377,10 @@ mod tests {
         let mut schema = SchemaWorld::new();
 
         let report = crate::analysis::analyze_boundary_with_mode(
-            &dynamic, &schema, Some(0.1), SignalMode::Activity,
+            &dynamic,
+            &schema,
+            Some(0.1),
+            SignalMode::Activity,
         );
 
         let cfg = PrescriptionConfig {

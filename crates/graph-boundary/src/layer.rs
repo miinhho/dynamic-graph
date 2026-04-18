@@ -22,10 +22,10 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use graph_core::{InfluenceKindId, RelationshipId};
-use graph_world::World;
 use graph_schema::{DeclaredFact, DeclaredRelKind, SchemaWorld};
+use graph_world::World;
 
-use crate::analysis::{analyze_boundary_with_mode, signal, SignalMode};
+use crate::analysis::{SignalMode, analyze_boundary_with_mode, signal};
 use crate::report::BoundaryReport;
 
 /// Tension breakdown for a single dynamic layer (RelationshipKindId).
@@ -92,7 +92,10 @@ pub fn layer_tension(
     let mut kind_to_predicates: FxHashMap<InfluenceKindId, Vec<DeclaredRelKind>> =
         FxHashMap::default();
     for (pred, &kind_id) in kind_map {
-        kind_to_predicates.entry(kind_id).or_default().push(pred.clone());
+        kind_to_predicates
+            .entry(kind_id)
+            .or_default()
+            .push(pred.clone());
     }
 
     // Pre-group active facts by mapped kind — O(F) once instead of O(K × F).
@@ -106,7 +109,10 @@ pub fn layer_tension(
     let mut layers: Vec<LayerTension> = all_kinds
         .iter()
         .map(|&kind_id| {
-            let kind_facts = facts_by_kind.get(&kind_id).map(|v| v.as_slice()).unwrap_or(&[]);
+            let kind_facts = facts_by_kind
+                .get(&kind_id)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
 
             // Count confirmed / ghost among declared facts for this kind.
             let mut confirmed_decl = 0usize;
@@ -115,7 +121,11 @@ pub fn layer_tension(
                 let matched = dynamic
                     .relationships_between(fact.subject, fact.object)
                     .any(|r| r.kind == kind_id && signal(r, mode) > thresh);
-                if matched { confirmed_decl += 1; } else { ghost_decl += 1; }
+                if matched {
+                    confirmed_decl += 1;
+                } else {
+                    ghost_decl += 1;
+                }
             }
 
             // Shadow: active dynamic relationships of this kind with no
@@ -149,26 +159,36 @@ pub fn layer_tension(
         .collect();
 
     // Sort descending by tension.
-    layers.sort_by(|a, b| b.tension.partial_cmp(&a.tension).unwrap_or(std::cmp::Ordering::Equal));
+    layers.sort_by(|a, b| {
+        b.tension
+            .partial_cmp(&a.tension)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let most_divergent = layers.first().map(|l| l.kind);
-    let most_aligned   = layers.last().map(|l| l.kind);
+    let most_aligned = layers.last().map(|l| l.kind);
 
-    LayerReport { layers, most_divergent, most_aligned }
+    LayerReport {
+        layers,
+        most_divergent,
+        most_aligned,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use graph_core::{
-        BatchId, Endpoints, InfluenceKindId, Locus, LocusId, LocusKindId,
-        Relationship, RelationshipLineage, StateVector,
+        BatchId, Endpoints, InfluenceKindId, Locus, LocusId, LocusKindId, Relationship,
+        RelationshipLineage, StateVector,
     };
     use graph_schema::{DeclaredRelKind, SchemaWorld};
     use graph_world::World;
     use smallvec::SmallVec;
 
-    fn kind(s: &str) -> DeclaredRelKind { DeclaredRelKind::new(s) }
+    fn kind(s: &str) -> DeclaredRelKind {
+        DeclaredRelKind::new(s)
+    }
 
     fn make_rel(id: u64, a: u64, b: u64, kind_id: u64, strength: f32) -> Relationship {
         Relationship {
@@ -237,11 +257,11 @@ mod tests {
         world.relationships_mut().insert(make_rel(0, 1, 2, 1, 0.9)); // kind 1 confirmed
 
         let mut schema = SchemaWorld::new();
-        schema.assert_fact(LocusId(1), kind("trust"), LocusId(2));     // confirmed
+        schema.assert_fact(LocusId(1), kind("trust"), LocusId(2)); // confirmed
         schema.assert_fact(LocusId(1), kind("authority"), LocusId(3)); // ghost (locus 3 not connected)
 
         let mut kind_map = FxHashMap::default();
-        kind_map.insert(kind("trust"),     InfluenceKindId(1));
+        kind_map.insert(kind("trust"), InfluenceKindId(1));
         kind_map.insert(kind("authority"), InfluenceKindId(1)); // both map to same kind
 
         let report = layer_tension(&world, &schema, &kind_map, Some(0.1), SignalMode::Activity);

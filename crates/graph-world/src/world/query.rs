@@ -4,8 +4,8 @@
 //! unified query surface for the engine and external callers.
 
 use graph_core::{
-    BatchId, Change, ChangeId, Entity, EntityId, EntityLayer, Locus, LocusId,
-    Relationship, RelationshipId, RelationshipKindId, StateVector, TrimSummary,
+    BatchId, Change, ChangeId, Entity, EntityId, EntityLayer, Locus, LocusId, Relationship,
+    RelationshipId, RelationshipKindId, StateVector, TrimSummary,
 };
 use rustc_hash::FxHashSet;
 
@@ -130,8 +130,13 @@ impl World {
     /// All relationships whose current activity score exceeds `threshold`.
     ///
     /// O(R) where R = total relationships.
-    pub fn relationships_active_above(&self, threshold: f32) -> impl Iterator<Item = &Relationship> {
-        self.relationships.iter().filter(move |r| r.activity() > threshold)
+    pub fn relationships_active_above(
+        &self,
+        threshold: f32,
+    ) -> impl Iterator<Item = &Relationship> {
+        self.relationships
+            .iter()
+            .filter(move |r| r.activity() > threshold)
     }
 
     /// All relationships whose **both** endpoints are members of `loci`
@@ -312,7 +317,13 @@ mod tests {
         InfluenceKindId, Locus, LocusId, LocusKindId, RelationshipId, StateVector,
     };
 
-    fn push_locus_change(world: &mut World, id: u64, locus: u64, after: f32, batch: u64) -> ChangeId {
+    fn push_locus_change(
+        world: &mut World,
+        id: u64,
+        locus: u64,
+        after: f32,
+        batch: u64,
+    ) -> ChangeId {
         let cid = ChangeId(id);
         world.log_mut().append(Change {
             id: cid,
@@ -359,7 +370,11 @@ mod tests {
 
         // batch 4 → should see change at batch 3 (state = 0.5)
         let state = w.locus_state_at(LocusId(0), BatchId(4)).unwrap();
-        assert!((state.as_slice()[0] - 0.5).abs() < 1e-5, "expected 0.5, got {:?}", state);
+        assert!(
+            (state.as_slice()[0] - 0.5).abs() < 1e-5,
+            "expected 0.5, got {:?}",
+            state
+        );
     }
 
     #[test]
@@ -385,7 +400,9 @@ mod tests {
         push_rel_change(&mut w, 0, 42, 0.3, 1);
         push_rel_change(&mut w, 1, 42, 0.6, 4);
 
-        let state = w.relationship_state_at(RelationshipId(42), BatchId(3)).unwrap();
+        let state = w
+            .relationship_state_at(RelationshipId(42), BatchId(3))
+            .unwrap();
         assert!((state.as_slice()[0] - 0.3).abs() < 1e-5);
     }
 
@@ -405,7 +422,9 @@ mod tests {
         let _r2 = add_rel(&mut w, 1, 3, 20); // different kind
         let _r3 = add_rel(&mut w, 4, 1, 10); // incoming, not outgoing
 
-        let from_kind10: Vec<_> = w.relationships_from_of_kind(LocusId(1), InfluenceKindId(10)).collect();
+        let from_kind10: Vec<_> = w
+            .relationships_from_of_kind(LocusId(1), InfluenceKindId(10))
+            .collect();
         assert_eq!(from_kind10.len(), 1);
         assert_eq!(from_kind10[0].id, r1);
     }
@@ -417,7 +436,9 @@ mod tests {
         let r2 = add_rel(&mut w, 3, 2, 10);
         let _r3 = add_rel(&mut w, 3, 2, 20); // different kind
 
-        let to_kind10: Vec<_> = w.relationships_to_of_kind(LocusId(2), InfluenceKindId(10)).collect();
+        let to_kind10: Vec<_> = w
+            .relationships_to_of_kind(LocusId(2), InfluenceKindId(10))
+            .collect();
         // r1 and r2 both arrive at L2 with kind 10
         assert_eq!(to_kind10.len(), 2);
         assert!(to_kind10.iter().any(|r| r.id == r2));
@@ -440,8 +461,16 @@ mod tests {
     #[test]
     fn entity_of_finds_containing_entity() {
         let mut w = World::new();
-        w.insert_locus(Locus::new(LocusId(0), LocusKindId(1), StateVector::zeros(1)));
-        w.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+        w.insert_locus(Locus::new(
+            LocusId(0),
+            LocusKindId(1),
+            StateVector::zeros(1),
+        ));
+        w.insert_locus(Locus::new(
+            LocusId(1),
+            LocusKindId(1),
+            StateVector::zeros(1),
+        ));
 
         let eid = w.entities_mut().mint_id();
         w.entities_mut().insert(Entity::born(

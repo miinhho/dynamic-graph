@@ -32,9 +32,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use graph_core::{
-    BatchId, Change, Endpoints, EntityStatus, InfluenceKindId, LifecycleCause, Locus,
-    LocusContext, LocusId, LocusKindId, LocusProgram, ProposedChange, StateVector,
-    StructuralProposal, WorldEvent,
+    BatchId, Change, Endpoints, EntityStatus, InfluenceKindId, LifecycleCause, Locus, LocusContext,
+    LocusId, LocusKindId, LocusProgram, ProposedChange, StateVector, StructuralProposal,
+    WorldEvent,
 };
 use graph_engine::{
     DefaultCoherePerspective, DefaultEmergencePerspective, EngineConfig, InfluenceKindConfig,
@@ -69,9 +69,14 @@ const MAX_IN_DEGREE: usize = 12;
 
 struct Rng(u64);
 impl Rng {
-    fn new(seed: u64) -> Self { Self(seed) }
+    fn new(seed: u64) -> Self {
+        Self(seed)
+    }
     fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
         self.0
     }
     fn range(&mut self, lo: u64, hi: u64) -> u64 {
@@ -80,7 +85,6 @@ impl Rng {
     fn f32(&mut self) -> f32 {
         (self.next() >> 11) as f32 / (1u64 << 53) as f32
     }
-
 }
 
 // ── Shared topology ───────────────────────────────────────────────────────────
@@ -94,7 +98,9 @@ struct NetworkTopology {
     is_inhibitory: FxHashMap<LocusId, bool>,
 }
 
-fn pop_base(pop: u64) -> u64 { pop * POP_SIZE }
+fn pop_base(pop: u64) -> u64 {
+    pop * POP_SIZE
+}
 
 fn build_topology(seed: u64) -> NetworkTopology {
     let mut rng = Rng::new(seed);
@@ -132,7 +138,9 @@ fn build_topology(seed: u64) -> NetworkTopology {
                 for _ in 0..5 {
                     let t = rng.range(inh_count, POP_SIZE);
                     let tid = LocusId(base + t);
-                    if tid != id { targets.push(tid); }
+                    if tid != id {
+                        targets.push(tid);
+                    }
                 }
                 // Sparse inter-pop: only ~10% of excitatory neurons have
                 // a single cross-population connection.
@@ -147,7 +155,11 @@ fn build_topology(seed: u64) -> NetworkTopology {
             }
         }
     }
-    NetworkTopology { exc_targets, inh_targets, is_inhibitory }
+    NetworkTopology {
+        exc_targets,
+        inh_targets,
+        is_inhibitory,
+    }
 }
 
 // ── Programs ──────────────────────────────────────────────────────────────────
@@ -286,22 +298,30 @@ fn build_world(topo: Arc<NetworkTopology>) -> (World, LocusKindRegistry, Influen
     // Refractory period of 3 batches: after a neuron fires, its program
     // is not dispatched for the next 3 batches within the same tick.
     // This linearizes cascade amplification from O(5^N) to O(N × fan_out).
-    loci.insert_with_config(KIND_EXC, LocusKindConfig {
-        name: None,
-        state_slots: Vec::new(),
-        program: Box::new(ExcitatoryProgram { topo: Arc::clone(&topo) }),
-        refractory_batches: 3,
-        encoder: None,
-        max_proposals_per_dispatch: None,
-    });
-    loci.insert_with_config(KIND_INH, LocusKindConfig {
-        name: None,
-        state_slots: Vec::new(),
-        program: Box::new(InhibitoryProgram { topo }),
-        refractory_batches: 2,
-        encoder: None,
-        max_proposals_per_dispatch: None,
-    });
+    loci.insert_with_config(
+        KIND_EXC,
+        LocusKindConfig {
+            name: None,
+            state_slots: Vec::new(),
+            program: Box::new(ExcitatoryProgram {
+                topo: Arc::clone(&topo),
+            }),
+            refractory_batches: 3,
+            encoder: None,
+            max_proposals_per_dispatch: None,
+        },
+    );
+    loci.insert_with_config(
+        KIND_INH,
+        LocusKindConfig {
+            name: None,
+            state_slots: Vec::new(),
+            program: Box::new(InhibitoryProgram { topo }),
+            refractory_batches: 2,
+            encoder: None,
+            max_proposals_per_dispatch: None,
+        },
+    );
 
     let mut influences = InfluenceKindRegistry::new();
     influences.insert(
@@ -312,10 +332,9 @@ fn build_world(topo: Arc<NetworkTopology>) -> (World, LocusKindRegistry, Influen
                 learning_rate: 0.01,
                 weight_decay: 0.995,
                 max_weight: 2.0,
-                stdp: false,
-            ..Default::default()
-            })
-            .with_prune_threshold(0.001),
+
+                ..Default::default()
+            }),
     );
     influences.insert(
         INF_INH,
@@ -382,8 +401,11 @@ fn run_phase(
         if tick % 5 == 4 {
             let w = sim.world();
             let active = w.entities().active_count();
-            let dormant = w.entities().iter()
-                .filter(|e| e.status == EntityStatus::Dormant).count();
+            let dormant = w
+                .entities()
+                .iter()
+                .filter(|e| e.status == EntityStatus::Dormant)
+                .count();
             let total = w.entities().iter().count();
             println!(
                 "  tick {:>3}: rels={:<5} entities={}/{}/{} (active/dormant/total) regime={:?}",
@@ -421,7 +443,10 @@ fn main() {
 
     let build_ms = t0.elapsed().as_millis();
     println!("=== Neural Population Simulation ({TOTAL} neurons) ===\n");
-    println!("  4 populations × {POP_SIZE} neurons ({}% inhibitory)", (INHIBITORY_FRAC * 100.0) as u32);
+    println!(
+        "  4 populations × {POP_SIZE} neurons ({}% inhibitory)",
+        (INHIBITORY_FRAC * 100.0) as u32
+    );
     println!("  build: {build_ms}ms\n");
 
     let mut rng = Rng::new(7777);
@@ -430,12 +455,11 @@ fn main() {
     // everything into a single entity. This allows population-level
     // entity dynamics (split, dormancy, revive).
     let ep = DefaultEmergencePerspective {
-        min_activity_threshold: 0.25,
-        overlap_threshold: 0.3,
+        min_activity_threshold: Some(0.25),
     };
 
     let cp = DefaultCoherePerspective {
-        min_bridge_activity: 0.15,
+        min_bridge_activity: Some(0.15),
         ..Default::default()
     };
 
@@ -444,10 +468,19 @@ fn main() {
     // ── Phase 1: warm-up — stimulate Pop A ──────────────────────────────
 
     let (phase1_ms, events) = run_phase(
-        &mut sim, &mut rng, &ep, &cp,
+        &mut sim,
+        &mut rng,
+        &ep,
+        &cp,
         "Phase 1: warm-up (stimulate Pop A, 20 ticks)",
         0..20,
-        |rng, tick| if tick % 2 == 0 { pop_stimulus(rng, 0, 30, 0.5) } else { vec![] },
+        |rng, tick| {
+            if tick % 2 == 0 {
+                pop_stimulus(rng, 0, 30, 0.5)
+            } else {
+                vec![]
+            }
+        },
         5,
     );
     all_events.extend(events);
@@ -455,10 +488,19 @@ fn main() {
     // ── Phase 2: alternating stimulation — entity dynamics ──────────────
 
     let (phase2_ms, events) = run_phase(
-        &mut sim, &mut rng, &ep, &cp,
+        &mut sim,
+        &mut rng,
+        &ep,
+        &cp,
         "Phase 2: alternating stimulus (Pop A & C, 40 ticks)",
         20..60,
-        |rng, tick| if tick % 4 < 2 { pop_stimulus(rng, 0, 20, 0.6) } else { pop_stimulus(rng, 2, 20, 0.6) },
+        |rng, tick| {
+            if tick % 4 < 2 {
+                pop_stimulus(rng, 0, 20, 0.6)
+            } else {
+                pop_stimulus(rng, 2, 20, 0.6)
+            }
+        },
         5,
     );
     all_events.extend(events);
@@ -466,7 +508,10 @@ fn main() {
     // ── Phase 3: silence — dormancy ─────────────────────────────────────
 
     let (phase3_ms, events) = run_phase(
-        &mut sim, &mut rng, &ep, &cp,
+        &mut sim,
+        &mut rng,
+        &ep,
+        &cp,
         "Phase 3: silence (no stimulus, 20 ticks)",
         60..80,
         |_, _| vec![],
@@ -477,10 +522,19 @@ fn main() {
     // ── Phase 4: re-stimulate Pop D — revive ────────────────────────────
 
     let (phase4_ms, events) = run_phase(
-        &mut sim, &mut rng, &ep, &cp,
+        &mut sim,
+        &mut rng,
+        &ep,
+        &cp,
         "Phase 4: re-stimulate Pop D (20 ticks)",
         80..100,
-        |rng, tick| if tick % 2 == 0 { pop_stimulus(rng, 3, 30, 0.7) } else { vec![] },
+        |rng, tick| {
+            if tick % 2 == 0 {
+                pop_stimulus(rng, 3, 30, 0.7)
+            } else {
+                vec![]
+            }
+        },
         5,
     );
     all_events.extend(events);
@@ -498,7 +552,10 @@ fn main() {
         println!("--- Cohere clusters (final): {} ---", coheres.len());
         if coheres.is_empty() {
             let active_count = world.entities().active_count();
-            println!("  (no clusters — {} active entity/entities; cohere needs ≥2 active)", active_count);
+            println!(
+                "  (no clusters — {} active entity/entities; cohere needs ≥2 active)",
+                active_count
+            );
         }
         for c in coheres.iter().take(5) {
             let ms = match &c.members {
@@ -517,13 +574,19 @@ fn main() {
         if let Some(history) = world.coheres().history("default") {
             println!("\n--- Cohere history ({} snapshots) ---", history.len());
             for snap in history.iter() {
-                let entity_count: usize = snap.coheres.iter().map(|c| match &c.members {
-                    graph_core::CohereMembers::Entities(ids) => ids.len(),
-                    _ => 0,
-                }).sum();
+                let entity_count: usize = snap
+                    .coheres
+                    .iter()
+                    .map(|c| match &c.members {
+                        graph_core::CohereMembers::Entities(ids) => ids.len(),
+                        _ => 0,
+                    })
+                    .sum();
                 println!(
                     "  batch {:>4}: {} clusters, {} entity memberships",
-                    snap.batch.0, snap.coheres.len(), entity_count
+                    snap.batch.0,
+                    snap.coheres.len(),
+                    entity_count
                 );
             }
         }
@@ -534,53 +597,76 @@ fn main() {
 
     println!("--- Entity lifecycle ---");
     {
-    let world = sim.world();
-    let active = world.entities().active_count();
-    let dormant = world.entities().iter()
-        .filter(|e| e.status == graph_core::EntityStatus::Dormant).count();
-    let total_entities = world.entities().iter().count();
-    println!("  active: {}  dormant: {}  total: {}", active, dormant, total_entities);
-
-    for e in world.entities().iter().take(12) {
-        let members: Vec<u64> = e.current.members.iter().map(|l| l.0).collect();
-        let member_summary = if members.len() > 6 {
-            format!("[{}, {}, ... {} total]", members[0], members[1], members.len())
-        } else {
-            format!("{members:?}")
-        };
-        let transitions: Vec<String> = e
-            .layers
+        let world = sim.world();
+        let active = world.entities().active_count();
+        let dormant = world
+            .entities()
             .iter()
-            .map(|l| {
-                let tag = match &l.transition {
-                    graph_core::LayerTransition::Born => "Born".to_string(),
-                    graph_core::LayerTransition::MembershipDelta { added, removed } =>
-                        format!("Δmembers(+{}/-{})", added.len(), removed.len()),
-                    graph_core::LayerTransition::CoherenceShift { from, to } =>
-                        format!("coherence({from:.2}→{to:.2})"),
-                    graph_core::LayerTransition::Split { offspring } =>
-                        format!("Split(→{})", offspring.len()),
-                    graph_core::LayerTransition::Merged { absorbed } =>
-                        format!("Merged(←{})", absorbed.len()),
-                    graph_core::LayerTransition::BecameDormant => "Dormant".to_string(),
-                    graph_core::LayerTransition::Revived => "Revived".to_string(),
-                };
-                format!("{tag}@b{}", l.batch.0)
-            })
-            .collect();
+            .filter(|e| e.status == graph_core::EntityStatus::Dormant)
+            .count();
+        let total_entities = world.entities().iter().count();
         println!(
-            "  entity#{:<3} {:?} members={} coherence={:.3} layers={}",
-            e.id.0, e.status, member_summary, e.current.coherence, e.layer_count()
+            "  active: {}  dormant: {}  total: {}",
+            active, dormant, total_entities
         );
-        if !transitions.is_empty() {
-            let shown = if transitions.len() > 8 {
-                format!("{}, ... +{} more", transitions[..5].join(", "), transitions.len() - 5)
+
+        for e in world.entities().iter().take(12) {
+            let members: Vec<u64> = e.current.members.iter().map(|l| l.0).collect();
+            let member_summary = if members.len() > 6 {
+                format!(
+                    "[{}, {}, ... {} total]",
+                    members[0],
+                    members[1],
+                    members.len()
+                )
             } else {
-                transitions.join(", ")
+                format!("{members:?}")
             };
-            println!("           transitions: {shown}");
+            let transitions: Vec<String> = e
+                .layers
+                .iter()
+                .map(|l| {
+                    let tag = match &l.transition {
+                        graph_core::LayerTransition::Born => "Born".to_string(),
+                        graph_core::LayerTransition::MembershipDelta { added, removed } => {
+                            format!("Δmembers(+{}/-{})", added.len(), removed.len())
+                        }
+                        graph_core::LayerTransition::CoherenceShift { from, to } => {
+                            format!("coherence({from:.2}→{to:.2})")
+                        }
+                        graph_core::LayerTransition::Split { offspring } => {
+                            format!("Split(→{})", offspring.len())
+                        }
+                        graph_core::LayerTransition::Merged { absorbed } => {
+                            format!("Merged(←{})", absorbed.len())
+                        }
+                        graph_core::LayerTransition::BecameDormant => "Dormant".to_string(),
+                        graph_core::LayerTransition::Revived => "Revived".to_string(),
+                    };
+                    format!("{tag}@b{}", l.batch.0)
+                })
+                .collect();
+            println!(
+                "  entity#{:<3} {:?} members={} coherence={:.3} layers={}",
+                e.id.0,
+                e.status,
+                member_summary,
+                e.current.coherence,
+                e.layer_count()
+            );
+            if !transitions.is_empty() {
+                let shown = if transitions.len() > 8 {
+                    format!(
+                        "{}, ... +{} more",
+                        transitions[..5].join(", "),
+                        transitions.len() - 5
+                    )
+                } else {
+                    transitions.join(", ")
+                };
+                println!("           transitions: {shown}");
+            }
         }
-    }
     } // end entity lifecycle guard
     println!();
 
@@ -609,8 +695,12 @@ fn main() {
         }
     }
     println!("--- Event stream ({} total events) ---", all_events.len());
-    println!("  born={born_count}  dormant={dormant_count}  revived={revived_count}  split={split_count}  merge={merge_count}");
-    println!("  pruned_rels={prune_count}  regime_shifts={regime_shifts}  coherence_shifts={coherence_shifts}");
+    println!(
+        "  born={born_count}  dormant={dormant_count}  revived={revived_count}  split={split_count}  merge={merge_count}"
+    );
+    println!(
+        "  pruned_rels={prune_count}  regime_shifts={regime_shifts}  coherence_shifts={coherence_shifts}"
+    );
     println!();
 
     // ── Causal tracing (sample) ─────────────────────────────────────────
@@ -620,18 +710,25 @@ fn main() {
         let mut shown = 0;
         let causal_world = sim.world();
         for e in causal_world.entities().iter() {
-            if shown >= 5 { break; }
+            if shown >= 5 {
+                break;
+            }
             for layer in &e.layers {
                 if matches!(layer.transition, graph_core::LayerTransition::BecameDormant) {
                     let cause_str = match &layer.cause {
-                        LifecycleCause::RelationshipDecay { decayed_relationships } =>
-                            format!("RelationshipDecay({} rels)", decayed_relationships.len()),
-                        LifecycleCause::ComponentSplit { weak_bridges } =>
-                            format!("ComponentSplit({} bridges)", weak_bridges.len()),
+                        LifecycleCause::RelationshipDecay {
+                            decayed_relationships,
+                        } => format!("RelationshipDecay({} rels)", decayed_relationships.len()),
+                        LifecycleCause::ComponentSplit { weak_bridges } => {
+                            format!("ComponentSplit({} bridges)", weak_bridges.len())
+                        }
                         LifecycleCause::Unspecified => "Unspecified".to_string(),
                         other => format!("{other:?}"),
                     };
-                    println!("  entity#{} → Dormant@b{}: cause={cause_str}", e.id.0, layer.batch.0);
+                    println!(
+                        "  entity#{} → Dormant@b{}: cause={cause_str}",
+                        e.id.0, layer.batch.0
+                    );
                     shown += 1;
                     break;
                 }
@@ -645,18 +742,36 @@ fn main() {
     // Show entity landscape at mid-simulation (batch ~500).
     let mid_batch = BatchId(500);
     let entities_then = sim.entities_at_batch(mid_batch);
-    let active_then = entities_then.iter()
-        .filter(|(_, layer)| !matches!(layer.transition, graph_core::LayerTransition::BecameDormant))
+    let active_then = entities_then
+        .iter()
+        .filter(|(_, layer)| {
+            !matches!(layer.transition, graph_core::LayerTransition::BecameDormant)
+        })
         .count();
     let total_then = entities_then.len();
-    println!("--- Time-travel: entity landscape at batch {} ---", mid_batch.0);
-    println!("  entities visible: {} ({} non-dormant)", total_then, active_then);
+    println!(
+        "--- Time-travel: entity landscape at batch {} ---",
+        mid_batch.0
+    );
+    println!(
+        "  entities visible: {} ({} non-dormant)",
+        total_then, active_then
+    );
     for (eid, layer) in entities_then.iter().take(5) {
-        let members = layer.snapshot.as_ref().map(|s| s.members.len()).unwrap_or(0);
+        let members = layer
+            .snapshot
+            .as_ref()
+            .map(|s| s.members.len())
+            .unwrap_or(0);
         let coh = layer.snapshot.as_ref().map(|s| s.coherence).unwrap_or(0.0);
-        println!("  entity#{} @ b{}: members={} coherence={:.3} transition={:?}",
-            eid.0, layer.batch.0, members, coh,
-            graph_core::CompressedTransition::from(&layer.transition));
+        println!(
+            "  entity#{} @ b{}: members={} coherence={:.3} transition={:?}",
+            eid.0,
+            layer.batch.0,
+            members,
+            coh,
+            graph_core::CompressedTransition::from(&layer.transition)
+        );
     }
     println!();
 
@@ -673,68 +788,99 @@ fn main() {
 
     println!("--- Weathering + trim ---");
     println!("  entity layers: {} → {}", pre_layers, post_layers);
-    println!("  change log: {} → {} (trimmed {})", pre_changes, post_changes, trimmed);
+    println!(
+        "  change log: {} → {} (trimmed {})",
+        pre_changes, post_changes, trimmed
+    );
     println!();
 
     // ── Relationship stats ───────────────────────────────────────────────
 
     {
-    let world_guard = sim.world();
-    let world = &*world_guard;
-    let rels: Vec<_> = world.relationships().iter().collect();
-    let exc_rels = rels.iter().filter(|r| r.kind == INF_EXC).count();
-    let inh_rels = rels.iter().filter(|r| r.kind == INF_INH).count();
-    let active_rels = rels.iter().filter(|r| r.activity() > 0.01).count();
-    let max_w = rels.iter().map(|r| r.weight()).fold(0.0f32, f32::max);
-    let mean_w = if rels.is_empty() { 0.0 } else {
-        rels.iter().map(|r| r.weight()).sum::<f32>() / rels.len() as f32
-    };
-    println!("--- Relationships ---");
-    println!("  total: {}  excitatory: {}  inhibitory: {}", rels.len(), exc_rels, inh_rels);
-    println!("  active(activity>0.01): {}", active_rels);
-    println!("  max weight: {:.4}  mean weight: {:.6}", max_w, mean_w);
-    println!();
-
-    // ── Relationship bundle: multi-dimensional coupling view ─────────────
-    //
-    // Show a sample RelationshipBundle for a pair of excitatory neurons.
-    // Note: in this topology, excitatory neurons only target other excitatory
-    // neurons (range [inh_count, POP_SIZE)), so INF_INH relationships don't
-    // emerge — inhibitory neurons receive no input. The bundle API still
-    // demonstrates the pattern; a multi-kind result requires a topology where
-    // the same pair receives both excitatory and inhibitory projections.
-
-    println!("--- Relationship bundle analysis (sample) ---");
-    let inh_count = (POP_SIZE as f64 * INHIBITORY_FRAC) as u64;
-    // Two excitatory neurons from Pop A
-    let sample_a = LocusId(inh_count);     // first excitatory in Pop A
-    let sample_b = LocusId(inh_count + 1); // second excitatory in Pop A
-
-    let bundle = Q::relationship_profile(world, sample_a, sample_b);
-    if bundle.is_empty() {
+        let world_guard = sim.world();
+        let world = &*world_guard;
+        let rels: Vec<_> = world.relationships().iter().collect();
+        let exc_rels = rels.iter().filter(|r| r.kind == INF_EXC).count();
+        let inh_rels = rels.iter().filter(|r| r.kind == INF_INH).count();
+        let active_rels = rels.iter().filter(|r| r.activity() > 0.01).count();
+        let max_w = rels.iter().map(|r| r.weight()).fold(0.0f32, f32::max);
+        let mean_w = if rels.is_empty() {
+            0.0
+        } else {
+            rels.iter().map(|r| r.weight()).sum::<f32>() / rels.len() as f32
+        };
+        println!("--- Relationships ---");
         println!(
-            "  L{} ↔ L{}: no relationships (sparse random topology — try other pairs)",
-            sample_a.0, sample_b.0
+            "  total: {}  excitatory: {}  inhibitory: {}",
+            rels.len(),
+            exc_rels,
+            inh_rels
         );
-    } else {
-        println!(
-            "  L{} ↔ L{}: {} edges  net_activity={:.3}  {}",
-            sample_a.0, sample_b.0,
-            bundle.len(),
-            bundle.net_activity(),
-            if bundle.is_inhibitory() { "net-inhibitory" } else { "net-excitatory" },
-        );
-        for (kind, act) in bundle.activity_by_kind() {
-            let kind_name = if kind == INF_EXC { "excitatory" } else { "inhibitory" };
-            println!("    kind={kind_name}  activity={act:.3}");
+        println!("  active(activity>0.01): {}", active_rels);
+        println!("  max weight: {:.4}  mean weight: {:.6}", max_w, mean_w);
+        println!();
+
+        // ── Relationship bundle: multi-dimensional coupling view ─────────────
+        //
+        // Show a sample RelationshipBundle for a pair of excitatory neurons.
+        // Note: in this topology, excitatory neurons only target other excitatory
+        // neurons (range [inh_count, POP_SIZE)), so INF_INH relationships don't
+        // emerge — inhibitory neurons receive no input. The bundle API still
+        // demonstrates the pattern; a multi-kind result requires a topology where
+        // the same pair receives both excitatory and inhibitory projections.
+
+        println!("--- Relationship bundle analysis (sample) ---");
+        let inh_count = (POP_SIZE as f64 * INHIBITORY_FRAC) as u64;
+        // Two excitatory neurons from Pop A
+        let sample_a = LocusId(inh_count); // first excitatory in Pop A
+        let sample_b = LocusId(inh_count + 1); // second excitatory in Pop A
+
+        let bundle = Q::relationship_profile(world, sample_a, sample_b);
+        if bundle.is_empty() {
+            println!(
+                "  L{} ↔ L{}: no relationships (sparse random topology — try other pairs)",
+                sample_a.0, sample_b.0
+            );
+        } else {
+            println!(
+                "  L{} ↔ L{}: {} edges  net_activity={:.3}  {}",
+                sample_a.0,
+                sample_b.0,
+                bundle.len(),
+                bundle.net_activity(),
+                if bundle.is_inhibitory() {
+                    "net-inhibitory"
+                } else {
+                    "net-excitatory"
+                },
+            );
+            for (kind, act) in bundle.activity_by_kind() {
+                let kind_name = if kind == INF_EXC {
+                    "excitatory"
+                } else {
+                    "inhibitory"
+                };
+                println!("    kind={kind_name}  activity={act:.3}");
+            }
         }
-    }
 
-    // Show aggregate excitatory vs inhibitory net activity across all relationships
-    let total_exc_act: f32 = rels.iter().filter(|r| r.kind == INF_EXC).map(|r| r.activity()).sum();
-    let total_inh_act: f32 = rels.iter().filter(|r| r.kind == INF_INH).map(|r| r.activity()).sum();
-    println!("  network-wide: total_exc_activity={:.1}  total_inh_activity={:.1}  balance={:.1}",
-        total_exc_act, total_inh_act, total_exc_act + total_inh_act);
+        // Show aggregate excitatory vs inhibitory net activity across all relationships
+        let total_exc_act: f32 = rels
+            .iter()
+            .filter(|r| r.kind == INF_EXC)
+            .map(|r| r.activity())
+            .sum();
+        let total_inh_act: f32 = rels
+            .iter()
+            .filter(|r| r.kind == INF_INH)
+            .map(|r| r.activity())
+            .sum();
+        println!(
+            "  network-wide: total_exc_activity={:.1}  total_inh_activity={:.1}  balance={:.1}",
+            total_exc_act,
+            total_inh_act,
+            total_exc_act + total_inh_act
+        );
     } // end relationship stats guard
     println!();
 
@@ -778,9 +924,19 @@ fn main() {
             }
             let total_edges = within_edges + cross_edges;
             let total_touches = within_touches + cross_touches;
-            let edge_pct = if total_edges > 0 { within_edges * 100 / total_edges } else { 0 };
-            let touch_pct = if total_touches > 0 { within_touches * 100 / total_touches } else { 0 };
-            println!("partition(P={p},N={n}): edges within%={edge_pct}% touches within%={touch_pct}% (edges={total_edges} touches={total_touches})");
+            let edge_pct = if total_edges > 0 {
+                within_edges * 100 / total_edges
+            } else {
+                0
+            };
+            let touch_pct = if total_touches > 0 {
+                within_touches * 100 / total_touches
+            } else {
+                0
+            };
+            println!(
+                "partition(P={p},N={n}): edges within%={edge_pct}% touches within%={touch_pct}% (edges={total_edges} touches={total_touches})"
+            );
         }
     }
 

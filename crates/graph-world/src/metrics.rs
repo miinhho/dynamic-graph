@@ -99,7 +99,8 @@ impl WorldMetrics {
         let mut total_activity = 0.0f32;
         let mut max_activity = 0.0f32;
         let mut active_relationship_count = 0usize;
-        let mut activity_vec: Vec<(RelationshipId, f32)> = Vec::with_capacity(relationship_count.min(TOP_N * 4));
+        let mut activity_vec: Vec<(RelationshipId, f32)> =
+            Vec::with_capacity(relationship_count.min(TOP_N * 4));
         for rel in rels.iter() {
             let a = rel.activity();
             total_activity += a;
@@ -203,9 +204,11 @@ fn connected_components_stats(world: &crate::world::World) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use graph_core::{Endpoints, InfluenceKindId, KindObservation, Locus, LocusId, LocusKindId,
-                     Relationship, RelationshipLineage, StateVector};
     use crate::world::World;
+    use graph_core::{
+        Endpoints, InfluenceKindId, KindObservation, Locus, LocusId, LocusKindId, Relationship,
+        RelationshipLineage, StateVector,
+    };
 
     fn make_world_with_star(arms: u64) -> World {
         let kind = LocusKindId(1);
@@ -220,7 +223,10 @@ mod tests {
             w.relationships_mut().insert(Relationship {
                 id,
                 kind: rel_kind,
-                endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(i) },
+                endpoints: Endpoints::Directed {
+                    from: LocusId(0),
+                    to: LocusId(i),
+                },
                 state: StateVector::from_slice(&[1.0, 0.0]),
                 lineage: RelationshipLineage {
                     created_by: None,

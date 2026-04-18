@@ -14,17 +14,16 @@ fn main() {
 
 #[cfg(feature = "ollama")]
 fn main() {
-    use graph_boundary::{analyze_boundary, prescribe_updates, PrescriptionConfig};
+    use graph_boundary::{PrescriptionConfig, analyze_boundary, prescribe_updates};
+    use graph_core::BatchId;
     use graph_core::{Change, Locus, LocusContext, LocusProgram, ProposedChange, props};
     use graph_engine::{InfluenceKindConfig, SimulationBuilder};
     use graph_llm::{
-        GraphLlm, OllamaClient, TextIngestor,
-        answer_with_graph,
-        narrate_counterfactual, narrate_entity_deviations, narrate_prescriptions,
+        GraphLlm, OllamaClient, TextIngestor, answer_with_graph, narrate_counterfactual,
+        narrate_entity_deviations, narrate_prescriptions,
     };
-    use graph_query::{entity_deviations_since, NameMap, relationships_absent_without};
+    use graph_query::{NameMap, entity_deviations_since, relationships_absent_without};
     use graph_schema::SchemaWorld;
-    use graph_core::BatchId;
 
     struct Noop;
     impl LocusProgram for Noop {
@@ -58,42 +57,44 @@ fn main() {
     // ── 2. Build a small world for narration tests ──────────────────────────────
     let mut sim = SimulationBuilder::new()
         .locus_kind("NODE", Noop)
-        .influence("signal", |cfg: InfluenceKindConfig| cfg.with_decay(0.9).symmetric())
+        .influence("signal", |cfg: InfluenceKindConfig| {
+            cfg.with_decay(0.9).symmetric()
+        })
         .default_influence("signal")
         .build();
 
     // First co-occurrence: creates the loci.
     sim.ingest_cooccurrence(vec![
         ("alice", "NODE", props! { "name" => "alice" }),
-        ("bob",   "NODE", props! { "name" => "bob"   }),
+        ("bob", "NODE", props! { "name" => "bob"   }),
         ("carol", "NODE", props! { "name" => "carol" }),
     ]);
 
     // Second co-occurrence: wires cross-locus predecessors → relationships emerge.
     sim.ingest_cooccurrence(vec![
         ("alice", "NODE", props! { "name" => "alice" }),
-        ("bob",   "NODE", props! { "name" => "bob"   }),
+        ("bob", "NODE", props! { "name" => "bob"   }),
         ("carol", "NODE", props! { "name" => "carol" }),
     ]);
 
     // Third co-occurrence: different subset → dave added.
     sim.ingest_cooccurrence(vec![
-        ("bob",  "NODE", props! { "name" => "bob"  }),
+        ("bob", "NODE", props! { "name" => "bob"  }),
         ("dave", "NODE", props! { "name" => "dave" }),
     ]);
 
     let world = &sim.world;
     let names = NameMap::from_world(world);
-    println!("\nWorld: {} loci, {} relationships", world.loci().len(), world.relationships().len());
+    println!(
+        "\nWorld: {} loci, {} relationships",
+        world.loci().len(),
+        world.relationships().len()
+    );
 
     // ── 2. Counterfactual narration ─────────────────────────────────────────────
     println!("\n── 2. Counterfactual narration ────────────────────────────────────");
 
-    let batch0_changes: Vec<_> = world
-        .log()
-        .batch(BatchId(0))
-        .map(|c| c.id)
-        .collect();
+    let batch0_changes: Vec<_> = world.log().batch(BatchId(0)).map(|c| c.id).collect();
 
     let absent = relationships_absent_without(world, &batch0_changes);
     let name_pairs: Vec<(String, String)> = absent
@@ -108,10 +109,13 @@ fn main() {
         })
         .collect();
 
-    println!("Relationships absent without batch-0 stimuli: {}", name_pairs.len());
+    println!(
+        "Relationships absent without batch-0 stimuli: {}",
+        name_pairs.len()
+    );
     match narrate_counterfactual(&client, &name_pairs) {
         Ok(prose) => println!("\nNarration:\n{prose}"),
-        Err(e)    => println!("  [error] {e}"),
+        Err(e) => println!("  [error] {e}"),
     }
 
     // ── 3. Entity deviation narration ───────────────────────────────────────────
@@ -122,20 +126,20 @@ fn main() {
 
     match narrate_entity_deviations(&client, &diffs, &names) {
         Ok(prose) => println!("\nNarration:\n{prose}"),
-        Err(e)    => println!("  [error] {e}"),
+        Err(e) => println!("  [error] {e}"),
     }
 
     // ── 4. Schema tension narration ─────────────────────────────────────────────
     println!("\n── 4. Schema tension narration ────────────────────────────────────");
 
-    let schema  = SchemaWorld::new();
-    let report  = analyze_boundary(world, &schema, None);
+    let schema = SchemaWorld::new();
+    let report = analyze_boundary(world, &schema, None);
     let actions = prescribe_updates(&report, &schema, world, &PrescriptionConfig::default());
     println!("Boundary actions: {}", actions.len());
 
     match narrate_prescriptions(&client, &actions, &schema, &names) {
         Ok(prose) => println!("\nNarration:\n{prose}"),
-        Err(e)    => println!("  [error] {e}"),
+        Err(e) => println!("  [error] {e}"),
     }
 
     // ── 5. Graph-grounded Q&A ───────────────────────────────────────────────────
@@ -143,13 +147,13 @@ fn main() {
     let questions = [
         "Who is alice connected to?",
         "What do we know about dave?",
-        "Who is charlie?",   // 그래프에 없는 이름 — context 없이 전달됨
+        "Who is charlie?", // 그래프에 없는 이름 — context 없이 전달됨
     ];
     for q in &questions {
         println!("\nQ: {q}");
         match answer_with_graph(&client, q, world, &names, 5) {
             Ok(answer) => println!("A: {answer}"),
-            Err(e)     => println!("  [error] {e}"),
+            Err(e) => println!("  [error] {e}"),
         }
     }
 
@@ -160,7 +164,7 @@ fn main() {
     println!("Q: Who is bob connected to?");
     match g.ask("Who is bob connected to?") {
         Ok(answer) => println!("A: {answer}"),
-        Err(e)     => println!("  [error] {e}"),
+        Err(e) => println!("  [error] {e}"),
     }
 
     println!("\n=== done ===");

@@ -5,7 +5,10 @@
 //! no builder pattern, no lazy iterators — just composable free functions
 //! that can be chained by the caller.
 
-use graph_core::{BatchId, Entity, InfluenceKindId, InteractionEffect, Locus, LocusId, LocusKindId, Relationship, RelationshipId};
+use graph_core::{
+    BatchId, Entity, InfluenceKindId, InteractionEffect, Locus, LocusId, LocusKindId, Relationship,
+    RelationshipId,
+};
 use graph_world::World;
 
 // ─── ID-to-ref lookup helpers ─────────────────────────────────────────────────
@@ -193,7 +196,10 @@ pub fn relationships_of_kind(world: &World, kind: InfluenceKindId) -> Vec<&Relat
 /// let kinds = registry.kind_and_descendants(THERMAL);
 /// let rels  = graph_query::relationships_of_kinds(&world, &kinds);
 /// ```
-pub fn relationships_of_kinds<'w>(world: &'w World, kinds: &[InfluenceKindId]) -> Vec<&'w Relationship> {
+pub fn relationships_of_kinds<'w>(
+    world: &'w World,
+    kinds: &[InfluenceKindId],
+) -> Vec<&'w Relationship> {
     if kinds.is_empty() {
         return Vec::new();
     }
@@ -239,12 +245,7 @@ where
     world
         .relationships()
         .iter()
-        .filter(|r| {
-            r.state
-                .as_slice()
-                .get(slot_idx)
-                .is_some_and(|&v| pred(v))
-        })
+        .filter(|r| r.state.as_slice().get(slot_idx).is_some_and(|&v| pred(v)))
         .collect()
 }
 
@@ -330,12 +331,9 @@ pub fn relationships_matching_slots(
         .relationships()
         .iter()
         .filter(|r| {
-            conditions.iter().all(|(slot_idx, pred)| {
-                r.state
-                    .as_slice()
-                    .get(*slot_idx)
-                    .is_some_and(|&v| pred(v))
-            })
+            conditions
+                .iter()
+                .all(|(slot_idx, pred)| r.state.as_slice().get(*slot_idx).is_some_and(|&v| pred(v)))
         })
         .collect()
 }
@@ -474,12 +472,7 @@ pub fn net_influence_balance(world: &World, locus: LocusId) -> f32 {
 ///    - `Antagonistic { dampen }` — multiply combined activity by `dampen`.
 ///    - `Neutral` (or no entry) — sum unchanged.
 /// 4. Return the total across all kind-pairs.
-pub fn net_influence_between<F>(
-    world: &World,
-    a: LocusId,
-    b: LocusId,
-    interaction_fn: F,
-) -> f32
+pub fn net_influence_between<F>(world: &World, a: LocusId, b: LocusId, interaction_fn: F) -> f32
 where
     F: Fn(InfluenceKindId, InfluenceKindId) -> Option<InteractionEffect>,
 {
@@ -548,10 +541,18 @@ pub fn relationships_top_n_by_strength(world: &World, n: usize) -> Vec<&Relation
 ///
 /// - High rate → relationship is being actively reinforced every batch.
 /// - Low rate → relationship was born from a burst and has since gone quiet.
-pub fn relationship_touch_rate(world: &World, rel_id: RelationshipId, current_batch: BatchId) -> f32 {
-    let Some(rel) = world.relationships().get(rel_id) else { return 0.0 };
+pub fn relationship_touch_rate(
+    world: &World,
+    rel_id: RelationshipId,
+    current_batch: BatchId,
+) -> f32 {
+    let Some(rel) = world.relationships().get(rel_id) else {
+        return 0.0;
+    };
     let age = rel.age_in_batches(current_batch);
-    if age == 0 { return 0.0; }
+    if age == 0 {
+        return 0.0;
+    }
     rel.lineage.change_count as f32 / age as f32
 }
 
@@ -568,9 +569,7 @@ pub fn relationships_idle_for(
     world
         .relationships()
         .iter()
-        .filter(|r| {
-            current_batch.0.saturating_sub(r.last_decayed_batch) >= min_idle_batches
-        })
+        .filter(|r| current_batch.0.saturating_sub(r.last_decayed_batch) >= min_idle_batches)
         .collect()
 }
 
@@ -582,7 +581,11 @@ pub fn relationships_from(world: &World, locus: LocusId) -> Vec<&Relationship> {
 
 /// Directed outgoing relationships of a specific kind from `locus`.
 /// Symmetric edges are excluded.
-pub fn relationships_from_of_kind(world: &World, locus: LocusId, kind: InfluenceKindId) -> Vec<&Relationship> {
+pub fn relationships_from_of_kind(
+    world: &World,
+    locus: LocusId,
+    kind: InfluenceKindId,
+) -> Vec<&Relationship> {
     world.relationships_from_of_kind(locus, kind).collect()
 }
 
@@ -594,7 +597,11 @@ pub fn relationships_to(world: &World, locus: LocusId) -> Vec<&Relationship> {
 
 /// Directed incoming relationships of a specific kind to `locus`.
 /// Symmetric edges are excluded.
-pub fn relationships_to_of_kind(world: &World, locus: LocusId, kind: InfluenceKindId) -> Vec<&Relationship> {
+pub fn relationships_to_of_kind(
+    world: &World,
+    locus: LocusId,
+    kind: InfluenceKindId,
+) -> Vec<&Relationship> {
     world.relationships_to_of_kind(locus, kind).collect()
 }
 
@@ -663,7 +670,10 @@ where
 /// Returns only loci that still exist in the world (stale member IDs are
 /// silently skipped). The ordering matches `entity.current.members`.
 pub fn entity_member_loci<'w>(world: &'w World, entity: &graph_core::Entity) -> Vec<&'w Locus> {
-    entity.current.members.iter()
+    entity
+        .current
+        .members
+        .iter()
         .filter_map(|&id| world.locus(id))
         .collect()
 }
@@ -673,7 +683,9 @@ pub fn entity_member_loci<'w>(world: &'w World, entity: &graph_core::Entity) -> 
 /// A locus can belong to more than one active entity when two overlapping
 /// bundles both claim it.
 pub fn locus_entities<'w>(world: &'w World, locus: LocusId) -> Vec<&'w graph_core::Entity> {
-    world.entities().active()
+    world
+        .entities()
+        .active()
         .filter(|e| e.current.members.contains(&locus))
         .collect()
 }
@@ -684,7 +696,12 @@ pub fn locus_entities<'w>(world: &'w World, locus: LocusId) -> Vec<&'w graph_cor
 /// identifying the most structurally significant loci in the world.
 pub fn top_entity_members(world: &World, n: usize) -> Vec<&Locus> {
     let mut entities: Vec<&graph_core::Entity> = world.entities().active().collect();
-    entities.sort_unstable_by(|a, b| b.current.coherence.partial_cmp(&a.current.coherence).unwrap_or(std::cmp::Ordering::Equal));
+    entities.sort_unstable_by(|a, b| {
+        b.current
+            .coherence
+            .partial_cmp(&a.current.coherence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let mut seen = rustc_hash::FxHashSet::default();
     let mut result = Vec::new();
@@ -707,7 +724,11 @@ pub fn top_entity_members(world: &World, n: usize) -> Vec<&Locus> {
 /// Delegates to [`RelationshipLineage::dominant_flow_kind`]. Returns `None`
 /// when the relationship is not found or its lineage has no observations.
 pub fn dominant_flow_kind(world: &World, rel_id: RelationshipId) -> Option<InfluenceKindId> {
-    world.relationships().get(rel_id)?.lineage.dominant_flow_kind()
+    world
+        .relationships()
+        .get(rel_id)?
+        .lineage
+        .dominant_flow_kind()
 }
 
 /// Compute the kind-flow diversity score for `rel_id`.
@@ -781,18 +802,36 @@ mod tests {
         let rk: RelationshipKindId = InfluenceKindId(1);
         let mut w = World::new();
 
-        w.insert_locus(Locus::new(graph_core::LocusId(0), lk_a, StateVector::from_slice(&[0.9])));
-        w.insert_locus(Locus::new(graph_core::LocusId(1), lk_a, StateVector::from_slice(&[0.3])));
-        w.insert_locus(Locus::new(graph_core::LocusId(2), lk_b, StateVector::from_slice(&[0.7])));
+        w.insert_locus(Locus::new(
+            graph_core::LocusId(0),
+            lk_a,
+            StateVector::from_slice(&[0.9]),
+        ));
+        w.insert_locus(Locus::new(
+            graph_core::LocusId(1),
+            lk_a,
+            StateVector::from_slice(&[0.3]),
+        ));
+        w.insert_locus(Locus::new(
+            graph_core::LocusId(2),
+            lk_b,
+            StateVector::from_slice(&[0.7]),
+        ));
 
-        w.properties_mut().insert(graph_core::LocusId(0), graph_core::props! {
-            "type" => "ORG",
-            "score" => 0.9_f64,
-        });
-        w.properties_mut().insert(graph_core::LocusId(1), graph_core::props! {
-            "type" => "PERSON",
-            "score" => 0.3_f64,
-        });
+        w.properties_mut().insert(
+            graph_core::LocusId(0),
+            graph_core::props! {
+                "type" => "ORG",
+                "score" => 0.9_f64,
+            },
+        );
+        w.properties_mut().insert(
+            graph_core::LocusId(1),
+            graph_core::props! {
+                "type" => "PERSON",
+                "score" => 0.3_f64,
+            },
+        );
 
         let id = w.relationships_mut().mint_id();
         w.relationships_mut().insert(Relationship {
@@ -890,13 +929,21 @@ mod tests {
         w.entities_mut().insert(Entity::born(
             e0,
             BatchId(1),
-            EntitySnapshot { members: vec![LocusId(0), LocusId(1)], member_relationships: vec![], coherence: 0.8 },
+            EntitySnapshot {
+                members: vec![LocusId(0), LocusId(1)],
+                member_relationships: vec![],
+                coherence: 0.8,
+            },
         ));
         let e1 = w.entities_mut().mint_id();
         w.entities_mut().insert(Entity::born(
             e1,
             BatchId(2),
-            EntitySnapshot { members: vec![LocusId(2)], member_relationships: vec![], coherence: 0.2 },
+            EntitySnapshot {
+                members: vec![LocusId(2)],
+                member_relationships: vec![],
+                coherence: 0.2,
+            },
         ));
         w
     }
@@ -944,9 +991,21 @@ mod tests {
         use graph_core::{Endpoints, LocusId};
         let mut w = World::new();
         // L0→L1 kind 1, L2→L1 kind 1, L0→L2 kind 2
-        w.add_relationship(Endpoints::directed(LocusId(0), LocusId(1)), InfluenceKindId(1), StateVector::from_slice(&[1.0, 0.0]));
-        w.add_relationship(Endpoints::directed(LocusId(2), LocusId(1)), InfluenceKindId(1), StateVector::from_slice(&[1.0, 0.0]));
-        w.add_relationship(Endpoints::directed(LocusId(0), LocusId(2)), InfluenceKindId(2), StateVector::from_slice(&[1.0, 0.0]));
+        w.add_relationship(
+            Endpoints::directed(LocusId(0), LocusId(1)),
+            InfluenceKindId(1),
+            StateVector::from_slice(&[1.0, 0.0]),
+        );
+        w.add_relationship(
+            Endpoints::directed(LocusId(2), LocusId(1)),
+            InfluenceKindId(1),
+            StateVector::from_slice(&[1.0, 0.0]),
+        );
+        w.add_relationship(
+            Endpoints::directed(LocusId(0), LocusId(2)),
+            InfluenceKindId(2),
+            StateVector::from_slice(&[1.0, 0.0]),
+        );
         w
     }
 
@@ -1026,9 +1085,21 @@ mod tests {
                 StateVector::from_slice(&[0.5]),
             ));
         }
-        w.add_relationship(Endpoints::directed(LocusId(0), LocusId(1)), rk, StateVector::from_slice(&[0.8, 0.2]));
-        w.add_relationship(Endpoints::directed(LocusId(1), LocusId(2)), rk, StateVector::from_slice(&[0.3, 0.1]));
-        w.add_relationship(Endpoints::directed(LocusId(2), LocusId(3)), rk, StateVector::from_slice(&[0.5, 0.6]));
+        w.add_relationship(
+            Endpoints::directed(LocusId(0), LocusId(1)),
+            rk,
+            StateVector::from_slice(&[0.8, 0.2]),
+        );
+        w.add_relationship(
+            Endpoints::directed(LocusId(1), LocusId(2)),
+            rk,
+            StateVector::from_slice(&[0.3, 0.1]),
+        );
+        w.add_relationship(
+            Endpoints::directed(LocusId(2), LocusId(3)),
+            rk,
+            StateVector::from_slice(&[0.5, 0.6]),
+        );
         w
     }
 
@@ -1088,7 +1159,7 @@ mod tests {
 
     #[test]
     fn lookup_relationships_resolves_ids() {
-        use graph_core::{RelationshipId, LocusId};
+        use graph_core::{LocusId, RelationshipId};
         let w = directed_world();
         // directed_world has 3 relationships; get all IDs then look them up
         let ids: Vec<RelationshipId> = w.relationships().iter().map(|r| r.id).collect();
@@ -1115,8 +1186,16 @@ mod tests {
         use graph_core::{BatchId, LocusId};
         let mut w = World::new();
         let rk = InfluenceKindId(1);
-        w.insert_locus(graph_core::Locus::new(LocusId(0), LocusKindId(1), StateVector::from_slice(&[0.5])));
-        w.insert_locus(graph_core::Locus::new(LocusId(1), LocusKindId(1), StateVector::from_slice(&[0.5])));
+        w.insert_locus(graph_core::Locus::new(
+            LocusId(0),
+            LocusKindId(1),
+            StateVector::from_slice(&[0.5]),
+        ));
+        w.insert_locus(graph_core::Locus::new(
+            LocusId(1),
+            LocusKindId(1),
+            StateVector::from_slice(&[0.5]),
+        ));
 
         use graph_core::{Endpoints, KindObservation, Relationship, RelationshipLineage};
         let id = w.relationships_mut().mint_id();
@@ -1126,8 +1205,9 @@ mod tests {
             endpoints: Endpoints::directed(LocusId(0), LocusId(1)),
             state: StateVector::from_slice(&[0.5, 0.0]),
             lineage: RelationshipLineage {
-                created_by: None, last_touched_by: None,
-                change_count: 6,  // touched 6 times
+                created_by: None,
+                last_touched_by: None,
+                change_count: 6, // touched 6 times
                 kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
             },
             created_batch: BatchId(0),
@@ -1147,11 +1227,27 @@ mod tests {
         let mut w = World::new();
         let rk = InfluenceKindId(1);
         for i in 0u64..5 {
-            w.insert_locus(graph_core::Locus::new(LocusId(i), LocusKindId(1), StateVector::from_slice(&[0.5])));
+            w.insert_locus(graph_core::Locus::new(
+                LocusId(i),
+                LocusKindId(1),
+                StateVector::from_slice(&[0.5]),
+            ));
         }
-        w.add_relationship(Endpoints::directed(LocusId(0), LocusId(1)), rk, StateVector::from_slice(&[1.0, 0.0]));
-        w.add_relationship(Endpoints::directed(LocusId(0), LocusId(2)), rk, StateVector::from_slice(&[1.0, 0.0]));
-        w.add_relationship(Endpoints::directed(LocusId(3), LocusId(1)), rk, StateVector::from_slice(&[1.0, 0.0]));
+        w.add_relationship(
+            Endpoints::directed(LocusId(0), LocusId(1)),
+            rk,
+            StateVector::from_slice(&[1.0, 0.0]),
+        );
+        w.add_relationship(
+            Endpoints::directed(LocusId(0), LocusId(2)),
+            rk,
+            StateVector::from_slice(&[1.0, 0.0]),
+        );
+        w.add_relationship(
+            Endpoints::directed(LocusId(3), LocusId(1)),
+            rk,
+            StateVector::from_slice(&[1.0, 0.0]),
+        );
         w
     }
 
@@ -1276,7 +1372,11 @@ mod tests {
     fn relationships_of_kinds_empty_set_returns_empty() {
         use graph_core::{Endpoints, InfluenceKindId, StateVector};
         let mut w = World::new();
-        w.add_relationship(Endpoints::directed(LocusId(0), LocusId(1)), InfluenceKindId(1), StateVector::from_slice(&[1.0, 0.0]));
+        w.add_relationship(
+            Endpoints::directed(LocusId(0), LocusId(1)),
+            InfluenceKindId(1),
+            StateVector::from_slice(&[1.0, 0.0]),
+        );
         assert!(relationships_of_kinds(&w, &[]).is_empty());
     }
 
@@ -1287,9 +1387,21 @@ mod tests {
         let k1 = InfluenceKindId(1);
         let k2 = InfluenceKindId(2);
         let k3 = InfluenceKindId(3);
-        w.add_relationship(Endpoints::directed(LocusId(0), LocusId(1)), k1, StateVector::from_slice(&[1.0, 0.0]));
-        w.add_relationship(Endpoints::directed(LocusId(1), LocusId(2)), k2, StateVector::from_slice(&[1.0, 0.0]));
-        w.add_relationship(Endpoints::directed(LocusId(2), LocusId(3)), k3, StateVector::from_slice(&[1.0, 0.0]));
+        w.add_relationship(
+            Endpoints::directed(LocusId(0), LocusId(1)),
+            k1,
+            StateVector::from_slice(&[1.0, 0.0]),
+        );
+        w.add_relationship(
+            Endpoints::directed(LocusId(1), LocusId(2)),
+            k2,
+            StateVector::from_slice(&[1.0, 0.0]),
+        );
+        w.add_relationship(
+            Endpoints::directed(LocusId(2), LocusId(3)),
+            k3,
+            StateVector::from_slice(&[1.0, 0.0]),
+        );
 
         let rels = relationships_of_kinds(&w, &[k1, k2]);
         assert_eq!(rels.len(), 2);
@@ -1311,8 +1423,16 @@ mod tests {
         let mut w = World::new();
         let k = InfluenceKindId(1);
         // Two relationships: A→B (activity 2.0) and B→A (activity 1.5)
-        w.add_relationship(Endpoints::directed(LocusId(0), LocusId(1)), k, StateVector::from_slice(&[2.0, 0.0]));
-        w.add_relationship(Endpoints::directed(LocusId(1), LocusId(0)), k, StateVector::from_slice(&[1.5, 0.0]));
+        w.add_relationship(
+            Endpoints::directed(LocusId(0), LocusId(1)),
+            k,
+            StateVector::from_slice(&[2.0, 0.0]),
+        );
+        w.add_relationship(
+            Endpoints::directed(LocusId(1), LocusId(0)),
+            k,
+            StateVector::from_slice(&[1.5, 0.0]),
+        );
 
         // Same kind, no cross-kind interaction: sum = 3.5
         let net = net_influence_between(&w, LocusId(0), LocusId(1), |_, _| None);
@@ -1325,8 +1445,16 @@ mod tests {
         let mut w = World::new();
         let excite = InfluenceKindId(1);
         let dopamine = InfluenceKindId(2);
-        w.add_relationship(Endpoints::directed(LocusId(0), LocusId(1)), excite, StateVector::from_slice(&[1.0, 0.0]));
-        w.add_relationship(Endpoints::directed(LocusId(0), LocusId(1)), dopamine, StateVector::from_slice(&[1.0, 0.0]));
+        w.add_relationship(
+            Endpoints::directed(LocusId(0), LocusId(1)),
+            excite,
+            StateVector::from_slice(&[1.0, 0.0]),
+        );
+        w.add_relationship(
+            Endpoints::directed(LocusId(0), LocusId(1)),
+            dopamine,
+            StateVector::from_slice(&[1.0, 0.0]),
+        );
 
         // Combined activity = 2.0, boost = 1.5 → 3.0
         let net = net_influence_between(&w, LocusId(0), LocusId(1), |ka, kb| {
@@ -1345,8 +1473,16 @@ mod tests {
         let mut w = World::new();
         let excite = InfluenceKindId(1);
         let inhibit = InfluenceKindId(2);
-        w.add_relationship(Endpoints::directed(LocusId(0), LocusId(1)), excite, StateVector::from_slice(&[1.0, 0.0]));
-        w.add_relationship(Endpoints::directed(LocusId(0), LocusId(1)), inhibit, StateVector::from_slice(&[1.0, 0.0]));
+        w.add_relationship(
+            Endpoints::directed(LocusId(0), LocusId(1)),
+            excite,
+            StateVector::from_slice(&[1.0, 0.0]),
+        );
+        w.add_relationship(
+            Endpoints::directed(LocusId(0), LocusId(1)),
+            inhibit,
+            StateVector::from_slice(&[1.0, 0.0]),
+        );
 
         // Combined activity = 2.0, dampen = 0.5 → 1.0
         let net = net_influence_between(&w, LocusId(0), LocusId(1), |_, _| {

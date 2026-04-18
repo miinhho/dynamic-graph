@@ -35,8 +35,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use graph_core::{
-    Change, Endpoints, InfluenceKindId, Locus, LocusContext, LocusId, LocusKindId,
-    LocusProgram, ProposedChange, StateVector, StructuralProposal,
+    Change, Endpoints, InfluenceKindId, Locus, LocusContext, LocusId, LocusKindId, LocusProgram,
+    ProposedChange, StateVector, StructuralProposal,
 };
 use graph_engine::{
     DefaultCoherePerspective, DefaultEmergencePerspective, DemotionPolicy, EngineConfig,
@@ -57,9 +57,12 @@ const PRUNE_WEIGHT: f32 = 0.005;
 
 struct Rng(u64);
 impl Rng {
-    fn new(seed: u64) -> Self { Self(seed) }
+    fn new(seed: u64) -> Self {
+        Self(seed)
+    }
     fn next(&mut self) -> u64 {
-        self.0 = self.0
+        self.0 = self
+            .0
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1_442_695_040_888_963_407);
         self.0
@@ -98,9 +101,15 @@ fn build_topology(n: usize, seed: u64) -> Topology {
     let k = 2usize.min(cluster_size.saturating_sub(1));
     for c in 0..num_clusters {
         let base = c * cluster_size;
-        let end = if c + 1 == num_clusters { n } else { base + cluster_size };
+        let end = if c + 1 == num_clusters {
+            n
+        } else {
+            base + cluster_size
+        };
         let sz = end - base;
-        if sz < 2 { continue; }
+        if sz < 2 {
+            continue;
+        }
         for i in 0..sz {
             for d in 1..=k {
                 let j = (i + d) % sz;
@@ -121,7 +130,9 @@ fn build_topology(n: usize, seed: u64) -> Topology {
     for _ in 0..cross_links {
         let a = rng.range(0, n as u64) as usize;
         let b = rng.range(0, n as u64) as usize;
-        if a == b { continue; }
+        if a == b {
+            continue;
+        }
         let aid = LocusId(a as u64);
         let bid = LocusId(b as u64);
         if !adj[a].contains(&bid) {
@@ -160,7 +171,9 @@ impl LocusProgram for NodeProgram {
         }
 
         let idx = locus.id.0 as usize;
-        if idx >= self.topo.n { return vec![]; }
+        if idx >= self.topo.n {
+            return vec![];
+        }
 
         let out = (signal * 0.6).min(1.0);
         self.topo.neighbours[idx]
@@ -208,18 +221,25 @@ fn build_world_and_registries(
 ) -> (World, LocusKindRegistry, InfluenceKindRegistry) {
     let mut world = World::new();
     for i in 0..n {
-        world.insert_locus(Locus::new(LocusId(i as u64), KIND_NODE, StateVector::zeros(1)));
+        world.insert_locus(Locus::new(
+            LocusId(i as u64),
+            KIND_NODE,
+            StateVector::zeros(1),
+        ));
     }
 
     let mut loci = LocusKindRegistry::new();
-    loci.insert_with_config(KIND_NODE, LocusKindConfig {
-        name: None,
-        state_slots: Vec::new(),
-        program: Box::new(NodeProgram { topo }),
-        refractory_batches: 2,
-        encoder: None,
-        max_proposals_per_dispatch: None,
-    });
+    loci.insert_with_config(
+        KIND_NODE,
+        LocusKindConfig {
+            name: None,
+            state_slots: Vec::new(),
+            program: Box::new(NodeProgram { topo }),
+            refractory_batches: 2,
+            encoder: None,
+            max_proposals_per_dispatch: None,
+        },
+    );
 
     let mut influences = InfluenceKindRegistry::new();
     let mut cfg = InfluenceKindConfig::new("excitatory")
@@ -228,10 +248,9 @@ fn build_world_and_registries(
             learning_rate: 0.02,
             weight_decay: 0.990,
             max_weight: 3.0,
-            stdp: false,
+
             ..Default::default()
-        })
-        .with_prune_threshold(PRUNE_WEIGHT);
+        });
     if let Some(policy) = demotion {
         cfg = cfg.with_demotion(policy);
     }
@@ -245,7 +264,9 @@ fn build_world_and_registries(
 /// Stimulate `count` random loci in a random cluster (chosen by `batch` index).
 /// The cluster cycles each batch so that phase-rotation drives split/merge.
 fn phase_stimulus(rng: &mut Rng, n: usize, batch: usize, count: usize) -> Vec<ProposedChange> {
-    if n == 0 || count == 0 { return vec![]; }
+    if n == 0 || count == 0 {
+        return vec![];
+    }
 
     let num_clusters = 3usize.min(n);
     let cluster_size = n / num_clusters;
@@ -254,7 +275,9 @@ fn phase_stimulus(rng: &mut Rng, n: usize, batch: usize, count: usize) -> Vec<Pr
     let base = primary_cluster * cluster_size;
     let end = ((primary_cluster + 1) * cluster_size).min(n);
     let sz = end - base;
-    if sz == 0 { return vec![]; }
+    if sz == 0 {
+        return vec![];
+    }
 
     let mut stimuli = Vec::with_capacity(count);
     for _ in 0..count {
@@ -312,23 +335,39 @@ fn parse_args() -> Args {
     while i < args.len() {
         match args[i].as_str() {
             "--size" if i + 1 < args.len() => {
-                size = args[i + 1].parse().expect("--size must be a positive integer");
+                size = args[i + 1]
+                    .parse()
+                    .expect("--size must be a positive integer");
                 i += 2;
             }
             "--batches" if i + 1 < args.len() => {
-                batches = args[i + 1].parse().expect("--batches must be a positive integer");
+                batches = args[i + 1]
+                    .parse()
+                    .expect("--batches must be a positive integer");
                 i += 2;
             }
             "--demotion-floor" if i + 1 < args.len() => {
-                demotion_floor = Some(args[i + 1].parse().expect("--demotion-floor must be a float"));
+                demotion_floor = Some(
+                    args[i + 1]
+                        .parse()
+                        .expect("--demotion-floor must be a float"),
+                );
                 i += 2;
             }
             "--burst-on" if i + 1 < args.len() => {
-                burst_on = Some(args[i + 1].parse().expect("--burst-on must be a positive integer"));
+                burst_on = Some(
+                    args[i + 1]
+                        .parse()
+                        .expect("--burst-on must be a positive integer"),
+                );
                 i += 2;
             }
             "--burst-off" if i + 1 < args.len() => {
-                burst_off = Some(args[i + 1].parse().expect("--burst-off must be a positive integer"));
+                burst_off = Some(
+                    args[i + 1]
+                        .parse()
+                        .expect("--burst-off must be a positive integer"),
+                );
                 i += 2;
             }
             "--psi" => {
@@ -341,7 +380,14 @@ fn parse_args() -> Args {
             }
         }
     }
-    Args { size, batches, demotion_floor, burst_on, burst_off, psi }
+    Args {
+        size,
+        batches,
+        demotion_floor,
+        burst_on,
+        burst_off,
+        psi,
+    }
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -355,7 +401,8 @@ fn main() {
 
     let t_build = Instant::now();
     let topo = Arc::new(build_topology(n, 42));
-    let (world, loci, influences) = build_world_and_registries(n, Arc::clone(&topo), demotion_policy);
+    let (world, loci, influences) =
+        build_world_and_registries(n, Arc::clone(&topo), demotion_policy);
 
     let mut sim = Simulation::with_config(
         world,
@@ -387,11 +434,10 @@ fn main() {
     // Emergence perspective: lower threshold so relationships emerge quickly
     // at startup, driving entity formation from the first few ticks.
     let ep = DefaultEmergencePerspective {
-        min_activity_threshold: 0.05,
-        overlap_threshold: 0.2,
+        min_activity_threshold: Some(0.05),
     };
     let cp = DefaultCoherePerspective {
-        min_bridge_activity: 0.05,
+        min_bridge_activity: Some(0.05),
         ..Default::default()
     };
 
@@ -431,7 +477,13 @@ fn main() {
         let rel_count = world.relationships().iter().count();
         drop(world);
 
-        println!("{},{},{},{}", batch_idx + 1, entity_count, rel_count, elapsed_ms);
+        println!(
+            "{},{},{},{}",
+            batch_idx + 1,
+            entity_count,
+            rel_count,
+            elapsed_ms
+        );
     }
 
     // Final summary to stderr so it doesn't pollute CSV stdout.
@@ -494,8 +546,16 @@ fn main() {
         }
         let total_edges = within_edges + cross_edges;
         let total_touches = within_touches + cross_touches;
-        let edge_pct = if total_edges > 0 { within_edges * 100 / total_edges } else { 0 };
-        let touch_pct = if total_touches > 0 { within_touches * 100 / total_touches } else { 0 };
+        let edge_pct = if total_edges > 0 {
+            within_edges * 100 / total_edges
+        } else {
+            0
+        };
+        let touch_pct = if total_touches > 0 {
+            within_touches * 100 / total_touches
+        } else {
+            0
+        };
         eprintln!(
             "partition(P={p},N={n}): edges within%={edge_pct}% touches within%={touch_pct}% (edges={total_edges} touches={total_touches})"
         );
@@ -516,9 +576,9 @@ fn main() {
         // (fifth pass saw Entity 73 at b=50 as the sole such entity).
         for entry in synergy.emergent.iter().chain(synergy.spurious.iter()) {
             if entry.psi.psi_pair_top3 > 0.0 {
-                if let Some(loo) = graph_query::psi_synergy_leave_one_out_with_decay(
-                    &world, entry.entity, &decay,
-                ) {
+                if let Some(loo) =
+                    graph_query::psi_synergy_leave_one_out_with_decay(&world, entry.entity, &decay)
+                {
                     eprintln!("\n{}", loo.render_markdown());
                 }
             }

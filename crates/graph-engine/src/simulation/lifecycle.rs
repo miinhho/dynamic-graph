@@ -16,7 +16,12 @@ impl Simulation {
         influences: InfluenceKindRegistry,
         config: SimulationConfig,
     ) -> Self {
-        Self::with_config(graph_world::World::from_snapshot(snapshot), loci, influences, config)
+        Self::with_config(
+            graph_world::World::from_snapshot(snapshot),
+            loci,
+            influences,
+            config,
+        )
     }
 
     /// Load a `World` from a redb-backed storage file and create a

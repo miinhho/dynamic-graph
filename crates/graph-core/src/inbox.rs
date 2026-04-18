@@ -38,13 +38,9 @@ pub fn of_kind<'a>(
     incoming: &'a [&'a Change],
     kind: InfluenceKindId,
 ) -> impl Iterator<Item = &'a Change> + 'a {
-    incoming.iter().filter_map(move |c| {
-        if c.kind == kind {
-            Some(*c)
-        } else {
-            None
-        }
-    })
+    incoming
+        .iter()
+        .filter_map(move |c| if c.kind == kind { Some(*c) } else { None })
 }
 
 /// Sum the first state slot (`after[0]`) over all locus-subject changes

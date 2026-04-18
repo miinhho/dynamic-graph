@@ -181,10 +181,14 @@ impl WorldDiff {
         let mut relationships_created = Vec::new();
         let mut relationships_updated = Vec::new();
         for rel in world.relationships().iter() {
-            let created_in_range = rel.lineage.created_by
+            let created_in_range = rel
+                .lineage
+                .created_by
                 .map(|cid| in_range.contains(&cid))
                 .unwrap_or(false);
-            let touched_in_range = rel.lineage.last_touched_by
+            let touched_in_range = rel
+                .lineage
+                .last_touched_by
                 .map(|cid| in_range.contains(&cid))
                 .unwrap_or(false);
 
@@ -222,7 +226,11 @@ impl WorldDiff {
         let mut relationships_strengthening = Vec::new();
         let mut relationships_weakening = Vec::new();
         for (id, (activity_before, activity_after)) in rel_activity_range.unwrap_or_default() {
-            let delta = RelationshipDelta { id, activity_before, activity_after };
+            let delta = RelationshipDelta {
+                id,
+                activity_before,
+                activity_after,
+            };
             if activity_after > activity_before {
                 relationships_strengthening.push(delta);
             } else if activity_after < activity_before {
@@ -257,14 +265,23 @@ impl WorldDiff {
 
 #[cfg(test)]
 mod tests {
-    use graph_core::{BatchId, ChangeId, ChangeSubject, InfluenceKindId, Locus, LocusId,
-                     LocusKindId, StateVector};
     use crate::world::World;
+    use graph_core::{
+        BatchId, ChangeId, ChangeSubject, InfluenceKindId, Locus, LocusId, LocusKindId, StateVector,
+    };
 
     fn two_locus_world() -> World {
         let mut w = World::new();
-        w.insert_locus(Locus::new(LocusId(0), LocusKindId(1), StateVector::zeros(1)));
-        w.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::zeros(1)));
+        w.insert_locus(Locus::new(
+            LocusId(0),
+            LocusKindId(1),
+            StateVector::zeros(1),
+        ));
+        w.insert_locus(Locus::new(
+            LocusId(1),
+            LocusKindId(1),
+            StateVector::zeros(1),
+        ));
         w
     }
 
@@ -377,10 +394,12 @@ mod tests {
         let rel_b = RelationshipId(11);
 
         let batch0 = w.current_batch(); // batch 0
-        w.subscriptions_mut().subscribe_at(locus, rel_a, Some(batch0));
+        w.subscriptions_mut()
+            .subscribe_at(locus, rel_a, Some(batch0));
         w.advance_batch(); // batch 1
         let batch1 = w.current_batch();
-        w.subscriptions_mut().subscribe_at(locus, rel_b, Some(batch1));
+        w.subscriptions_mut()
+            .subscribe_at(locus, rel_b, Some(batch1));
         w.advance_batch(); // batch 2
 
         // Only look at batch 1 (exclusive of batch 0 event).
@@ -390,11 +409,17 @@ mod tests {
 
     // ── relationship trajectory ──────────────────────────────────────────────
 
-    fn append_rel_change(world: &mut World, rel_id: graph_core::RelationshipId, activity: f32) -> ChangeId {
+    fn append_rel_change(
+        world: &mut World,
+        rel_id: graph_core::RelationshipId,
+        activity: f32,
+    ) -> ChangeId {
         use graph_core::{Change, StateVector as SV};
         let id = world.mint_change_id();
         let batch = world.current_batch();
-        let old_act = world.relationships().get(rel_id)
+        let old_act = world
+            .relationships()
+            .get(rel_id)
             .map(|r| r.state.as_slice()[0])
             .unwrap_or(0.0);
         world.append_change(Change {
@@ -422,7 +447,10 @@ mod tests {
         w.relationships_mut().insert(Relationship {
             id: rel_id,
             kind: rk,
-            endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(1) },
+            endpoints: Endpoints::Directed {
+                from: LocusId(0),
+                to: LocusId(1),
+            },
             state: SV::from_slice(&[0.5, 0.0]),
             lineage: RelationshipLineage {
                 created_by: None,
@@ -480,8 +508,16 @@ mod tests {
         // Net: 0.5 before, 0.7 after → strengthening
         assert_eq!(diff.relationships_strengthening.len(), 1);
         let delta = &diff.relationships_strengthening[0];
-        assert!((delta.activity_before - 0.5).abs() < 1e-5, "before={}", delta.activity_before);
-        assert!((delta.activity_after - 0.7).abs() < 1e-5, "after={}", delta.activity_after);
+        assert!(
+            (delta.activity_before - 0.5).abs() < 1e-5,
+            "before={}",
+            delta.activity_before
+        );
+        assert!(
+            (delta.activity_after - 0.7).abs() < 1e-5,
+            "after={}",
+            delta.activity_after
+        );
     }
 
     // ── pruning log ──────────────────────────────────────────────────────────
@@ -502,7 +538,7 @@ mod tests {
         use graph_core::RelationshipId;
         let mut w = two_locus_world();
         w.record_pruned(RelationshipId(1)); // batch 0
-        w.advance_batch();                  // batch 1
+        w.advance_batch(); // batch 1
         let from = w.current_batch();
         // No pruning in batch 1
         w.advance_batch();

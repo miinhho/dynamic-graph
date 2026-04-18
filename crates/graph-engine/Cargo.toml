@@ -52,6 +52,10 @@ name = "engine"
 harness = false
 
 [[bench]]
+name = "phase9_plasticity"
+harness = false
+
+[[bench]]
 name = "storage"
 harness = false
 required-features = ["storage"]

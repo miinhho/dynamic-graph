@@ -15,7 +15,10 @@
 //! an unregistered kind — use `get()` for lenient lookups that tolerate
 //! missing registrations.
 
-use graph_core::{Encoder, InfluenceKindId, InteractionEffect, LocusKindId, LocusProgram, RelationshipSlotDef, StabilizationConfig, StateSlotDef, StateVector};
+use graph_core::{
+    Encoder, InfluenceKindId, InteractionEffect, LocusKindId, LocusProgram, RelationshipSlotDef,
+    StabilizationConfig, StateSlotDef, StateVector,
+};
 use rustc_hash::FxHashMap;
 
 /// Type alias for the slot-definitions map passed into `BatchContext`.
@@ -24,7 +27,8 @@ use rustc_hash::FxHashMap;
 /// relationships of that kind. Only kinds with at least one extra slot appear.
 pub type SlotDefsMap = FxHashMap<InfluenceKindId, Vec<RelationshipSlotDef>>;
 
-/// Hebbian plasticity parameters for one influence kind.
+/// Hebbian plasticity parameters for one influence kind
+/// (`learning_rate`, `weight_decay`, `max_weight`).
 ///
 /// When `learning_rate > 0`, the engine applies the Hebbian rule at the
 /// end of each batch for every relationship of this kind that was
@@ -36,49 +40,38 @@ pub type SlotDefsMap = FxHashMap<InfluenceKindId, Vec<RelationshipSlotDef>>;
 /// weight *= weight_decay   (end-of-batch)
 /// ```
 ///
-/// Default is fully disabled (`learning_rate = 0`) — plasticity is
-/// opt-in.
+/// **Default**: `{ learning_rate: 0.0, weight_decay: 1.0, max_weight:
+/// f32::MAX }` — plasticity is fully disabled and opt-in. The "off"
+/// default comes from `docs/redesign.md` §7 (plasticity is a per-kind
+/// feature users must declare); the non-zero shorthand `0.99 / 1.0`
+/// used by `with_learning_rate` is an internal constant, never
+/// benchmarked beyond the karate connectivity tests.
+///
+/// **Override when**: the domain requires learning between loci — the
+/// canonical trigger is co-activation reinforcing a lasting weight
+/// (Hebbian). Set `learning_rate > 0` and optionally tune `weight_decay`
+/// (forgetting rate) and `max_weight` (saturation cap). Auto-tuning was
+/// deferred (Phase 9 scouting, 2026-04-18): neither `learning_rate` nor
+/// `weight_decay` has a local optimization signal in the current engine
+/// (no loss function, no declared objective). Reopen once benchmarks
+/// provide a supervised metric (SocioPatterns / Enron) or a
+/// `PlasticityObjective::*` API is accepted.
 #[derive(Debug, Clone, Copy)]
 pub struct PlasticityConfig {
-    /// Hebbian learning rate η. Must be >= 0. Set to 0 to disable.
+    /// Hebbian learning rate η. Must be `>= 0`. `0` = disabled.
     pub learning_rate: f32,
     /// Per-batch multiplicative decay on the weight. `1.0` = no decay.
     pub weight_decay: f32,
     /// Maximum weight value. Weights are clamped to `[0, max_weight]`.
     pub max_weight: f32,
-    /// LTD (Long-Term Depression) rate for anti-causal STDP (PostFirst).
-    /// When > 0, overrides `learning_rate` for weight-decrease updates.
-    /// `0.0` (default) means use `learning_rate` for both LTP and LTD —
-    /// symmetric rates. Set higher than `learning_rate` to make suppression
-    /// faster than potentiation (common in biological STDP).
-    pub ltd_rate: f32,
-    /// When true, use STDP rule with engine-native causal DAG timing:
-    ///   - PreFirst (pre caused post): Δw = +η × pre × post  (LTP)
-    ///   - PostFirst (feedback loop detected): Δw = -ltd_rate × pre × post  (LTD)
-    ///   - Simultaneous (same batch): Δw = +η × pre × post  (standard Hebbian)
-    /// Feedback is detected via bounded multi-hop DAG traversal in the
-    /// compute phase — no extra cost in the apply phase.
-    /// When false (default), use standard symmetric Hebbian.
-    pub stdp: bool,
-    /// When `Some(τ)`, use BCM (Bienenstock-Cooper-Munro) rule instead of plain Hebbian.
-    ///   `Δw = η × pre × post × (post − θ_M)`
-    /// where θ_M is a per-locus sliding threshold stored in `World::bcm_thresholds`.
-    /// θ_M adapts each batch: `θ_M += (post² − θ_M) / τ`.
-    /// When `post > θ_M` → LTP (weight up); when `post < θ_M` → LTD (weight down).
-    /// Mutually exclusive with `stdp` — `with_bcm` clears `stdp`.
-    /// `None` (default) disables BCM.
-    pub bcm_tau: Option<f32>,
 }
 
 impl Default for PlasticityConfig {
     fn default() -> Self {
         Self {
             learning_rate: 0.0,
-            ltd_rate: 0.0,
             weight_decay: 1.0,
             max_weight: f32::MAX,
-            stdp: false,
-            bcm_tau: None,
         }
     }
 }
@@ -86,46 +79,8 @@ impl Default for PlasticityConfig {
 impl PlasticityConfig {
     /// True when plasticity is effectively enabled for this config.
     pub(crate) fn is_active(&self) -> bool {
-        self.learning_rate > 0.0 || self.bcm_tau.is_some()
+        self.learning_rate > 0.0
     }
-
-    /// Enable STDP (Spike-Timing Dependent Plasticity).
-    ///
-    /// When enabled:
-    /// - causal flow (pre before post): weight increases (`+η × pre × post`)
-    /// - anti-causal flow (post before pre): weight decreases (`-ltd_rate × pre × post`)
-    /// - simultaneous (same batch): same as standard Hebbian
-    ///
-    /// Clears `bcm_tau` (mutually exclusive with BCM).
-    pub fn with_stdp(mut self) -> Self {
-        self.stdp = true;
-        self.bcm_tau = None;
-        self
-    }
-
-    /// Set a separate LTD rate for anti-causal (PostFirst) STDP weight decreases.
-    ///
-    /// When `0.0` (default), `learning_rate` is used for both LTP and LTD.
-    /// Setting `ltd_rate > learning_rate` makes suppression faster than
-    /// potentiation — causes the engine to more aggressively prune
-    /// feedback paths relative to how quickly it strengthens causal ones.
-    pub fn with_ltd_rate(mut self, rate: f32) -> Self {
-        self.ltd_rate = rate.max(0.0);
-        self
-    }
-
-    /// Enable BCM (Bienenstock-Cooper-Munro) plasticity rule.
-    ///
-    /// `Δw = η × pre × post × (post − θ_M)` where θ_M is a per-locus sliding
-    /// threshold that adapts as `θ_M += (post² − θ_M) / tau`.
-    ///
-    /// Clears `stdp` (mutually exclusive).
-    pub fn with_bcm(mut self, tau: f32) -> Self {
-        self.bcm_tau = Some(tau);
-        self.stdp = false;
-        self
-    }
-
 }
 
 /// Per-influence-kind configuration held by `InfluenceKindRegistry`.
@@ -140,50 +95,78 @@ impl PlasticityConfig {
 ///   than clamping everything uniformly.
 #[derive(Debug, Clone)]
 pub struct InfluenceKindConfig {
-    /// Human-readable label for diagnostics.
+    /// Human-readable label for this influence kind (used in diagnostics
+    /// and assertion messages).
+    ///
+    /// **Default**: none — `InfluenceKindConfig::new(name)` requires a
+    /// name at construction. Convention: one lowercase word (`"thermal"`,
+    /// `"social"`, `"excite"`); used verbatim in panic strings.
+    ///
+    /// **Override when**: N/A — domain declaration. Always set to
+    /// whatever the application calls this kind of influence. Does not
+    /// affect engine behaviour.
     pub name: String,
     /// Per-batch multiplicative decay on relationship activity (slot 0).
-    /// `1.0` = no decay; smaller = fades faster.
-    pub decay_per_batch: f32,
-    /// Guard-rail parameters for state updates of this kind. Default:
-    /// `StabilizationConfig::default()` (alpha=1.0, no saturation, no
-    /// trust region — effectively transparent).
-    pub stabilization: StabilizationConfig,
-    /// Hebbian plasticity parameters. Disabled by default
-    /// (`learning_rate = 0`).
-    pub plasticity: PlasticityConfig,
-    /// Relationships whose activity falls below this threshold after
-    /// decay are automatically removed during `flush_relationship_decay`.
-    /// `0.0` disables auto-pruning (default).
-    pub prune_activity_threshold: f32,
-    /// Relationships whose Hebbian/BCM weight falls at or below this threshold
-    /// after a plasticity update are automatically deleted at the end of that
-    /// batch. Subscribers receive a tombstone notification in the next batch,
-    /// identical to an explicit `DeleteRelationship` proposal.
     ///
-    /// `0.0` disables weight-based pruning (default). A typical value is `0.0`
-    /// (prune when fully suppressed) or a small positive value like `0.05`
-    /// (prune when nearly suppressed). Only meaningful when plasticity is active
-    /// (`learning_rate > 0`).
-    pub prune_weight_threshold: f32,
+    /// Applied at step 6 of the batch loop (`docs/redesign.md` §3.5):
+    /// `activity *= decay_per_batch`. Must be in `(0.0, 1.0]` — values
+    /// outside this range panic at `insert` time (`0` erases every
+    /// relationship in one batch; `>1` grows unbounded).
+    ///
+    /// **Default**: `1.0` (no decay — relationships persist until
+    /// explicitly rewritten). Internal constant, never benchmarked
+    /// non-default outside the examples.
+    ///
+    /// **Override when**: the domain has a natural forgetting rate and
+    /// you want auto-emerged relationships to fade without explicit
+    /// delete proposals. Typical values: `0.99` (slow forgetting, ~100
+    /// batch half-life), `0.9` (fast, ~7 batch half-life).
+    pub decay_per_batch: f32,
+    /// Guard-rail parameters for state updates of this kind
+    /// (post Phase 4: only `alpha` remains). See [`StabilizationConfig`]
+    /// for the knob-level docs.
+    ///
+    /// **Default**: `StabilizationConfig::default()` (`alpha = 1.0` —
+    /// effectively transparent, no blending).
+    pub stabilization: StabilizationConfig,
+    /// Hebbian plasticity parameters. See [`PlasticityConfig`] for the
+    /// knob-level docs — disabled by default (`learning_rate = 0`).
+    pub plasticity: PlasticityConfig,
     /// User-defined extra slots appended to the relationship `StateVector`
     /// beyond the built-in activity (slot 0) and weight (slot 1).
     ///
     /// Slots are initialised with their `default` on creation, decayed
     /// per-batch by their individual `decay` rate (if any), and ignored
-    /// by the Hebbian plasticity rule.
+    /// by the Hebbian plasticity rule. Child kinds inherit parent slots
+    /// via `resolved_extra_slots`; same-name child entries shadow parent
+    /// defaults.
+    ///
+    /// **Default**: empty — relationships of this kind carry only
+    /// `[activity, weight]`. Declaring slots is how a domain attaches
+    /// custom per-relationship dynamics (trust, tension, pheromone
+    /// level, …) without forking the engine.
+    ///
+    /// **Override when**: N/A — domain declaration. Add slots whenever
+    /// the relationship needs more state than activity+weight.
     pub extra_slots: Vec<RelationshipSlotDef>,
-    /// Scale factor applied to the pre-synaptic signal when updating
-    /// relationship activity.
+    /// Signed scale factor applied to the pre-synaptic signal when
+    /// updating relationship activity on each auto-emergence touch
+    /// (`Δactivity = activity_contribution × |pre_signal|`). Ties the
+    /// activity scale to the simulation's signal domain so thresholds
+    /// can be expressed in the same units as program outputs.
     ///
-    /// On each auto-emergence touch, the engine increments the activity slot
-    /// by `activity_contribution × |pre_signal|`, where `pre_signal` is the
-    /// first slot of the predecessor change's after-state (the signal that
-    /// actually flowed through the relationship).
+    /// **Default**: `+1.0` — activity tracks signal directly, 1:1.
+    /// Internal constant. Non-default values are benchmarked only in
+    /// the excitatory/inhibitory examples (`rumor_spread`,
+    /// `neural_population`).
     ///
-    /// This coupling ties the activity scale to the simulation's signal
-    /// domain, so thresholds can be expressed in the same units as program
-    /// outputs without independent scale calibration.
+    /// **Override when**: the kind is inhibitory (set negative — the
+    /// signal *suppresses* rather than reinforces, and
+    /// `DefaultEmergencePerspective` treats negative-activity edges as
+    /// repulsion), or the domain wants amplified/dampened accumulation.
+    /// Must be finite.
+    ///
+    /// # Example
     ///
     /// - `+1.0` (default) — activity tracks signal directly.
     /// - `+2.0` — amplified: large signals accumulate activity faster.
@@ -197,62 +180,60 @@ pub struct InfluenceKindConfig {
     /// `activity_contribution` directly (no signal context), treating the
     /// explicit declaration as a full-strength touch.
     pub activity_contribution: f32,
-    /// Optional parent kind in the influence-kind hierarchy.
+    /// Optional parent kind in the influence-kind hierarchy — this kind
+    /// is treated as a specialisation of `parent`, inheriting its
+    /// `extra_slots` via `resolved_extra_slots`.
     ///
-    /// When set, this kind is treated as a specialisation of the parent.
-    /// `InfluenceKindRegistry::ancestors_of(kind)` walks the parent chain;
-    /// `is_subkind_of(child, ancestor)` tests membership.
+    /// **Default**: `None` (root kind — no inheritance). The parent
+    /// must already be registered at `insert()` time; this constraint
+    /// makes cycles structurally impossible.
     ///
-    /// The parent **must already be registered** at the time `insert()` is
-    /// called. This constraint makes cycles structurally impossible:
-    /// the new kind cannot yet appear in any ancestor chain.
+    /// **Override when**: N/A — domain declaration. Set whenever the
+    /// domain taxonomy has "`Vocal` is a kind of `Communication`" and
+    /// you want the child kind to automatically carry the parent's
+    /// extra slots. Use `is_subkind_of` for subtype checks.
     pub parent: Option<InfluenceKindId>,
     /// When `true`, auto-emerged relationships for this kind use
-    /// `Endpoints::Symmetric` instead of `Endpoints::Directed`.
+    /// `Endpoints::Symmetric` so A↔B co-occurrence produces a single
+    /// edge instead of two directed ones (and Hebbian plasticity
+    /// finds pre-inserted symmetric edges via the emergence path).
     ///
-    /// Useful for inherently undirected influences (co-occurrence, mutual
-    /// conflict, shared resonance) where A→B and B→A represent the same
-    /// coupling. Default: `false` (directed).
+    /// **Default**: `false` — directed edges. Matches the `Change`
+    /// predecessor model, where cause/effect is inherently ordered.
+    ///
+    /// **Override when**: N/A — domain declaration. Set `true` for
+    /// inherently undirected influences (co-occurrence, mutual
+    /// conflict, shared resonance) where A→B and B→A represent the
+    /// same coupling.
     pub symmetric: bool,
-    /// Optional type-level constraint: which `(source_kind, target_kind)` pairs
-    /// are valid for relationships of this influence kind.
+    /// Type-level constraint: which `(source_kind, target_kind)` locus
+    /// pairs are valid for relationships of this influence kind. When
+    /// non-empty, the engine emits `WorldEvent::SchemaViolation` (soft
+    /// warning, non-blocking) for any edge outside the list.
     ///
-    /// When non-empty, the engine emits a `WorldEvent::SchemaViolation` (soft
-    /// warning, non-blocking) whenever a relationship auto-emerges between loci
-    /// whose kinds are not listed here. Empty = no constraint (default).
+    /// **Default**: empty — no constraint, relationships may emerge
+    /// between any locus kinds.
+    ///
+    /// **Override when**: N/A — domain declaration. Add entries when
+    /// the domain has a clear endpoint-kind contract (e.g. `Authored`
+    /// only between `Person` and `Document`) and spurious cross-kind
+    /// emergence should surface as a diagnostic.
     pub applies_between: Vec<(LocusKindId, LocusKindId)>,
-    /// Minimum cross-locus signal magnitude required to auto-emerge a new
-    /// relationship of this kind.
+    /// Automatic relationship demotion policy (E3). When set, the
+    /// engine evaluates this policy at the end of each tick (after
+    /// decay) and evicts matching relationships to cold storage;
+    /// `Simulation::promote_relationship` brings them back on demand.
     ///
-    /// When a predecessor's signal (`|after[0]|`) is below this threshold
-    /// the engine skips relationship creation for that predecessor.  An
-    /// **already-existing** relationship is always updated regardless of
-    /// this threshold — only the initial creation is gated.
+    /// **Default**: `None` — no automatic demotion. Hot set grows
+    /// unbounded; suitable when working-set size is naturally bounded
+    /// by the domain.
     ///
-    /// `0.0` (default) — every cross-locus causal flow creates a relationship.
-    pub min_emerge_activity: f32,
-    /// Optional hard cap on the relationship activity slot.
-    ///
-    /// When `Some(cap)`, the activity slot is clamped to `[-cap, cap]` after
-    /// every touch (both creation and update). This prevents unbounded
-    /// accumulation in high-frequency or long-running simulations where
-    /// `decay_per_batch` is less than 1.0 but stimulation keeps arriving.
-    ///
-    /// The steady-state activity without a cap is `activity_contribution /
-    /// (1 − decay_per_batch)`, which can be large for slow-decay kinds.
-    /// Setting `max_activity` to a meaningful upper bound keeps values in a
-    /// human-readable range without changing the decay dynamics.
-    ///
-    /// `None` (default) — no cap applied.
-    pub max_activity: Option<f32>,
-    /// Automatic relationship demotion policy (E3).
-    ///
-    /// When set, the engine evaluates this policy at the end of each tick
-    /// (after decay) and evicts matching relationships to cold storage.
-    /// Evicted relationships remain in the persistent storage backend and
-    /// are promoted back on demand via `Simulation::promote_relationship`.
-    ///
-    /// `None` (default) — no automatic demotion.
+    /// **Override when**: the kind produces far more relationships
+    /// than fit comfortably in hot memory and most are inactive most
+    /// of the time (large interaction-log kinds, long-tail co-occurrence).
+    /// See [`DemotionPolicy`] for the three available strategies —
+    /// no benchmark currently distinguishes them, so any choice is
+    /// equally unvalidated.
     pub demotion_policy: Option<DemotionPolicy>,
 }
 
@@ -279,15 +260,11 @@ impl InfluenceKindConfig {
             decay_per_batch: 1.0,
             stabilization: StabilizationConfig::default(),
             plasticity: PlasticityConfig::default(),
-            prune_activity_threshold: 0.0,
-            prune_weight_threshold: 0.0,
             extra_slots: Vec::new(),
             activity_contribution: 1.0,
             parent: None,
             symmetric: false,
             applies_between: Vec::new(),
-            min_emerge_activity: 0.0,
-            max_activity: None,
             demotion_policy: None,
         }
     }
@@ -333,23 +310,6 @@ impl InfluenceKindConfig {
         self
     }
 
-    pub fn with_prune_threshold(mut self, threshold: f32) -> Self {
-        self.prune_activity_threshold = threshold;
-        self
-    }
-
-    /// Delete relationships whose Hebbian/BCM weight falls at or below
-    /// `threshold` after a plasticity update.
-    ///
-    /// Subscribers receive a tombstone notification in the next batch.
-    /// Only meaningful when plasticity is active (`learning_rate > 0`).
-    /// Typical values: `0.0` (prune when fully suppressed) or `0.05`
-    /// (prune when nearly suppressed).
-    pub fn with_prune_weight_threshold(mut self, threshold: f32) -> Self {
-        self.prune_weight_threshold = threshold.max(0.0);
-        self
-    }
-
     /// Set the signed activity contribution per touch.
     ///
     /// Positive = excitatory (+1.0 default), negative = inhibitory,
@@ -371,24 +331,6 @@ impl InfluenceKindConfig {
 
     pub fn with_extra_slots(mut self, slots: Vec<RelationshipSlotDef>) -> Self {
         self.extra_slots = slots;
-        self
-    }
-
-    /// Minimum signal magnitude required to auto-emerge a new relationship.
-    ///
-    /// Only gates relationship *creation*; existing relationships are updated
-    /// regardless of the threshold.
-    pub fn with_min_emerge_activity(mut self, threshold: f32) -> Self {
-        self.min_emerge_activity = threshold;
-        self
-    }
-
-    /// Cap the activity slot at `±cap` after each touch.
-    ///
-    /// Prevents unbounded accumulation in high-frequency simulations.
-    /// The cap is applied to the absolute value: `activity.clamp(-cap, cap)`.
-    pub fn with_max_activity(mut self, cap: f32) -> Self {
-        self.max_activity = Some(cap);
         self
     }
 
@@ -485,21 +427,38 @@ pub struct LocusKindConfig {
     /// Empty by default — the engine does not require slot definitions to operate.
     pub state_slots: Vec<StateSlotDef>,
     pub program: Box<dyn LocusProgram>,
-    /// Minimum number of batches a locus must wait after firing before
-    /// its program is dispatched again. `0` = no refractory period.
-    /// This prevents cascade amplification in highly connected networks
-    /// by ensuring each locus fires at most once per `refractory_batches`
-    /// batches within a single tick.
+    /// Minimum number of batches a locus of this kind must wait after
+    /// firing before its program is dispatched again within the same
+    /// tick. Enforced by the engine's per-tick `fired_at` map
+    /// (engine/mod.rs:405).
+    ///
+    /// **Default**: `0` — no refractory period. Neutral baseline: every
+    /// locus fires whenever it has inbox entries, which is correct for
+    /// non-cascading programs.
+    ///
+    /// **Override when**: a highly connected program amplifies its own
+    /// output through neighbours (feedback loop) and you need a
+    /// structural brake to prevent within-tick blow-up. Typical values:
+    /// `1`–`3` (see `neural_population` example). If the cascade is
+    /// unbounded across ticks, escalate to `EngineConfig::max_batches_per_tick`
+    /// instead — refractory only gates intra-tick.
     pub refractory_batches: u32,
     /// Optional encoder that converts domain `Properties` into the
     /// `StateVector` the engine consumes. Used by the ingest API.
     /// When `None`, the ingest API falls back to `PassthroughEncoder`.
     pub encoder: Option<Box<dyn Encoder>>,
-    /// Maximum number of `ProposedChange`s a single dispatch may produce.
+    /// Maximum number of `ProposedChange`s a single dispatch may
+    /// produce. When `Some(n)`, the program's output is silently
+    /// truncated to the first `n` proposals after `process` returns.
     ///
-    /// When `Some(n)`, the program's output is silently truncated to the
-    /// first `n` proposals after `process` returns. This caps runaway
-    /// programs without aborting the tick. `None` means unlimited (default).
+    /// **Default**: `None` — unlimited. Neutral baseline; the engine
+    /// trusts the program not to fan out uncontrollably.
+    ///
+    /// **Override when**: the program's fan-out is data-driven
+    /// (e.g. "propose one change per neighbour") and pathological
+    /// inputs could produce thousands of proposals per tick. Caps
+    /// runaway programs without aborting the tick. Example:
+    /// `supply_chain` uses `5` to bound supplier fan-out.
     pub max_proposals_per_dispatch: Option<usize>,
 }
 
@@ -516,29 +475,40 @@ impl LocusKindRegistry {
 
     /// Register a program for a locus kind with no refractory period.
     pub fn insert(&mut self, kind: LocusKindId, program: Box<dyn LocusProgram>) {
-        self.insert_with_config(kind, LocusKindConfig {
-            name: None,
-            state_slots: Vec::new(),
-            program,
-            refractory_batches: 0,
-            encoder: None,
-            max_proposals_per_dispatch: None,
-        });
+        self.insert_with_config(
+            kind,
+            LocusKindConfig {
+                name: None,
+                state_slots: Vec::new(),
+                program,
+                refractory_batches: 0,
+                encoder: None,
+                max_proposals_per_dispatch: None,
+            },
+        );
     }
 
     /// Register a program for a locus kind with a human-readable name.
     ///
     /// The name is used by `Simulation::locus_kind_by_name` for string-based
     /// kind lookups and in diagnostic output. Must be unique within the registry.
-    pub fn insert_named(&mut self, kind: LocusKindId, name: impl Into<String>, program: Box<dyn LocusProgram>) {
-        self.insert_with_config(kind, LocusKindConfig {
-            name: Some(name.into()),
-            state_slots: Vec::new(),
-            program,
-            refractory_batches: 0,
-            encoder: None,
-            max_proposals_per_dispatch: None,
-        });
+    pub fn insert_named(
+        &mut self,
+        kind: LocusKindId,
+        name: impl Into<String>,
+        program: Box<dyn LocusProgram>,
+    ) {
+        self.insert_with_config(
+            kind,
+            LocusKindConfig {
+                name: Some(name.into()),
+                state_slots: Vec::new(),
+                program,
+                refractory_batches: 0,
+                encoder: None,
+                max_proposals_per_dispatch: None,
+            },
+        );
     }
 
     /// Register a program with a full config (refractory period, etc.).
@@ -586,7 +556,8 @@ impl LocusKindRegistry {
 
     /// Return all registered kinds with their names (only named kinds appear).
     pub fn named_kinds(&self) -> impl Iterator<Item = (LocusKindId, &str)> {
-        self.configs.iter()
+        self.configs
+            .iter()
             .filter_map(|(&id, cfg)| cfg.name.as_deref().map(|n| (id, n)))
     }
 
@@ -631,55 +602,43 @@ impl InfluenceKindRegistry {
     /// - `plasticity.learning_rate` must be `>= 0.0`.
     /// - `plasticity.weight_decay` must be in `(0.0, 1.0]`.
     /// - `plasticity.max_weight` must be `> 0.0`.
-    /// - `prune_activity_threshold` must be `>= 0.0`.
     pub fn insert(&mut self, kind: InfluenceKindId, config: InfluenceKindConfig) {
         assert!(
             config.decay_per_batch > 0.0 && config.decay_per_batch <= 1.0,
             "InfluenceKindConfig '{}': decay_per_batch must be in (0.0, 1.0], got {}",
-            config.name, config.decay_per_batch
+            config.name,
+            config.decay_per_batch
         );
         assert!(
             config.plasticity.learning_rate >= 0.0,
             "InfluenceKindConfig '{}': plasticity.learning_rate must be >= 0, got {}",
-            config.name, config.plasticity.learning_rate
+            config.name,
+            config.plasticity.learning_rate
         );
         assert!(
-            config.plasticity.ltd_rate >= 0.0,
-            "InfluenceKindConfig '{}': plasticity.ltd_rate must be >= 0, got {}",
-            config.name, config.plasticity.ltd_rate
+            config.plasticity.learning_rate >= 0.0,
+            "InfluenceKindConfig '{}': plasticity.learning_rate must be >= 0, got {}",
+            config.name,
+            config.plasticity.learning_rate
         );
         assert!(
             config.plasticity.weight_decay > 0.0 && config.plasticity.weight_decay <= 1.0,
             "InfluenceKindConfig '{}': plasticity.weight_decay must be in (0.0, 1.0], got {}",
-            config.name, config.plasticity.weight_decay
+            config.name,
+            config.plasticity.weight_decay
         );
         assert!(
             config.plasticity.max_weight > 0.0,
             "InfluenceKindConfig '{}': plasticity.max_weight must be > 0, got {}",
-            config.name, config.plasticity.max_weight
-        );
-        assert!(
-            config.prune_activity_threshold >= 0.0,
-            "InfluenceKindConfig '{}': prune_activity_threshold must be >= 0, got {}",
-            config.name, config.prune_activity_threshold
-        );
-        assert!(
-            config.prune_weight_threshold >= 0.0,
-            "InfluenceKindConfig '{}': prune_weight_threshold must be >= 0, got {}",
-            config.name, config.prune_weight_threshold
+            config.name,
+            config.plasticity.max_weight
         );
         assert!(
             config.activity_contribution.is_finite(),
             "InfluenceKindConfig '{}': activity_contribution must be finite, got {}",
-            config.name, config.activity_contribution
+            config.name,
+            config.activity_contribution
         );
-        if let Some(cap) = config.max_activity {
-            assert!(
-                cap > 0.0 && cap.is_finite(),
-                "InfluenceKindConfig '{}': max_activity must be finite and > 0, got {}",
-                config.name, cap
-            );
-        }
         if let Some(parent) = config.parent {
             assert!(
                 self.configs.contains_key(&parent),
@@ -777,8 +736,8 @@ impl InfluenceKindRegistry {
     pub fn resolved_extra_slots(&self, kind: InfluenceKindId) -> Vec<RelationshipSlotDef> {
         // Collect the ancestry chain (furthest ancestor first, kind last).
         let mut chain: Vec<InfluenceKindId> = self.ancestors_of(kind);
-        chain.reverse();   // root → ... → parent
-        chain.push(kind);  // root → ... → parent → kind
+        chain.reverse(); // root → ... → parent
+        chain.push(kind); // root → ... → parent → kind
 
         // Merge: start from root slots, child overrides on name collision.
         let mut merged: Vec<RelationshipSlotDef> = Vec::new();
@@ -804,7 +763,8 @@ impl InfluenceKindRegistry {
     /// Child kinds override parent slots of the same name. Slots from
     /// ancestors are prepended in root→child order; own slots follow.
     pub fn resolved_initial_state_for(&self, kind: InfluenceKindId) -> StateVector {
-        let activity_contribution = self.configs
+        let activity_contribution = self
+            .configs
             .get(&kind)
             .map(|c| c.activity_contribution)
             .unwrap_or(1.0);
@@ -819,12 +779,17 @@ impl InfluenceKindRegistry {
     fn rebuild_slot_defs(&mut self) {
         // Use resolved (inherited) slots so BatchContext sees the full slot
         // layout including ancestor-defined slots.
-        self.slot_defs = self.configs
+        self.slot_defs = self
+            .configs
             .keys()
             .copied()
             .filter_map(|k| {
                 let resolved = self.resolved_extra_slots(k);
-                if resolved.is_empty() { None } else { Some((k, resolved)) }
+                if resolved.is_empty() {
+                    None
+                } else {
+                    Some((k, resolved))
+                }
             })
             .collect();
     }
@@ -907,7 +872,12 @@ impl InfluenceKindRegistry {
     ///
     /// Returns `None` if the kind is not registered, the slot name is unknown
     /// in the resolved slot list, or the state vector is too short.
-    pub fn read_slot(&self, kind: InfluenceKindId, rel: &graph_core::Relationship, name: &str) -> Option<f32> {
+    pub fn read_slot(
+        &self,
+        kind: InfluenceKindId,
+        rel: &graph_core::Relationship,
+        name: &str,
+    ) -> Option<f32> {
         let idx = self.resolved_slot_index(kind, name)?;
         rel.state.as_slice().get(idx).copied()
     }
@@ -934,7 +904,12 @@ mod tests {
 
     struct NoopProgram;
     impl LocusProgram for NoopProgram {
-        fn process(&self, _: &Locus, _: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+        fn process(
+            &self,
+            _: &Locus,
+            _: &[&Change],
+            _: &dyn graph_core::LocusContext,
+        ) -> Vec<ProposedChange> {
             Vec::new()
         }
     }
@@ -1010,9 +985,8 @@ mod tests {
 
         reg.insert(
             InfluenceKindId(1),
-            InfluenceKindConfig::new("a").with_extra_slots(vec![
-                RelationshipSlotDef::new("x", 0.0),
-            ]),
+            InfluenceKindConfig::new("a")
+                .with_extra_slots(vec![RelationshipSlotDef::new("x", 0.0)]),
         );
         assert_eq!(reg.slot_defs().len(), 1);
         assert!(reg.slot_defs().contains_key(&InfluenceKindId(1)));
@@ -1023,21 +997,30 @@ mod tests {
     #[test]
     fn valid_config_inserts_without_panic() {
         let mut reg = InfluenceKindRegistry::new();
-        reg.insert(InfluenceKindId(1), InfluenceKindConfig::new("ok").with_decay(0.95));
+        reg.insert(
+            InfluenceKindId(1),
+            InfluenceKindConfig::new("ok").with_decay(0.95),
+        );
     }
 
     #[test]
     #[should_panic(expected = "decay_per_batch must be in (0.0, 1.0]")]
     fn zero_decay_panics() {
         let mut reg = InfluenceKindRegistry::new();
-        reg.insert(InfluenceKindId(1), InfluenceKindConfig::new("bad").with_decay(0.0));
+        reg.insert(
+            InfluenceKindId(1),
+            InfluenceKindConfig::new("bad").with_decay(0.0),
+        );
     }
 
     #[test]
     #[should_panic(expected = "decay_per_batch must be in (0.0, 1.0]")]
     fn decay_above_one_panics() {
         let mut reg = InfluenceKindRegistry::new();
-        reg.insert(InfluenceKindId(1), InfluenceKindConfig::new("bad").with_decay(1.1));
+        reg.insert(
+            InfluenceKindId(1),
+            InfluenceKindConfig::new("bad").with_decay(1.1),
+        );
     }
 
     #[test]
@@ -1050,8 +1033,7 @@ mod tests {
                 learning_rate: -0.1,
                 weight_decay: 1.0,
                 max_weight: 1.0,
-                stdp: false,
-            ..Default::default()
+                ..Default::default()
             }),
         );
     }
@@ -1066,21 +1048,13 @@ mod tests {
                 learning_rate: 0.0,
                 weight_decay: 1.0,
                 max_weight: 0.0,
-                stdp: false,
-            ..Default::default()
+                ..Default::default()
             }),
         );
     }
 
-    #[test]
-    #[should_panic(expected = "prune_activity_threshold must be >= 0")]
-    fn negative_prune_threshold_panics() {
-        let mut reg = InfluenceKindRegistry::new();
-        reg.insert(
-            InfluenceKindId(1),
-            InfluenceKindConfig::new("bad").with_prune_threshold(-0.1),
-        );
-    }
+    // `negative_prune_threshold_panics` removed with Phase 5 — prune
+    // thresholds are no longer a knob.
 
     #[test]
     fn with_learning_rate_sets_plasticity_defaults() {
@@ -1148,7 +1122,10 @@ mod tests {
         let reg = three_level_registry();
         let mut desc = reg.kind_and_descendants(InfluenceKindId(1));
         desc.sort();
-        assert_eq!(desc, vec![InfluenceKindId(1), InfluenceKindId(2), InfluenceKindId(3)]);
+        assert_eq!(
+            desc,
+            vec![InfluenceKindId(1), InfluenceKindId(2), InfluenceKindId(3)]
+        );
 
         let mut mid_desc = reg.kind_and_descendants(InfluenceKindId(2));
         mid_desc.sort();
@@ -1197,7 +1174,10 @@ mod tests {
         let mut reg = InfluenceKindRegistry::new();
         reg.insert(InfluenceKindId(1), InfluenceKindConfig::new("a"));
         reg.insert(InfluenceKindId(2), InfluenceKindConfig::new("b"));
-        assert!(reg.interaction_between(InfluenceKindId(1), InfluenceKindId(2)).is_none());
+        assert!(
+            reg.interaction_between(InfluenceKindId(1), InfluenceKindId(2))
+                .is_none()
+        );
     }
 
     #[test]
@@ -1229,9 +1209,8 @@ mod tests {
         let mut reg = InfluenceKindRegistry::new();
         reg.insert(
             InfluenceKindId(1),
-            InfluenceKindConfig::new("root").with_extra_slots(vec![
-                RelationshipSlotDef::new("tension", 0.5),
-            ]),
+            InfluenceKindConfig::new("root")
+                .with_extra_slots(vec![RelationshipSlotDef::new("tension", 0.5)]),
         );
         let slots = reg.resolved_extra_slots(InfluenceKindId(1));
         assert_eq!(slots.len(), 1);
@@ -1245,17 +1224,14 @@ mod tests {
         let mut reg = InfluenceKindRegistry::new();
         reg.insert(
             InfluenceKindId(1),
-            InfluenceKindConfig::new("parent").with_extra_slots(vec![
-                RelationshipSlotDef::new("trust", 1.0),
-            ]),
+            InfluenceKindConfig::new("parent")
+                .with_extra_slots(vec![RelationshipSlotDef::new("trust", 1.0)]),
         );
         reg.insert(
             InfluenceKindId(2),
             InfluenceKindConfig::new("child")
                 .with_parent(InfluenceKindId(1))
-                .with_extra_slots(vec![
-                    RelationshipSlotDef::new("hostility", 0.0),
-                ]),
+                .with_extra_slots(vec![RelationshipSlotDef::new("hostility", 0.0)]),
         );
         let slots = reg.resolved_extra_slots(InfluenceKindId(2));
         // trust (from parent) first, hostility (own) second
@@ -1270,9 +1246,8 @@ mod tests {
         let mut reg = InfluenceKindRegistry::new();
         reg.insert(
             InfluenceKindId(1),
-            InfluenceKindConfig::new("parent").with_extra_slots(vec![
-                RelationshipSlotDef::new("trust", 1.0),
-            ]),
+            InfluenceKindConfig::new("parent")
+                .with_extra_slots(vec![RelationshipSlotDef::new("trust", 1.0)]),
         );
         reg.insert(
             InfluenceKindId(2),
@@ -1295,17 +1270,14 @@ mod tests {
         let mut reg = InfluenceKindRegistry::new();
         reg.insert(
             InfluenceKindId(1),
-            InfluenceKindConfig::new("parent").with_extra_slots(vec![
-                RelationshipSlotDef::new("trust", 0.8),
-            ]),
+            InfluenceKindConfig::new("parent")
+                .with_extra_slots(vec![RelationshipSlotDef::new("trust", 0.8)]),
         );
         reg.insert(
             InfluenceKindId(2),
             InfluenceKindConfig::new("child")
                 .with_parent(InfluenceKindId(1))
-                .with_extra_slots(vec![
-                    RelationshipSlotDef::new("hostility", 0.3),
-                ]),
+                .with_extra_slots(vec![RelationshipSlotDef::new("hostility", 0.3)]),
         );
         let state = reg.initial_state_for(InfluenceKindId(2));
         let s = state.as_slice();
@@ -1323,22 +1295,25 @@ mod tests {
         let mut reg = InfluenceKindRegistry::new();
         reg.insert(
             InfluenceKindId(1),
-            InfluenceKindConfig::new("parent").with_extra_slots(vec![
-                RelationshipSlotDef::new("trust", 1.0),
-            ]),
+            InfluenceKindConfig::new("parent")
+                .with_extra_slots(vec![RelationshipSlotDef::new("trust", 1.0)]),
         );
         reg.insert(
             InfluenceKindId(2),
             InfluenceKindConfig::new("child")
                 .with_parent(InfluenceKindId(1))
-                .with_extra_slots(vec![
-                    RelationshipSlotDef::new("hostility", 0.0),
-                ]),
+                .with_extra_slots(vec![RelationshipSlotDef::new("hostility", 0.0)]),
         );
         // "trust" is at slot 2 (first extra slot, inherited from parent)
-        assert_eq!(reg.resolved_slot_index(InfluenceKindId(2), "trust"), Some(2));
+        assert_eq!(
+            reg.resolved_slot_index(InfluenceKindId(2), "trust"),
+            Some(2)
+        );
         // "hostility" is at slot 3 (second extra slot, own)
-        assert_eq!(reg.resolved_slot_index(InfluenceKindId(2), "hostility"), Some(3));
+        assert_eq!(
+            reg.resolved_slot_index(InfluenceKindId(2), "hostility"),
+            Some(3)
+        );
         // Plain slot_index only sees own slots, so "trust" not found for child
         assert_eq!(reg.slot_index(InfluenceKindId(2), "trust"), None);
     }

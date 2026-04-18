@@ -43,9 +43,9 @@ use crate::handle::LocalHandle;
 use crate::simulation::Simulation;
 
 #[cfg(feature = "tokio")]
-use std::time::Duration;
-#[cfg(feature = "tokio")]
 use graph_core::WorldEvent;
+#[cfg(feature = "tokio")]
+use std::time::Duration;
 
 // ── TickPolicy ────────────────────────────────────────────────────────────────
 
@@ -205,7 +205,9 @@ impl EngineController {
         drop(self);
         match Arc::try_unwrap(arc) {
             Ok(mutex) => mutex.into_inner().unwrap(),
-            Err(_) => panic!("EngineController::into_simulation: live LocalHandle clones still exist; drop all handles before unwrapping"),
+            Err(_) => panic!(
+                "EngineController::into_simulation: live LocalHandle clones still exist; drop all handles before unwrapping"
+            ),
         }
     }
 
@@ -306,20 +308,25 @@ impl Drop for EngineController {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::handle::EngineHandle;
+    use crate::registry::{InfluenceKindConfig, InfluenceKindRegistry, LocusKindRegistry};
     use graph_core::{
-        ChangeSubject, InfluenceKindId, Locus, LocusId, LocusKindId, LocusProgram,
-        ProposedChange, StateVector,
+        ChangeSubject, InfluenceKindId, Locus, LocusId, LocusKindId, LocusProgram, ProposedChange,
+        StateVector,
     };
     use graph_world::World;
-    use crate::registry::{InfluenceKindConfig, InfluenceKindRegistry, LocusKindRegistry};
-    use crate::handle::EngineHandle;
 
     const KIND: LocusKindId = LocusKindId(1);
     const SIGNAL: InfluenceKindId = InfluenceKindId(1);
 
     struct Inert;
     impl LocusProgram for Inert {
-        fn process(&self, _: &Locus, _: &[&graph_core::Change], _: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+        fn process(
+            &self,
+            _: &Locus,
+            _: &[&graph_core::Change],
+            _: &dyn graph_core::LocusContext,
+        ) -> Vec<ProposedChange> {
             Vec::new()
         }
     }
@@ -382,7 +389,8 @@ mod tests {
             Ok(_) => panic!("should fail while handle is alive"),
         };
         drop(_h);
-        ctrl.try_into_simulation().unwrap_or_else(|_| panic!("should succeed after handle dropped"));
+        ctrl.try_into_simulation()
+            .unwrap_or_else(|_| panic!("should succeed after handle dropped"));
     }
 
     #[test]
@@ -414,7 +422,8 @@ mod tests {
     async fn change_driven_wakes_on_ingest() {
         use graph_core::Properties;
 
-        let mut ctrl = EngineController::new(simple_sim(), TickPolicy::ChangeDriven { heartbeat_ms: 500 });
+        let mut ctrl =
+            EngineController::new(simple_sim(), TickPolicy::ChangeDriven { heartbeat_ms: 500 });
         ctrl.start();
         let handle = ctrl.handle();
 
@@ -426,7 +435,10 @@ mod tests {
         let batch_after = handle.current_batch();
 
         ctrl.stop();
-        assert!(batch_after > batch_before, "ChangeDriven loop did not process ingest notification");
+        assert!(
+            batch_after > batch_before,
+            "ChangeDriven loop did not process ingest notification"
+        );
     }
 
     /// `ClockDriven` loop fires on a fixed wall-clock interval.
@@ -435,7 +447,8 @@ mod tests {
     async fn clock_driven_ticks_on_interval() {
         use graph_core::Properties;
 
-        let mut ctrl = EngineController::new(simple_sim(), TickPolicy::ClockDriven { interval_ms: 20 });
+        let mut ctrl =
+            EngineController::new(simple_sim(), TickPolicy::ClockDriven { interval_ms: 20 });
         ctrl.start();
         let handle = ctrl.handle();
 
@@ -447,7 +460,10 @@ mod tests {
         let batch_after = handle.current_batch();
 
         ctrl.stop();
-        assert!(batch_after > batch_before, "clock-driven loop did not advance batch");
+        assert!(
+            batch_after > batch_before,
+            "clock-driven loop did not advance batch"
+        );
     }
 
     /// After `stop()`, no further batches advance even with ingest queued.
@@ -456,7 +472,8 @@ mod tests {
     async fn stop_halts_background_loop() {
         use graph_core::Properties;
 
-        let mut ctrl = EngineController::new(simple_sim(), TickPolicy::ClockDriven { interval_ms: 10 });
+        let mut ctrl =
+            EngineController::new(simple_sim(), TickPolicy::ClockDriven { interval_ms: 10 });
         ctrl.start();
         let handle = ctrl.handle();
 
@@ -479,7 +496,8 @@ mod tests {
     #[cfg(feature = "tokio")]
     #[tokio::test]
     async fn start_is_idempotent() {
-        let mut ctrl = EngineController::new(simple_sim(), TickPolicy::ClockDriven { interval_ms: 100 });
+        let mut ctrl =
+            EngineController::new(simple_sim(), TickPolicy::ClockDriven { interval_ms: 100 });
         ctrl.start();
         ctrl.start(); // should be a no-op, not a panic or double-spawn
         ctrl.stop();
@@ -492,7 +510,8 @@ mod tests {
         use graph_core::Properties;
 
         // Short heartbeat so we don't wait long in test.
-        let mut ctrl = EngineController::new(simple_sim(), TickPolicy::ChangeDriven { heartbeat_ms: 20 });
+        let mut ctrl =
+            EngineController::new(simple_sim(), TickPolicy::ChangeDriven { heartbeat_ms: 20 });
         ctrl.start();
         let handle = ctrl.handle();
 
@@ -503,7 +522,10 @@ mod tests {
         let batch = handle.current_batch();
         ctrl.stop();
 
-        assert!(batch.0 > 0, "heartbeat should have fired and committed a batch");
+        assert!(
+            batch.0 > 0,
+            "heartbeat should have fired and committed a batch"
+        );
     }
 
     /// Drop of `EngineController` aborts the background task.
@@ -513,7 +535,8 @@ mod tests {
         use graph_core::Properties;
 
         let world_arc = {
-            let mut ctrl = EngineController::new(simple_sim(), TickPolicy::ClockDriven { interval_ms: 10 });
+            let mut ctrl =
+                EngineController::new(simple_sim(), TickPolicy::ClockDriven { interval_ms: 10 });
             ctrl.start();
             let handle = ctrl.handle();
             handle.ingest("node", KIND, SIGNAL, Properties::default());

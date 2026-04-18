@@ -28,15 +28,15 @@
 use std::sync::{Arc, Mutex, RwLock};
 
 use graph_core::{
-    BatchId, InfluenceKindId, Locus, LocusId, LocusKindId, Properties,
-    ProposedChange, Relationship, RelationshipId, WorldEvent,
+    BatchId, InfluenceKindId, Locus, LocusId, LocusKindId, Properties, ProposedChange,
+    Relationship, RelationshipId, WorldEvent,
 };
 use graph_world::World;
 
 use crate::cohere::CoherePerspective;
 use crate::emergence::EmergencePerspective;
-use crate::simulation::{IngestError, StepObservation};
 use crate::simulation::Simulation;
+use crate::simulation::{IngestError, StepObservation};
 
 // ── Trait ─────────────────────────────────────────────────────────────────────
 
@@ -197,7 +197,12 @@ impl LocalHandle {
         event_tx: Arc<tokio::sync::broadcast::Sender<WorldEvent>>,
     ) -> Self {
         let world = sim.lock().unwrap().world_handle();
-        Self { sim, world, notify: Some(notify), event_tx }
+        Self {
+            sim,
+            world,
+            notify: Some(notify),
+            event_tx,
+        }
     }
 
     /// Signal the background loop that new stimuli are queued.
@@ -244,7 +249,10 @@ impl LocalHandle {
         max_steps: usize,
         stimuli: Vec<ProposedChange>,
     ) -> (Vec<StepObservation>, bool) {
-        self.sim.lock().unwrap().step_until(pred, max_steps, stimuli)
+        self.sim
+            .lock()
+            .unwrap()
+            .step_until(pred, max_steps, stimuli)
     }
 
     /// Read a named extra slot value from a relationship's current state.
@@ -254,7 +262,10 @@ impl LocalHandle {
         kind: InfluenceKindId,
         slot_name: &str,
     ) -> Option<f32> {
-        self.sim.lock().unwrap().rel_slot_value(rel_id, kind, slot_name)
+        self.sim
+            .lock()
+            .unwrap()
+            .rel_slot_value(rel_id, kind, slot_name)
     }
 
     /// Trim the change log, dropping batches older than `retention_batches`.
@@ -320,7 +331,11 @@ impl EngineHandle for LocalHandle {
         influence: InfluenceKindId,
         properties: Properties,
     ) -> LocusId {
-        let id = self.sim.lock().unwrap().ingest(name, kind, influence, properties);
+        let id = self
+            .sim
+            .lock()
+            .unwrap()
+            .ingest(name, kind, influence, properties);
         #[cfg(feature = "tokio")]
         self.wake();
         id
@@ -332,8 +347,10 @@ impl EngineHandle for LocalHandle {
         influence: InfluenceKindId,
     ) -> Vec<LocusId> {
         // Borrow each String as &str to reuse Simulation::ingest_batch.
-        let borrowed: Vec<(&str, LocusKindId, Properties)> =
-            entries.iter().map(|(n, k, p)| (n.as_str(), *k, p.clone())).collect();
+        let borrowed: Vec<(&str, LocusKindId, Properties)> = entries
+            .iter()
+            .map(|(n, k, p)| (n.as_str(), *k, p.clone()))
+            .collect();
         let ids = self.sim.lock().unwrap().ingest_batch(borrowed, influence);
         #[cfg(feature = "tokio")]
         self.wake();
@@ -346,9 +363,15 @@ impl EngineHandle for LocalHandle {
         kind_name: &str,
         properties: Properties,
     ) -> Result<LocusId, IngestError> {
-        let result = self.sim.lock().unwrap().try_ingest_named(name, kind_name, properties);
+        let result = self
+            .sim
+            .lock()
+            .unwrap()
+            .try_ingest_named(name, kind_name, properties);
         #[cfg(feature = "tokio")]
-        if result.is_ok() { self.wake(); }
+        if result.is_ok() {
+            self.wake();
+        }
         result
     }
 
@@ -359,9 +382,16 @@ impl EngineHandle for LocalHandle {
         influence_name: &str,
         properties: Properties,
     ) -> Result<LocusId, IngestError> {
-        let result = self.sim.lock().unwrap().try_ingest_named_with(name, kind_name, influence_name, properties);
+        let result = self.sim.lock().unwrap().try_ingest_named_with(
+            name,
+            kind_name,
+            influence_name,
+            properties,
+        );
         #[cfg(feature = "tokio")]
-        if result.is_ok() { self.wake(); }
+        if result.is_ok() {
+            self.wake();
+        }
         result
     }
 

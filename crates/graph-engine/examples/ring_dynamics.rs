@@ -29,7 +29,7 @@ fn main() {
             learning_rate: 0.05,
             weight_decay: 0.98,
             max_weight: 1.0,
-            stdp: false,
+
             ..Default::default()
         };
     }
@@ -50,20 +50,42 @@ fn main() {
 
     println!(
         "Reached LimitCycleSuspect after {} steps (converged={})",
-        obs.len(), converged
+        obs.len(),
+        converged
     );
-    println!("  relationships emerged: {}", obs.last().unwrap().relationships);
-    println!("  guard-rail scale: {:.4}",
-        obs.last().unwrap().scales.values().next().copied().unwrap_or(1.0));
+    println!(
+        "  relationships emerged: {}",
+        obs.last().unwrap().relationships
+    );
+    println!(
+        "  guard-rail scale: {:.4}",
+        obs.last()
+            .unwrap()
+            .scales
+            .values()
+            .next()
+            .copied()
+            .unwrap_or(1.0)
+    );
     println!();
 
     // ── Phase 2: WorldDiff over the full run ─────────────────────────────────
 
     let diff = sim.world().diff_since(before_run);
-    println!("--- WorldDiff (batch {} → {}) ---", before_run.0, sim.world().current_batch().0);
+    println!(
+        "--- WorldDiff (batch {} → {}) ---",
+        before_run.0,
+        sim.world().current_batch().0
+    );
     println!("  changes:               {}", diff.change_ids.len());
-    println!("  relationships created: {}", diff.relationships_created.len());
-    println!("  relationships updated: {}", diff.relationships_updated.len());
+    println!(
+        "  relationships created: {}",
+        diff.relationships_created.len()
+    );
+    println!(
+        "  relationships updated: {}",
+        diff.relationships_updated.len()
+    );
     println!();
 
     // ── Phase 3: WorldMetrics snapshot ───────────────────────────────────────
@@ -71,10 +93,16 @@ fn main() {
     let m = sim.world().metrics();
     println!("--- WorldMetrics ---");
     println!("  loci:              {}", m.locus_count);
-    println!("  relationships:     {} ({} active)", m.relationship_count, m.active_relationship_count);
+    println!(
+        "  relationships:     {} ({} active)",
+        m.relationship_count, m.active_relationship_count
+    );
     println!("  mean activity:     {:.4}", m.mean_activity);
     println!("  max activity:      {:.4}", m.max_activity);
-    println!("  components:        {} (largest: {} loci)", m.component_count, m.largest_component_size);
+    println!(
+        "  components:        {} (largest: {} loci)",
+        m.component_count, m.largest_component_size
+    );
     println!("  max degree:        {}", m.max_degree);
     if let Some((lid, deg)) = m.top_loci_by_degree.first() {
         println!("  top locus by deg:  L{} ({} edges)", lid.0, deg);
@@ -102,18 +130,28 @@ fn main() {
         );
 
         let components = connected_components(w);
-        println!("Connected components: {} (largest: {} loci)", components.len(),
-            components.iter().map(Vec::len).max().unwrap_or(0));
+        println!(
+            "Connected components: {} (largest: {} loci)",
+            components.len(),
+            components.iter().map(Vec::len).max().unwrap_or(0)
+        );
     }
     println!();
 
     // ── Phase 5: continue stepping every 5 steps, print table ────────────────
 
-    println!("{:<5} {:<22} {:<6} {:<8} {:<6}", "step", "regime", "rels", "entities", "scale");
+    println!(
+        "{:<5} {:<22} {:<6} {:<8} {:<6}",
+        "step", "regime", "rels", "entities", "scale"
+    );
     println!("{}", "-".repeat(55));
 
     for step in 0..20 {
-        let stimuli = if step % 5 == 0 { vec![stimulus(1.0)] } else { vec![] };
+        let stimuli = if step % 5 == 0 {
+            vec![stimulus(1.0)]
+        } else {
+            vec![]
+        };
         let obs = sim.step(stimuli);
         let scale = obs.scales.values().next().copied().unwrap_or(1.0);
         println!(
@@ -130,7 +168,7 @@ fn main() {
     // ── Phase 6: entity recognition and cohere ────────────────────────────────
 
     let ep = DefaultEmergencePerspective {
-        min_activity_threshold: 0.05,
+        min_activity_threshold: Some(0.05),
         ..Default::default()
     };
     sim.recognize_entities(&ep);
@@ -144,22 +182,32 @@ fn main() {
                 graph_core::Endpoints::Directed { from, to } => (from.0, to.0),
                 _ => (0, 0),
             };
-            println!("  L{}→L{}  activity={:.4}  weight={:.4}  touches={}",
-                f, t, r.activity(), r.weight(), r.lineage.change_count);
+            println!(
+                "  L{}→L{}  activity={:.4}  weight={:.4}  touches={}",
+                f,
+                t,
+                r.activity(),
+                r.weight(),
+                r.lineage.change_count
+            );
         }
         println!();
 
         println!("--- Entities ({} active) ---", w.entities().active_count());
         for e in w.entities().active() {
             let members: Vec<u64> = e.current.members.iter().map(|l| l.0).collect();
-            println!("  entity#{} members={members:?} coherence={:.3} layers={}",
-                e.id.0, e.current.coherence, e.layer_count());
+            println!(
+                "  entity#{} members={members:?} coherence={:.3} layers={}",
+                e.id.0,
+                e.current.coherence,
+                e.layer_count()
+            );
         }
     }
     println!();
 
     let cp = DefaultCoherePerspective {
-        min_bridge_activity: 0.01,
+        min_bridge_activity: Some(0.01),
         ..Default::default()
     };
     sim.extract_cohere(&cp);
@@ -168,8 +216,11 @@ fn main() {
     println!("--- Coheres ({}) ---", coheres.len());
     for c in coheres {
         let ms = match &c.members {
-            graph_core::CohereMembers::Entities(ids) =>
-                ids.iter().map(|e| format!("entity#{}", e.0)).collect::<Vec<_>>().join(", "),
+            graph_core::CohereMembers::Entities(ids) => ids
+                .iter()
+                .map(|e| format!("entity#{}", e.0))
+                .collect::<Vec<_>>()
+                .join(", "),
             _ => "(mixed)".to_string(),
         };
         println!("  cohere#{} [{ms}] strength={:.3}", c.id.0, c.strength);

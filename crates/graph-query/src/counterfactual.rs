@@ -61,7 +61,7 @@
 //! println!("{} relationships would vanish", absent_without.len());
 //! ```
 
-use graph_core::{BatchId, ChangeSubject, ChangeId, RelationshipId};
+use graph_core::{BatchId, ChangeId, ChangeSubject, RelationshipId};
 use graph_world::World;
 use rustc_hash::FxHashSet;
 
@@ -86,7 +86,10 @@ use crate::causality::causal_descendants;
 /// **Complexity**: O(N) to build the forward adjacency index over the full
 /// change log, plus O(D) BFS per root change where D is the number of
 /// descendants.
-pub fn relationships_caused_by(world: &World, root_changes: &[ChangeId]) -> FxHashSet<RelationshipId> {
+pub fn relationships_caused_by(
+    world: &World,
+    root_changes: &[ChangeId],
+) -> FxHashSet<RelationshipId> {
     let all_descendants = collect_descendants(world, root_changes);
 
     let mut result: FxHashSet<RelationshipId> = FxHashSet::default();
@@ -127,7 +130,10 @@ pub fn relationships_caused_by(world: &World, root_changes: &[ChangeId]) -> FxHa
 /// still exist, just with different activity levels.
 ///
 /// See the [module-level docs](self) for the multi-causal-path limitation.
-pub fn relationships_absent_without(world: &World, root_changes: &[ChangeId]) -> Vec<RelationshipId> {
+pub fn relationships_absent_without(
+    world: &World,
+    root_changes: &[ChangeId],
+) -> Vec<RelationshipId> {
     let all_descendants = collect_descendants(world, root_changes);
 
     world
@@ -166,7 +172,10 @@ pub struct CounterfactualQuery<'w> {
 
 impl<'w> CounterfactualQuery<'w> {
     pub(crate) fn new(world: &'w World) -> Self {
-        Self { world, roots: Vec::new() }
+        Self {
+            world,
+            roots: Vec::new(),
+        }
     }
 
     /// Add specific change IDs as the stimulus roots.
@@ -294,11 +303,7 @@ fn collect_descendants(world: &World, root_changes: &[ChangeId]) -> FxHashSet<Ch
 }
 
 fn world_batch_changes(world: &World, batch: graph_core::BatchId) -> Vec<ChangeId> {
-    world
-        .log()
-        .batch(batch)
-        .map(|c| c.id)
-        .collect()
+    world.log().batch(batch).map(|c| c.id).collect()
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -307,9 +312,8 @@ fn world_batch_changes(world: &World, batch: graph_core::BatchId) -> Vec<ChangeI
 mod tests {
     use super::*;
     use graph_core::{
-        BatchId, Change, ChangeId, ChangeSubject, Endpoints, InfluenceKindId,
-        Locus, LocusId, LocusKindId, Relationship, RelationshipId, RelationshipLineage,
-        StateVector,
+        BatchId, Change, ChangeId, ChangeSubject, Endpoints, InfluenceKindId, Locus, LocusId,
+        LocusKindId, Relationship, RelationshipId, RelationshipLineage, StateVector,
     };
     use graph_world::World;
 
@@ -318,14 +322,25 @@ mod tests {
         //   change 0 (locus) → change 1 (relationship created_by=0) → change 2 (locus)
         // The relationship is causally downstream of change 0.
         let mut world = World::new();
-        world.insert_locus(Locus::new(LocusId(0), LocusKindId(1), StateVector::from_slice(&[1.0])));
-        world.insert_locus(Locus::new(LocusId(1), LocusKindId(1), StateVector::from_slice(&[0.0])));
+        world.insert_locus(Locus::new(
+            LocusId(0),
+            LocusKindId(1),
+            StateVector::from_slice(&[1.0]),
+        ));
+        world.insert_locus(Locus::new(
+            LocusId(1),
+            LocusKindId(1),
+            StateVector::from_slice(&[0.0]),
+        ));
 
         let rel_id = world.relationships_mut().mint_id();
         world.relationships_mut().insert(Relationship {
             id: rel_id,
             kind: InfluenceKindId(1),
-            endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(1) },
+            endpoints: Endpoints::Directed {
+                from: LocusId(0),
+                to: LocusId(1),
+            },
             state: StateVector::from_slice(&[0.5, 0.0]),
             lineage: RelationshipLineage {
                 created_by: Some(ChangeId(1)),
@@ -384,14 +399,20 @@ mod tests {
     fn relationships_caused_by_finds_downstream_relationship() {
         let (world, rel_id, root) = make_world_with_linear_causal_chain();
         let caused = relationships_caused_by(&world, &[root]);
-        assert!(caused.contains(&rel_id), "relationship should be in caused set");
+        assert!(
+            caused.contains(&rel_id),
+            "relationship should be in caused set"
+        );
     }
 
     #[test]
     fn relationships_absent_without_finds_created_relationship() {
         let (world, rel_id, root) = make_world_with_linear_causal_chain();
         let absent = relationships_absent_without(&world, &[root]);
-        assert!(absent.contains(&rel_id), "relationship should be absent without root");
+        assert!(
+            absent.contains(&rel_id),
+            "relationship should be absent without root"
+        );
     }
 
     #[test]
@@ -426,8 +447,10 @@ mod tests {
     fn replay_finds_absent_relationship() {
         let (world, rel_id, root) = make_world_with_linear_causal_chain();
         let diff = counterfactual_replay(&world, vec![root]);
-        assert!(diff.absent_relationships.contains(&rel_id),
-            "relationship should be absent in counterfactual world");
+        assert!(
+            diff.absent_relationships.contains(&rel_id),
+            "relationship should be absent in counterfactual world"
+        );
     }
 
     #[test]
@@ -457,7 +480,9 @@ mod tests {
         // ChangeId(1), not its ancestor. So removing ChangeId(2) alone should NOT
         // make the relationship absent.
         let diff = counterfactual_replay(&world, vec![ChangeId(2)]);
-        assert!(!diff.absent_relationships.contains(&rel_id),
-            "downstream-only root should not suppress the relationship");
+        assert!(
+            !diff.absent_relationships.contains(&rel_id),
+            "downstream-only root should not suppress the relationship"
+        );
     }
 }

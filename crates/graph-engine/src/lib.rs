@@ -15,19 +15,26 @@ mod registry;
 mod simulation;
 
 pub use cohere::{CoherePerspective, DefaultCoherePerspective};
-pub use emergence::{DefaultEmergencePerspective, EmergencePerspective};
-pub use regime::{
-    AdaptiveConfig, AdaptiveGuardRail,
-    BatchHistory, BatchMetrics, DefaultRegimeClassifier, DynamicsRegime, RegimeClassifier,
-};
-pub use engine::{Engine, EngineConfig, TickResult};
-pub use graph_core::{DefaultEntityWeathering, Encoder, EntityWeatheringPolicy, LifecycleCause, PassthroughEncoder, Properties, PropertyValue, RegimeTag, StructuralProposal, TrimSummary, WeatheringEffect, WorldEvent};
-pub use registry::{DemotionPolicy, InfluenceKindConfig, InfluenceKindRegistry, LocusKindConfig, LocusKindRegistry, PlasticityConfig, SlotDefsMap};
-pub use graph_core::RelationshipSlotDef;
-pub use graph_world::{SubscriptionStore, WorldDiff, WorldMetrics};
-pub use simulation::{
-    BackpressurePolicy, EventHistory, IngestError,
-    Simulation, SimulationBuilder, SimulationConfig, StepObservation, TickSummary,
-};
-pub use handle::{EngineHandle, LocalHandle};
 pub use controller::{EngineController, TickPolicy};
+pub use emergence::{DefaultEmergencePerspective, EmergencePerspective};
+pub use engine::{Engine, EngineConfig, TickResult};
+pub use graph_core::RelationshipSlotDef;
+pub use graph_core::{
+    DefaultEntityWeathering, Encoder, EntityWeatheringPolicy, LifecycleCause, PassthroughEncoder,
+    Properties, PropertyValue, RegimeTag, StructuralProposal, TrimSummary, WeatheringEffect,
+    WorldEvent,
+};
+pub use graph_world::{SubscriptionStore, WorldDiff, WorldMetrics};
+pub use handle::{EngineHandle, LocalHandle};
+pub use regime::{
+    AdaptiveConfig, AdaptiveGuardRail, BatchHistory, BatchMetrics, DefaultRegimeClassifier,
+    DynamicsRegime, RegimeClassifier,
+};
+pub use registry::{
+    DemotionPolicy, InfluenceKindConfig, InfluenceKindRegistry, LocusKindConfig, LocusKindRegistry,
+    PlasticityConfig, SlotDefsMap,
+};
+pub use simulation::{
+    BackpressurePolicy, EventHistory, IngestError, Simulation, SimulationBuilder, SimulationConfig,
+    StepObservation, TickSummary,
+};

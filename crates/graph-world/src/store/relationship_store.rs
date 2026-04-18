@@ -10,7 +10,9 @@
 //! causal flow is observed for the first time. The store does not
 //! enforce who is allowed to insert; that policy lives in the engine.
 
-use graph_core::{EndpointKey, Endpoints, LocusId, Relationship, RelationshipId, RelationshipKindId};
+use graph_core::{
+    EndpointKey, Endpoints, LocusId, Relationship, RelationshipId, RelationshipKindId,
+};
 use rustc_hash::FxHashMap;
 
 #[derive(Debug, Default, Clone)]
@@ -44,7 +46,8 @@ impl RelationshipStore {
         self.by_id.reserve(additional);
         self.by_key.reserve(additional);
         // by_locus gets at most 2*additional new entries (one per endpoint).
-        self.by_locus.reserve(additional.saturating_mul(2).min(additional + 1024));
+        self.by_locus
+            .reserve(additional.saturating_mul(2).min(additional + 1024));
     }
 
     /// Mint a fresh `RelationshipId`. The engine assigns id and stores
@@ -92,11 +95,7 @@ impl RelationshipStore {
         self.by_id.get_mut(&id)
     }
 
-    pub fn lookup(
-        &self,
-        key: &EndpointKey,
-        kind: RelationshipKindId,
-    ) -> Option<RelationshipId> {
+    pub fn lookup(&self, key: &EndpointKey, kind: RelationshipKindId) -> Option<RelationshipId> {
         self.by_key.get(&(key.clone(), kind)).copied()
     }
 
@@ -176,8 +175,9 @@ impl RelationshipStore {
     /// Directed relationships where `from == locus`.
     /// O(k) on the locus's relationship set.
     pub fn relationships_from(&self, locus: LocusId) -> impl Iterator<Item = &Relationship> {
-        self.relationships_for_locus(locus)
-            .filter(move |r| matches!(&r.endpoints, Endpoints::Directed { from, .. } if *from == locus))
+        self.relationships_for_locus(locus).filter(
+            move |r| matches!(&r.endpoints, Endpoints::Directed { from, .. } if *from == locus),
+        )
     }
 
     /// Directed relationships where `to == locus`.
@@ -198,7 +198,6 @@ impl RelationshipStore {
         self.relationships_for_locus(a)
             .filter(move |r| r.endpoints.involves(b))
     }
-
 }
 
 /// Invoke `f` once for every distinct `LocusId` that appears in `endpoints`.
@@ -239,7 +238,9 @@ mod tests {
                 created_by: None,
                 last_touched_by: None,
                 change_count: 0,
-                kinds_observed: smallvec::smallvec![KindObservation::synthetic(InfluenceKindId(kind))],
+                kinds_observed: smallvec::smallvec![KindObservation::synthetic(InfluenceKindId(
+                    kind
+                ))],
             },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
@@ -300,7 +301,10 @@ mod tests {
         let id_cd = store.mint_id();
         store.insert(rel(id_cd, 3, 4, 1)); // 3→4
 
-        let at_2: Vec<_> = store.relationships_for_locus(LocusId(2)).map(|r| r.id).collect();
+        let at_2: Vec<_> = store
+            .relationships_for_locus(LocusId(2))
+            .map(|r| r.id)
+            .collect();
         assert_eq!(at_2.len(), 2);
         assert!(at_2.contains(&id_ab));
         assert!(at_2.contains(&id_bc));

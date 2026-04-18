@@ -173,22 +173,14 @@ pub trait RegimeClassifier: Send + Sync {
 /// 5. If any two consecutive (energy, energy+2) pairs are identical
 ///    within tolerance → `LimitCycleSuspect`.
 /// 6. Otherwise → `Oscillating`.
-#[derive(Debug, Clone)]
-pub struct DefaultRegimeClassifier {
-    pub quiescent_threshold: f32,
-    pub diverge_threshold: f32,
-    pub limit_cycle_tolerance: f32,
-}
+///
+/// Phase 7: thresholds hard-coded. No benchmark used non-default values.
+#[derive(Debug, Clone, Default)]
+pub struct DefaultRegimeClassifier;
 
-impl Default for DefaultRegimeClassifier {
-    fn default() -> Self {
-        Self {
-            quiescent_threshold: 1e-4,
-            diverge_threshold: 1e3,
-            limit_cycle_tolerance: 1e-3,
-        }
-    }
-}
+const QUIESCENT_THRESHOLD: f32 = 1e-4;
+const DIVERGE_THRESHOLD: f32 = 1e3;
+const LIMIT_CYCLE_TOLERANCE: f32 = 1e-3;
 
 impl RegimeClassifier for DefaultRegimeClassifier {
     fn classify(&self, history: &BatchHistory) -> DynamicsRegime {
@@ -198,14 +190,11 @@ impl RegimeClassifier for DefaultRegimeClassifier {
 
         let energies: Vec<f32> = history.iter().map(|m| m.total_energy).collect();
 
-        // Quiescent: all energy below threshold.
-        if energies.iter().all(|&e| e < self.quiescent_threshold) {
+        if energies.iter().all(|&e| e < QUIESCENT_THRESHOLD) {
             return DynamicsRegime::Quiescent;
         }
 
-        // Diverging: any energy above diverge threshold, or strictly
-        // monotonically increasing.
-        if energies.iter().any(|&e| e > self.diverge_threshold) {
+        if energies.iter().any(|&e| e > DIVERGE_THRESHOLD) {
             return DynamicsRegime::Diverging;
         }
         let monotone_increasing = energies.windows(2).all(|w| w[1] >= w[0]);
@@ -222,8 +211,8 @@ impl RegimeClassifier for DefaultRegimeClassifier {
         // LimitCycleSuspect: period-2 pattern detected.
         if energies.len() >= 4 {
             let period_2 = energies.windows(4).any(|w| {
-                (w[0] - w[2]).abs() < self.limit_cycle_tolerance
-                    && (w[1] - w[3]).abs() < self.limit_cycle_tolerance
+                (w[0] - w[2]).abs() < LIMIT_CYCLE_TOLERANCE
+                    && (w[1] - w[3]).abs() < LIMIT_CYCLE_TOLERANCE
             });
             if period_2 {
                 return DynamicsRegime::LimitCycleSuspect;
@@ -262,7 +251,10 @@ mod tests {
         for _ in 0..4 {
             push_energy(&mut h, 1e-6);
         }
-        assert_eq!(DefaultRegimeClassifier::default().classify(&h), DynamicsRegime::Quiescent);
+        assert_eq!(
+            DefaultRegimeClassifier::default().classify(&h),
+            DynamicsRegime::Quiescent
+        );
     }
 
     #[test]
@@ -271,7 +263,10 @@ mod tests {
         for e in [4.0, 3.0, 2.0, 1.0] {
             push_energy(&mut h, e);
         }
-        assert_eq!(DefaultRegimeClassifier::default().classify(&h), DynamicsRegime::Settling);
+        assert_eq!(
+            DefaultRegimeClassifier::default().classify(&h),
+            DynamicsRegime::Settling
+        );
     }
 
     #[test]
@@ -280,7 +275,10 @@ mod tests {
         for e in [1.0, 2.0, 3.0, 4.0] {
             push_energy(&mut h, e);
         }
-        assert_eq!(DefaultRegimeClassifier::default().classify(&h), DynamicsRegime::Diverging);
+        assert_eq!(
+            DefaultRegimeClassifier::default().classify(&h),
+            DynamicsRegime::Diverging
+        );
     }
 
     #[test]
@@ -291,7 +289,10 @@ mod tests {
         }
         let regime = DefaultRegimeClassifier::default().classify(&h);
         assert!(
-            matches!(regime, DynamicsRegime::Oscillating | DynamicsRegime::LimitCycleSuspect),
+            matches!(
+                regime,
+                DynamicsRegime::Oscillating | DynamicsRegime::LimitCycleSuspect
+            ),
             "{regime:?}"
         );
     }

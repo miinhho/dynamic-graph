@@ -8,11 +8,11 @@
 
 pub mod change;
 pub mod cohere;
-pub mod inbox;
 pub mod encoder;
 pub mod entity;
 pub mod event;
 pub mod ids;
+pub mod inbox;
 pub mod locus;
 pub mod perspective;
 pub mod program;
@@ -25,30 +25,30 @@ pub mod state;
 pub mod weathering;
 
 pub use change::{Change, ChangeSubject, TrimSummary};
-pub use ids::{BatchId, ChangeId, InfluenceKindId, LocusId, LocusKindId, RelationshipKindId};
-pub use locus::Locus;
-pub use program::{
-    changes_of_kind, locus_changes, relationship_changes, relationship_changes_of_kind,
-    LocusContext, LocusProgram, ProposedChange, StructuralProposal,
-};
-pub use program_builder::{ComposedProgram, ProgramBuilder};
 pub use cohere::{Cohere, CohereId, CohereMembers};
+pub use encoder::{Encoder, PassthroughEncoder};
 pub use entity::{
     CompressedTransition, CompressionLevel, Entity, EntityId, EntityLayer, EntityLineage,
     EntitySnapshot, EntityStatus, LayerTransition, LifecycleCause,
 };
+pub use event::WorldEvent;
+pub use ids::{BatchId, ChangeId, InfluenceKindId, LocusId, LocusKindId, RelationshipKindId};
+pub use locus::Locus;
 pub use perspective::EmergenceProposal;
-pub use stabilization::{SaturationMode, StabilizationConfig};
+pub use program::{
+    LocusContext, LocusProgram, ProposedChange, StructuralProposal, changes_of_kind, locus_changes,
+    relationship_changes, relationship_changes_of_kind,
+};
+pub use program_builder::{ComposedProgram, ProgramBuilder};
+pub use property::{Properties, PropertyValue};
+pub use regime_tag::RegimeTag;
 pub use relationship::{
     EndpointKey, Endpoints, InteractionEffect, KindObservation, Relationship, RelationshipId,
     RelationshipLineage, RelationshipSlotDef,
 };
+pub use stabilization::{SaturationMode, StabilizationConfig};
 pub use state::{StateSlotDef, StateVector};
-pub use event::WorldEvent;
-pub use property::{Properties, PropertyValue};
-pub use encoder::{Encoder, PassthroughEncoder};
-pub use regime_tag::RegimeTag;
 pub use weathering::{
-    apply_compress, apply_skeleton, DefaultEntityWeathering, EntityWeatheringPolicy,
-    WeatheringEffect,
+    DefaultEntityWeathering, EntityWeatheringPolicy, WeatheringEffect, apply_compress,
+    apply_skeleton,
 };

@@ -17,17 +17,20 @@
 //! sim.ingest_named("Apple", "ORG", props! { "confidence" => 0.92 });
 //! ```
 
-use graph_core::{DefaultEntityWeathering, Encoder, EntityWeatheringPolicy, LocusId, LocusKindId, InfluenceKindId, LocusProgram, RelationshipId};
+use graph_core::{
+    DefaultEntityWeathering, Encoder, EntityWeatheringPolicy, InfluenceKindId, LocusId,
+    LocusKindId, LocusProgram, RelationshipId,
+};
 use graph_world::World;
 use rustc_hash::FxHashMap;
 
+use super::config::BackpressurePolicy;
+use super::{Simulation, SimulationConfig};
+use crate::engine::EngineConfig;
+use crate::regime::AdaptiveConfig;
 use crate::registry::{
     InfluenceKindConfig, InfluenceKindRegistry, LocusKindConfig, LocusKindRegistry,
 };
-use super::{Simulation, SimulationConfig};
-use super::config::BackpressurePolicy;
-use crate::engine::EngineConfig;
-use crate::regime::AdaptiveConfig;
 
 /// Fluent builder for constructing a `Simulation` from string-based
 /// kind names instead of raw numeric IDs.
@@ -95,14 +98,17 @@ impl SimulationBuilder {
         let id = LocusKindId(self.next_locus_kind);
         self.next_locus_kind += 1;
         let built = configure(LocusKindBuilder::default());
-        self.loci_registry.insert_with_config(id, LocusKindConfig {
-            name: Some(name.clone()),
-            state_slots: built.state_slots,
-            program: Box::new(program),
-            refractory_batches: built.refractory_batches,
-            encoder: built.encoder,
-            max_proposals_per_dispatch: built.max_proposals_per_dispatch,
-        });
+        self.loci_registry.insert_with_config(
+            id,
+            LocusKindConfig {
+                name: Some(name.clone()),
+                state_slots: built.state_slots,
+                program: Box::new(program),
+                refractory_batches: built.refractory_batches,
+                encoder: built.encoder,
+                max_proposals_per_dispatch: built.max_proposals_per_dispatch,
+            },
+        );
         self.locus_kind_names.insert(name, id);
         self
     }
@@ -245,14 +251,17 @@ impl SimulationBuilder {
         let id = LocusKindId(self.next_locus_kind);
         self.next_locus_kind += 1;
         let built = configure(LocusKindBuilder::default());
-        self.loci_registry.insert_with_config(id, LocusKindConfig {
-            name: Some(name.clone()),
-            state_slots: built.state_slots,
-            program: Box::new(program),
-            refractory_batches: built.refractory_batches,
-            encoder: built.encoder,
-            max_proposals_per_dispatch: built.max_proposals_per_dispatch,
-        });
+        self.loci_registry.insert_with_config(
+            id,
+            LocusKindConfig {
+                name: Some(name.clone()),
+                state_slots: built.state_slots,
+                program: Box::new(program),
+                refractory_batches: built.refractory_batches,
+                encoder: built.encoder,
+                max_proposals_per_dispatch: built.max_proposals_per_dispatch,
+            },
+        );
         self.locus_kind_names.insert(name, id);
         id
     }
@@ -273,7 +282,9 @@ impl SimulationBuilder {
     /// ```
     pub fn initial_subscriptions(mut self, subs: Vec<(LocusId, RelationshipId)>) -> Self {
         for (subscriber, rel_id) in subs {
-            self.world.subscriptions_mut().subscribe_at(subscriber, rel_id, None);
+            self.world
+                .subscriptions_mut()
+                .subscribe_at(subscriber, rel_id, None);
         }
         self
     }
@@ -290,44 +301,30 @@ impl SimulationBuilder {
         self
     }
 
-    /// Set the history window for regime classification.
-    pub fn history_window(mut self, window: usize) -> Self {
-        self.config.history_window = window;
+    /// Phase 8: history window is now a fixed internal constant.
+    /// The builder method is retained as a no-op for call-site stability.
+    pub fn history_window(self, _window: usize) -> Self {
         self
     }
 
-    /// Set a capacity limit and backpressure policy on the pending-stimuli queue.
-    ///
-    /// When `capacity` is 0 (the default) the queue is unbounded.
-    /// When non-zero, `policy` controls what happens when the queue is full:
-    /// [`BackpressurePolicy::Reject`] / [`BackpressurePolicy::DropNewest`] drop
-    /// the incoming stimulus; [`BackpressurePolicy::DropOldest`] evicts the
-    /// front of the queue.
-    pub fn backpressure(mut self, capacity: usize, policy: BackpressurePolicy) -> Self {
-        self.config.pending_stimuli_capacity = capacity;
-        self.config.backpressure_policy = policy;
+    /// Phase 8: pending-stimuli queue is unbounded and no longer
+    /// configurable (the only benchmark-proven usage was capacity=0).
+    pub fn backpressure(self, _capacity: usize, _policy: BackpressurePolicy) -> Self {
         self
     }
 
-    /// Enable automatic entity weathering every `every_ticks` steps,
-    /// using `DefaultEntityWeathering`.
-    pub fn auto_weather(mut self, every_ticks: u32) -> Self {
-        assert!(every_ticks > 0, "auto_weather interval must be > 0");
-        self.config.auto_weather_every_ticks = Some(every_ticks);
-        self.auto_weather_policy = Some(Box::new(DefaultEntityWeathering::default()));
+    /// Phase 8: auto-weathering is no longer scheduled from config.
+    /// Callers who want periodic weathering can call it explicitly via
+    /// `Simulation::apply_weathering`.
+    pub fn auto_weather(self, _every_ticks: u32) -> Self {
         self
     }
 
-    /// Enable automatic entity weathering every `every_ticks` steps,
-    /// using a custom `EntityWeatheringPolicy`.
     pub fn auto_weather_with(
-        mut self,
-        every_ticks: u32,
-        policy: impl EntityWeatheringPolicy + 'static,
+        self,
+        _every_ticks: u32,
+        _policy: impl EntityWeatheringPolicy + 'static,
     ) -> Self {
-        assert!(every_ticks > 0, "auto_weather interval must be > 0");
-        self.config.auto_weather_every_ticks = Some(every_ticks);
-        self.auto_weather_policy = Some(Box::new(policy));
         self
     }
 
@@ -413,16 +410,13 @@ impl LocusKindBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use graph_core::{Change, Endpoints, Locus, LocusContext, LocusId, ProposedChange, StateVector};
+    use graph_core::{
+        Change, Endpoints, Locus, LocusContext, LocusId, ProposedChange, StateVector,
+    };
 
     struct NoopProgram;
     impl LocusProgram for NoopProgram {
-        fn process(
-            &self,
-            _: &Locus,
-            _: &[&Change],
-            _: &dyn LocusContext,
-        ) -> Vec<ProposedChange> {
+        fn process(&self, _: &Locus, _: &[&Change], _: &dyn LocusContext) -> Vec<ProposedChange> {
             Vec::new()
         }
     }
@@ -436,9 +430,13 @@ mod tests {
             .default_influence("cooccurrence")
             .build();
 
-        let id = sim.ingest_named("Apple", "ORG", graph_core::props! {
-            "confidence" => 0.92_f64,
-        });
+        let id = sim.ingest_named(
+            "Apple",
+            "ORG",
+            graph_core::props! {
+                "confidence" => 0.92_f64,
+            },
+        );
         assert!(sim.world().locus(id).is_some());
         assert_eq!(sim.resolve("Apple"), Some(id));
     }
@@ -453,8 +451,16 @@ mod tests {
             .build();
 
         sim.ingest_batch_named(vec![
-            ("Apple", "ORG", graph_core::props! { "confidence" => 0.92_f64 }),
-            ("Tim Cook", "PERSON", graph_core::props! { "confidence" => 0.98_f64 }),
+            (
+                "Apple",
+                "ORG",
+                graph_core::props! { "confidence" => 0.92_f64 },
+            ),
+            (
+                "Tim Cook",
+                "PERSON",
+                graph_core::props! { "confidence" => 0.98_f64 },
+            ),
         ]);
         let obs = sim.flush_ingested();
         assert!(obs.tick.changes_committed >= 2);
@@ -471,9 +477,13 @@ mod tests {
             .default_influence("spatial")
             .build();
 
-        let id = sim.ingest_named("New York", "LOCATION", graph_core::props! {
-            "confidence" => 0.85_f64,
-        });
+        let id = sim.ingest_named(
+            "New York",
+            "LOCATION",
+            graph_core::props! {
+                "confidence" => 0.85_f64,
+            },
+        );
         assert_eq!(sim.name_of(id).as_deref(), Some("New York"));
     }
 
@@ -505,9 +515,16 @@ mod tests {
     #[test]
     fn world_mut_bootstrap_and_add_locus_kind() {
         // A simple observer program that records the relationship ID it watches.
-        struct ObserverProgram { watched: RelationshipId }
+        struct ObserverProgram {
+            watched: RelationshipId,
+        }
         impl LocusProgram for ObserverProgram {
-            fn process(&self, _: &Locus, _: &[&Change], _: &dyn LocusContext) -> Vec<ProposedChange> {
+            fn process(
+                &self,
+                _: &Locus,
+                _: &[&Change],
+                _: &dyn LocusContext,
+            ) -> Vec<ProposedChange> {
                 Vec::new()
             }
         }
@@ -523,9 +540,21 @@ mod tests {
         // Bootstrap: insert loci and a relationship, capture the RelationshipId.
         {
             let w = builder.world_mut();
-            w.insert_locus(graph_core::Locus::new(NODE_A, LocusKindId(1), StateVector::zeros(1)));
-            w.insert_locus(graph_core::Locus::new(NODE_B, LocusKindId(1), StateVector::zeros(1)));
-            w.insert_locus(graph_core::Locus::new(OBSERVER, LocusKindId(2), StateVector::zeros(1)));
+            w.insert_locus(graph_core::Locus::new(
+                NODE_A,
+                LocusKindId(1),
+                StateVector::zeros(1),
+            ));
+            w.insert_locus(graph_core::Locus::new(
+                NODE_B,
+                LocusKindId(1),
+                StateVector::zeros(1),
+            ));
+            w.insert_locus(graph_core::Locus::new(
+                OBSERVER,
+                LocusKindId(2),
+                StateVector::zeros(1),
+            ));
         }
 
         let rel_id = builder.world_mut().add_relationship(
@@ -535,7 +564,10 @@ mod tests {
         );
 
         // Subscribe the observer to the relationship.
-        builder.world_mut().subscriptions_mut().subscribe_at(OBSERVER, rel_id, None);
+        builder
+            .world_mut()
+            .subscriptions_mut()
+            .subscribe_at(OBSERVER, rel_id, None);
 
         // Register the observer program — only possible here because rel_id is now known.
         builder.add_locus_kind("OBSERVER", ObserverProgram { watched: rel_id });
@@ -557,9 +589,21 @@ mod tests {
 
         // Pre-build a world with the relationship so we have a RelationshipId.
         let mut pre_world = World::new();
-        pre_world.insert_locus(graph_core::Locus::new(NODE_A, LocusKindId(1), StateVector::zeros(1)));
-        pre_world.insert_locus(graph_core::Locus::new(NODE_B, LocusKindId(1), StateVector::zeros(1)));
-        pre_world.insert_locus(graph_core::Locus::new(WATCHER, LocusKindId(1), StateVector::zeros(1)));
+        pre_world.insert_locus(graph_core::Locus::new(
+            NODE_A,
+            LocusKindId(1),
+            StateVector::zeros(1),
+        ));
+        pre_world.insert_locus(graph_core::Locus::new(
+            NODE_B,
+            LocusKindId(1),
+            StateVector::zeros(1),
+        ));
+        pre_world.insert_locus(graph_core::Locus::new(
+            WATCHER,
+            LocusKindId(1),
+            StateVector::zeros(1),
+        ));
         let rel_id = pre_world.add_relationship(
             Endpoints::directed(NODE_A, NODE_B),
             InfluenceKindId(1),

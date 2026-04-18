@@ -1,6 +1,6 @@
-use std::sync::Arc;
-use rustc_hash::FxHashMap;
 use graph_core::{Locus, LocusId};
+use rustc_hash::FxHashMap;
+use std::sync::Arc;
 
 /// Maps each locus to a partition bucket (u64). The value is arbitrary —
 /// the engine groups by equality, not range. Two loci with the same return

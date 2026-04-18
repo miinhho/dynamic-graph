@@ -15,12 +15,7 @@ use graph_world::World;
 /// Call after a `tick` to verify that the system has not gone super-critical.
 pub fn assert_bounded_activity(world: &World, max: f32) {
     for rel in world.relationships().iter() {
-        let activity = rel
-            .state
-            .as_slice()
-            .first()
-            .copied()
-            .unwrap_or(0.0);
+        let activity = rel.state.as_slice().first().copied().unwrap_or(0.0);
         assert!(
             activity <= max,
             "relationship {:?} activity {activity:.4} exceeds bound {max:.4}",
@@ -58,10 +53,7 @@ pub fn assert_changes_form_dag(world: &World) {
                 let neighbour = preds[*idx];
                 *idx += 1;
                 match colour.get(&neighbour).copied().unwrap_or(0) {
-                    1 => panic!(
-                        "cycle detected in change DAG: {:?} → {:?}",
-                        node, neighbour
-                    ),
+                    1 => panic!("cycle detected in change DAG: {:?} → {:?}", node, neighbour),
                     0 => {
                         colour.insert(neighbour, 1);
                         stack.push((neighbour, 0));

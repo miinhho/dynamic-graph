@@ -31,7 +31,7 @@
 //! ```
 
 use graph_core::{Endpoints, LocusId};
-use graph_query::{reachable_from, NameMap};
+use graph_query::{NameMap, reachable_from};
 use graph_world::World;
 use rustc_hash::FxHashSet;
 

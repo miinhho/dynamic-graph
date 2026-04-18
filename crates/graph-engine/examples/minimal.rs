@@ -27,7 +27,9 @@ fn main() {
 
     let mut sim = SimulationBuilder::new()
         .locus_kind("NODE", NoopProgram)
-        .influence("signal", |cfg: InfluenceKindConfig| cfg.with_decay(0.9).symmetric())
+        .influence("signal", |cfg: InfluenceKindConfig| {
+            cfg.with_decay(0.9).symmetric()
+        })
         .default_influence("signal")
         .build();
 
@@ -37,17 +39,23 @@ fn main() {
     // to wire as cross-locus predecessors).
     sim.ingest_cooccurrence(vec![
         ("alice", "NODE", props! { "name" => "alice" }),
-        ("bob",   "NODE", props! { "name" => "bob"   }),
+        ("bob", "NODE", props! { "name" => "bob"   }),
     ]);
-    println!("after 1st co-occurrence: {} relationships", sim.world().relationships().len());
+    println!(
+        "after 1st co-occurrence: {} relationships",
+        sim.world().relationships().len()
+    );
 
     // Second call: loci already exist → cross-locus predecessors fire →
     // the engine auto-emerges a relationship between alice and bob.
     sim.ingest_cooccurrence(vec![
         ("alice", "NODE", props! { "name" => "alice" }),
-        ("bob",   "NODE", props! { "name" => "bob"   }),
+        ("bob", "NODE", props! { "name" => "bob"   }),
     ]);
-    println!("after 2nd co-occurrence: {} relationships", sim.world().relationships().len());
+    println!(
+        "after 2nd co-occurrence: {} relationships",
+        sim.world().relationships().len()
+    );
 
     // ── Inspect ────────────────────────────────────────────────────────────────
 

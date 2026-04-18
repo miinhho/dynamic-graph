@@ -31,7 +31,10 @@
 //! variables and stable with small samples (< 50). Synergistic
 //! information that is non-Gaussian may be underestimated.
 
-use graph_core::{BatchId, ChangeSubject, CompressionLevel, CompressedTransition, EntityId, EntityStatus, LayerTransition, LocusId, RelationshipId, RelationshipKindId};
+use graph_core::{
+    BatchId, ChangeSubject, CompressedTransition, CompressionLevel, EntityId, EntityStatus,
+    LayerTransition, LocusId, RelationshipId, RelationshipKindId,
+};
 use graph_world::World;
 use rustc_hash::FxHashMap;
 
@@ -222,13 +225,11 @@ impl LeaveOneOutResult {
     /// The drop with the largest `psi_pair_top3_delta` (most
     /// "load-bearing"), if any drops exist.
     pub fn most_load_bearing_for_pair_top3(&self) -> Option<&DropResult> {
-        self.drops
-            .iter()
-            .max_by(|a, b| {
-                a.psi_pair_top3_delta
-                    .partial_cmp(&b.psi_pair_top3_delta)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+        self.drops.iter().max_by(|a, b| {
+            a.psi_pair_top3_delta
+                .partial_cmp(&b.psi_pair_top3_delta)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     }
 
     /// Render as Markdown — a summary line plus a per-drop table sorted
@@ -237,11 +238,7 @@ impl LeaveOneOutResult {
         use std::fmt::Write;
         let mut out = String::new();
 
-        let _ = writeln!(
-            &mut out,
-            "## Leave-one-out — {:?}\n",
-            self.entity
-        );
+        let _ = writeln!(&mut out, "## Leave-one-out — {:?}\n", self.entity);
         let _ = writeln!(
             &mut out,
             "- baseline: Ψ_corrected = {:+.4}, Ψ_pair_top3 = {:+.4}",
@@ -273,10 +270,7 @@ impl LeaveOneOutResult {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         if !sorted.is_empty() {
-            let _ = writeln!(
-                &mut out,
-                "\n### Per-drop effect, top 10 by |Δ Ψ_pair_top3|",
-            );
+            let _ = writeln!(&mut out, "\n### Per-drop effect, top 10 by |Δ Ψ_pair_top3|",);
             let _ = writeln!(
                 &mut out,
                 "\n| dropped | Ψ_corr | Ψ_pair_top3 | Δ Ψ_corr | Δ Ψ_pair_top3 |"
@@ -287,8 +281,10 @@ impl LeaveOneOutResult {
                     &mut out,
                     "| {:?} | {:+.4} | {:+.4} | {:+.4} | {:+.4} |",
                     d.dropped,
-                    d.psi_corrected, d.psi_pair_top3,
-                    d.psi_corrected_delta, d.psi_pair_top3_delta,
+                    d.psi_corrected,
+                    d.psi_pair_top3,
+                    d.psi_corrected_delta,
+                    d.psi_pair_top3_delta,
                 );
             }
         }
@@ -385,7 +381,11 @@ impl EmergenceReport {
     /// could be measured.
     pub fn emergent_fraction(&self) -> Option<f64> {
         let n = self.n_measured();
-        if n == 0 { None } else { Some(self.emergent.len() as f64 / n as f64) }
+        if n == 0 {
+            None
+        } else {
+            Some(self.emergent.len() as f64 / n as f64)
+        }
     }
 
     /// Render the report as human-readable Markdown. Used by example
@@ -395,11 +395,7 @@ impl EmergenceReport {
         let mut out = String::new();
 
         let _ = writeln!(&mut out, "## Emergence report\n");
-        let _ = writeln!(
-            &mut out,
-            "- entities total: **{}**",
-            self.n_entities
-        );
+        let _ = writeln!(&mut out, "- entities total: **{}**", self.n_entities);
         let _ = writeln!(
             &mut out,
             "- measured: **{}** (emergent {}, spurious {})",
@@ -420,8 +416,11 @@ impl EmergenceReport {
                 let _ = writeln!(
                     &mut out,
                     "| {:?} | {:+.4} | {:.4} | {:.4} | {} |",
-                    entry.entity, entry.psi.psi, entry.psi.i_self,
-                    entry.psi.i_sum_components, entry.psi.n_samples,
+                    entry.entity,
+                    entry.psi.psi,
+                    entry.psi.i_self,
+                    entry.psi.i_sum_components,
+                    entry.psi.n_samples,
                 );
             }
         }
@@ -434,8 +433,11 @@ impl EmergenceReport {
                 let _ = writeln!(
                     &mut out,
                     "| {:?} | {:+.4} | {:.4} | {:.4} | {} |",
-                    entry.entity, entry.psi.psi, entry.psi.i_self,
-                    entry.psi.i_sum_components, entry.psi.n_samples,
+                    entry.entity,
+                    entry.psi.psi,
+                    entry.psi.i_self,
+                    entry.psi.i_sum_components,
+                    entry.psi.n_samples,
                 );
             }
         }
@@ -468,7 +470,11 @@ impl EmergenceSynergyReport {
 
     pub fn emergent_fraction(&self) -> Option<f64> {
         let n = self.n_measured();
-        if n == 0 { None } else { Some(self.emergent.len() as f64 / n as f64) }
+        if n == 0 {
+            None
+        } else {
+            Some(self.emergent.len() as f64 / n as f64)
+        }
     }
 
     /// Render as Markdown. Shows both `psi_naive` and `psi_corrected`
@@ -489,7 +495,11 @@ impl EmergenceSynergyReport {
         );
         let _ = writeln!(&mut out, "- unmeasured: **{}**", self.unmeasured.len());
         if let Some(f) = self.emergent_fraction() {
-            let _ = writeln!(&mut out, "- emergent fraction (Ψ_corrected > 0): **{:.1}%**", f * 100.0);
+            let _ = writeln!(
+                &mut out,
+                "- emergent fraction (Ψ_corrected > 0): **{:.1}%**",
+                f * 100.0
+            );
         }
 
         let render_rows = |out: &mut String, rows: &[EmergenceSynergyEntry]| {
@@ -545,8 +555,14 @@ impl EmergenceSynergyReport {
                 let _ = writeln!(
                     &mut out,
                     "| {:?} | {:?}, {:?} | {:+.4} | {:.4} | {:.4} | {:.4} | {:.4} |",
-                    entry.entity, pair.a, pair.b,
-                    pair.synergy, pair.joint_mi, pair.redundancy, pair.mi_a, pair.mi_b,
+                    entry.entity,
+                    pair.a,
+                    pair.b,
+                    pair.synergy,
+                    pair.joint_mi,
+                    pair.redundancy,
+                    pair.mi_a,
+                    pair.mi_b,
                 );
             }
         }
@@ -711,8 +727,7 @@ fn coherence_dense_series_inner(
 
     // Union of change batches across member relationships, restricted to
     // the window. `BTreeSet` gives us sorted-unique for free.
-    let mut sample_batches: std::collections::BTreeSet<BatchId> =
-        std::collections::BTreeSet::new();
+    let mut sample_batches: std::collections::BTreeSet<BatchId> = std::collections::BTreeSet::new();
     for &rel_id in member_rels {
         for change in world.changes_to_relationship(rel_id) {
             if change.batch > window_start_batch {
@@ -748,11 +763,7 @@ fn coherence_dense_series_inner(
 /// persistent internal structure. A value near 0 means the coherence
 /// series is noise in this window — Ψ computation would not be
 /// informative.
-pub fn coherence_autocorrelation(
-    world: &World,
-    entity_id: EntityId,
-    lag: usize,
-) -> Option<f64> {
+pub fn coherence_autocorrelation(world: &World, entity_id: EntityId, lag: usize) -> Option<f64> {
     let series: Vec<f32> = coherence_stable_series(world, entity_id)
         .into_iter()
         .map(|(_, c)| c)
@@ -811,7 +822,7 @@ fn psi_scalar_inner(
     }
 
     // V_t and V_{t+1} series (n-1 pairs).
-    let v_t:  Vec<f64> = window[..n - 1].iter().map(|(_, c)| *c as f64).collect();
+    let v_t: Vec<f64> = window[..n - 1].iter().map(|(_, c)| *c as f64).collect();
     let v_t1: Vec<f64> = window[1..].iter().map(|(_, c)| *c as f64).collect();
 
     let i_self = gaussian_mi_from_series(&v_t, &v_t1)?;
@@ -897,7 +908,7 @@ fn psi_synergy_inner(
         return None;
     }
 
-    let v_t:  Vec<f64> = window[..n - 1].iter().map(|(_, c)| *c as f64).collect();
+    let v_t: Vec<f64> = window[..n - 1].iter().map(|(_, c)| *c as f64).collect();
     let v_t1: Vec<f64> = window[1..].iter().map(|(_, c)| *c as f64).collect();
 
     let i_self = gaussian_mi_from_series(&v_t, &v_t1)?;
@@ -934,9 +945,7 @@ fn psi_synergy_inner(
 
     // Pairwise decomposition. `gaussian_joint_mi` with 2 predictors gives
     // us I(X_a, X_b; Y); combine with the cached individual MIs.
-    let mut pairs: Vec<SynergyPair> = Vec::with_capacity(
-        n_components * (n_components - 1) / 2,
-    );
+    let mut pairs: Vec<SynergyPair> = Vec::with_capacity(n_components * (n_components - 1) / 2);
     for i in 0..n_components {
         for j in (i + 1)..n_components {
             let pair = vec![x_series[i].clone(), x_series[j].clone()];
@@ -982,11 +991,7 @@ fn psi_synergy_inner(
     // H5 — sum of joint MIs over the top-3 synergistic pairs. Overcounts
     // when pairs share a component (deliberately — conservative against
     // emergence). See docs on `psi_pair_top3`.
-    let top3_joint_sum: f64 = pairs
-        .iter()
-        .take(3)
-        .map(|p| p.joint_mi)
-        .sum();
+    let top3_joint_sum: f64 = pairs.iter().take(3).map(|p| p.joint_mi).sum();
     let psi_pair_top3 = i_self - top3_joint_sum;
 
     pairs.truncate(MAX_TOP_PAIRS);
@@ -1023,10 +1028,7 @@ fn psi_synergy_inner(
 /// Complexity: O(n³) pair-joint-MI evaluations for an entity with n
 /// components — n drops × C(n−1, 2) pair MIs per drop. Run selectively
 /// rather than across an entire world.
-pub fn psi_synergy_leave_one_out(
-    world: &World,
-    entity_id: EntityId,
-) -> Option<LeaveOneOutResult> {
+pub fn psi_synergy_leave_one_out(world: &World, entity_id: EntityId) -> Option<LeaveOneOutResult> {
     psi_synergy_leave_one_out_inner(world, entity_id, None)
 }
 
@@ -1051,7 +1053,7 @@ fn psi_synergy_leave_one_out_inner(
     let entity = world.entities().get(entity_id)?;
     let window = coherence_dense_series_inner(world, entity_id, decay_rates);
     let n = window.len();
-    let v_t:  Vec<f64> = window[..n - 1].iter().map(|(_, c)| *c as f64).collect();
+    let v_t: Vec<f64> = window[..n - 1].iter().map(|(_, c)| *c as f64).collect();
     let v_t1: Vec<f64> = window[1..].iter().map(|(_, c)| *c as f64).collect();
     let _ = v_t; // only v_t1 is used as the regression target
 
@@ -1100,26 +1102,26 @@ fn psi_synergy_leave_one_out_inner(
         // Top-3 pair joint MI over pairs that do NOT include drop_idx.
         let mut kept_pair_scores: Vec<(f64, f64)> = Vec::new(); // (synergy, joint_mi)
         for i in 0..n_components {
-            if i == drop_idx { continue; }
+            if i == drop_idx {
+                continue;
+            }
             for j in (i + 1)..n_components {
-                if j == drop_idx { continue; }
+                if j == drop_idx {
+                    continue;
+                }
                 let pair = vec![x_series[i].clone(), x_series[j].clone()];
                 let Some(joint_mi) = gaussian_joint_mi(&pair, &v_t1) else {
                     continue;
                 };
-                let mi_a = gaussian_mi_from_series(&x_series[i], &v_t1)
-                    .unwrap_or(0.0);
-                let mi_b = gaussian_mi_from_series(&x_series[j], &v_t1)
-                    .unwrap_or(0.0);
+                let mi_a = gaussian_mi_from_series(&x_series[i], &v_t1).unwrap_or(0.0);
+                let mi_b = gaussian_mi_from_series(&x_series[j], &v_t1).unwrap_or(0.0);
                 let redundancy = mi_a.min(mi_b);
                 let synergy = joint_mi - mi_a - mi_b + redundancy;
                 kept_pair_scores.push((synergy, joint_mi));
             }
         }
         // Rank by synergy (match baseline convention), sum top-3 joints.
-        kept_pair_scores.sort_by(|a, b| {
-            b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        kept_pair_scores.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         let top3_joint: f64 = kept_pair_scores.iter().take(3).map(|(_, j)| *j).sum();
         let psi_p = baseline.i_self - top3_joint;
 
@@ -1156,17 +1158,11 @@ pub fn emergence_report(world: &World) -> EmergenceReport {
 
 /// Decay-aware counterpart to [`emergence_report`]. Each entity's Ψ is
 /// computed via [`psi_scalar_with_decay`].
-pub fn emergence_report_with_decay(
-    world: &World,
-    decay_rates: &DecayRates,
-) -> EmergenceReport {
+pub fn emergence_report_with_decay(world: &World, decay_rates: &DecayRates) -> EmergenceReport {
     emergence_report_inner(world, Some(decay_rates))
 }
 
-fn emergence_report_inner(
-    world: &World,
-    decay_rates: Option<&DecayRates>,
-) -> EmergenceReport {
+fn emergence_report_inner(world: &World, decay_rates: Option<&DecayRates>) -> EmergenceReport {
     let mut emergent = Vec::new();
     let mut spurious = Vec::new();
     let mut unmeasured = Vec::new();
@@ -1185,7 +1181,10 @@ fn emergence_report_inner(
 
         match psi_scalar_inner(world, entity.id, decay_rates) {
             Some(psi) => {
-                let entry = EmergenceEntry { entity: entity.id, psi };
+                let entry = EmergenceEntry {
+                    entity: entity.id,
+                    psi,
+                };
                 if entry.psi.psi > 0.0 {
                     emergent.push(entry);
                 } else {
@@ -1193,27 +1192,41 @@ fn emergence_report_inner(
                 }
             }
             None => {
-                let window_len = coherence_dense_series_inner(
-                    world, entity.id, decay_rates,
-                ).len();
+                let window_len = coherence_dense_series_inner(world, entity.id, decay_rates).len();
                 let reason = if window_len < 3 {
-                    UnmeasuredReason::InsufficientStableWindow { layer_count: window_len }
+                    UnmeasuredReason::InsufficientStableWindow {
+                        layer_count: window_len,
+                    }
                 } else {
                     UnmeasuredReason::NoComponentHistory
                 };
-                unmeasured.push(UnmeasuredEntry { entity: entity.id, reason });
+                unmeasured.push(UnmeasuredEntry {
+                    entity: entity.id,
+                    reason,
+                });
             }
         }
     }
 
     emergent.sort_by(|a, b| {
-        b.psi.psi.partial_cmp(&a.psi.psi).unwrap_or(std::cmp::Ordering::Equal)
+        b.psi
+            .psi
+            .partial_cmp(&a.psi.psi)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
     spurious.sort_by(|a, b| {
-        b.psi.psi.partial_cmp(&a.psi.psi).unwrap_or(std::cmp::Ordering::Equal)
+        b.psi
+            .psi
+            .partial_cmp(&a.psi.psi)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    EmergenceReport { emergent, spurious, unmeasured, n_entities }
+    EmergenceReport {
+        emergent,
+        spurious,
+        unmeasured,
+        n_entities,
+    }
 }
 
 /// Synergy-aware counterpart to [`emergence_report`]. Calls [`psi_synergy`]
@@ -1260,7 +1273,10 @@ fn emergence_report_synergy_inner(
 
         match psi_synergy_inner(world, entity.id, decay_rates) {
             Some(psi) => {
-                let entry = EmergenceSynergyEntry { entity: entity.id, psi };
+                let entry = EmergenceSynergyEntry {
+                    entity: entity.id,
+                    psi,
+                };
                 if entry.psi.psi_corrected > 0.0 {
                     emergent.push(entry);
                 } else {
@@ -1268,31 +1284,41 @@ fn emergence_report_synergy_inner(
                 }
             }
             None => {
-                let window_len = coherence_dense_series_inner(
-                    world, entity.id, decay_rates,
-                ).len();
+                let window_len = coherence_dense_series_inner(world, entity.id, decay_rates).len();
                 let reason = if window_len < 3 {
-                    UnmeasuredReason::InsufficientStableWindow { layer_count: window_len }
+                    UnmeasuredReason::InsufficientStableWindow {
+                        layer_count: window_len,
+                    }
                 } else {
                     UnmeasuredReason::NoComponentHistory
                 };
-                unmeasured.push(UnmeasuredEntry { entity: entity.id, reason });
+                unmeasured.push(UnmeasuredEntry {
+                    entity: entity.id,
+                    reason,
+                });
             }
         }
     }
 
     emergent.sort_by(|a, b| {
-        b.psi.psi_corrected
+        b.psi
+            .psi_corrected
             .partial_cmp(&a.psi.psi_corrected)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     spurious.sort_by(|a, b| {
-        b.psi.psi_corrected
+        b.psi
+            .psi_corrected
             .partial_cmp(&a.psi.psi_corrected)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    EmergenceSynergyReport { emergent, spurious, unmeasured, n_entities }
+    EmergenceSynergyReport {
+        emergent,
+        spurious,
+        unmeasured,
+        n_entities,
+    }
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -1302,9 +1328,7 @@ fn emergence_report_synergy_inner(
 fn rel_weight_at(batch: BatchId, rel_id: RelationshipId, world: &World) -> f64 {
     world
         .changes_to_relationship(rel_id)
-        .find(|c| {
-            c.batch <= batch && matches!(c.subject, ChangeSubject::Relationship(_))
-        })
+        .find(|c| c.batch <= batch && matches!(c.subject, ChangeSubject::Relationship(_)))
         .and_then(|c| c.after.as_slice().get(1).copied())
         .unwrap_or(0.0) as f64
 }
@@ -1422,14 +1446,14 @@ fn pearson_r(a: &[f64], b: &[f64]) -> Option<f64> {
     let mean_a = a.iter().sum::<f64>() / n as f64;
     let mean_b = b.iter().sum::<f64>() / n as f64;
 
-    let (cov, var_a, var_b) = a.iter().zip(b.iter()).fold(
-        (0.0f64, 0.0f64, 0.0f64),
-        |(c, va, vb), (&ai, &bi)| {
-            let da = ai - mean_a;
-            let db = bi - mean_b;
-            (c + da * db, va + da * da, vb + db * db)
-        },
-    );
+    let (cov, var_a, var_b) =
+        a.iter()
+            .zip(b.iter())
+            .fold((0.0f64, 0.0f64, 0.0f64), |(c, va, vb), (&ai, &bi)| {
+                let da = ai - mean_a;
+                let db = bi - mean_b;
+                (c + da * db, va + da * da, vb + db * db)
+            });
     if var_a < f64::EPSILON || var_b < f64::EPSILON {
         return None;
     }
@@ -1539,30 +1563,18 @@ fn gaussian_joint_mi(x: &[Vec<f64>], y: &[f64]) -> Option<f64> {
     let mut aty = vec![0.0; n];
     for i in 0..n {
         for j in 0..=i {
-            let s: f64 = x_c[i]
-                .iter()
-                .zip(x_c[j].iter())
-                .map(|(a, b)| a * b)
-                .sum();
+            let s: f64 = x_c[i].iter().zip(x_c[j].iter()).map(|(a, b)| a * b).sum();
             ata[i][j] = s;
             ata[j][i] = s;
         }
-        aty[i] = x_c[i]
-            .iter()
-            .zip(y_c.iter())
-            .map(|(a, b)| a * b)
-            .sum();
+        aty[i] = x_c[i].iter().zip(y_c.iter()).map(|(a, b)| a * b).sum();
     }
 
     // Keep a copy of X^T y for the SS_explained shortcut: β · (X^T y).
     let aty_orig = aty.clone();
     let beta = solve_linear_system(ata, aty)?;
 
-    let ss_exp: f64 = beta
-        .iter()
-        .zip(aty_orig.iter())
-        .map(|(b, a)| b * a)
-        .sum();
+    let ss_exp: f64 = beta.iter().zip(aty_orig.iter()).map(|(b, a)| b * a).sum();
     let r2 = (ss_exp / ss_tot).clamp(0.0, 1.0);
     if r2 >= 1.0 - f64::EPSILON {
         return None;
@@ -1580,8 +1592,12 @@ fn is_lifecycle_transition(layer: &graph_core::EntityLayer) -> bool {
                 | LayerTransition::Split { .. }
                 | LayerTransition::Merged { .. }
         ),
-        CompressionLevel::Compressed { transition_kind, .. }
-        | CompressionLevel::Skeleton { transition_kind, .. } => matches!(
+        CompressionLevel::Compressed {
+            transition_kind, ..
+        }
+        | CompressionLevel::Skeleton {
+            transition_kind, ..
+        } => matches!(
             transition_kind,
             CompressedTransition::Born
                 | CompressedTransition::BecameDormant
@@ -1668,10 +1684,7 @@ mod tests {
     /// Insert a symmetric relationship between `LocusId(1)` and `LocusId(2)`
     /// with the given (batch, activity, weight) change history. Each change
     /// is recorded in the ChangeLog so `coherence_dense_series` can find it.
-    fn add_rel_with_changes(
-        world: &mut World,
-        changes: &[(u64, f32, f32)],
-    ) -> RelationshipId {
+    fn add_rel_with_changes(world: &mut World, changes: &[(u64, f32, f32)]) -> RelationshipId {
         let kind: RelationshipKindId = InfluenceKindId(0);
         let rel_id = world.add_relationship(
             Endpoints::symmetric(LocusId(1), LocusId(2)),
@@ -1708,12 +1721,24 @@ mod tests {
         let mut world = World::new();
         let mut e = born_entity(0, 1, 0.5);
         // DepositLayer event — stays in window.
-        e.deposit(BatchId(2), snapshot(0.6), LayerTransition::CoherenceShift { from: 0.5, to: 0.6 });
+        e.deposit(
+            BatchId(2),
+            snapshot(0.6),
+            LayerTransition::CoherenceShift { from: 0.5, to: 0.6 },
+        );
         // Lifecycle transition — resets the window.
         e.deposit(BatchId(3), snapshot(0.3), LayerTransition::BecameDormant);
         // DepositLayer after revival — this is the new stable window.
-        e.deposit(BatchId(4), snapshot(0.7), LayerTransition::CoherenceShift { from: 0.3, to: 0.7 });
-        e.deposit(BatchId(5), snapshot(0.8), LayerTransition::CoherenceShift { from: 0.7, to: 0.8 });
+        e.deposit(
+            BatchId(4),
+            snapshot(0.7),
+            LayerTransition::CoherenceShift { from: 0.3, to: 0.7 },
+        );
+        e.deposit(
+            BatchId(5),
+            snapshot(0.8),
+            LayerTransition::CoherenceShift { from: 0.7, to: 0.8 },
+        );
         world.entities_mut().insert(e);
 
         let series = coherence_stable_series(&world, EntityId(0));
@@ -1726,15 +1751,27 @@ mod tests {
     fn stable_series_born_layer_excluded() {
         let mut world = World::new();
         let mut e = born_entity(0, 1, 0.5);
-        e.deposit(BatchId(2), snapshot(0.6), LayerTransition::CoherenceShift { from: 0.5, to: 0.6 });
-        e.deposit(BatchId(3), snapshot(0.7), LayerTransition::MembershipDelta {
-            added: vec![LocusId(3)],
-            removed: vec![],
-        });
+        e.deposit(
+            BatchId(2),
+            snapshot(0.6),
+            LayerTransition::CoherenceShift { from: 0.5, to: 0.6 },
+        );
+        e.deposit(
+            BatchId(3),
+            snapshot(0.7),
+            LayerTransition::MembershipDelta {
+                added: vec![LocusId(3)],
+                removed: vec![],
+            },
+        );
         world.entities_mut().insert(e);
 
         let series = coherence_stable_series(&world, EntityId(0));
-        assert_eq!(series.len(), 2, "Born layer excluded; two deposits included");
+        assert_eq!(
+            series.len(),
+            2,
+            "Born layer excluded; two deposits included"
+        );
     }
 
     #[test]
@@ -1786,11 +1823,7 @@ mod tests {
     fn emergence_report_dormant_entity_is_unmeasured() {
         let mut world = World::new();
         let mut e = born_entity(7, 1, 0.5);
-        e.deposit(
-            BatchId(2),
-            snapshot(0.3),
-            LayerTransition::BecameDormant,
-        );
+        e.deposit(BatchId(2), snapshot(0.3), LayerTransition::BecameDormant);
         // Engine sets status externally; do so for the test.
         e.status = graph_core::EntityStatus::Dormant;
         world.entities_mut().insert(e);
@@ -1827,14 +1860,8 @@ mod tests {
         // (so the dense series is long enough), but every change has the same
         // weight — zero variance → no MI → n_components == 0 in psi_scalar.
         let mut world = World::new();
-        let rel_id = add_rel_with_changes(
-            &mut world,
-            &[
-                (2, 0.3, 0.5),
-                (3, 0.4, 0.5),
-                (4, 0.5, 0.5),
-            ],
-        );
+        let rel_id =
+            add_rel_with_changes(&mut world, &[(2, 0.3, 0.5), (3, 0.4, 0.5), (4, 0.5, 0.5)]);
         let e = Entity::born(
             EntityId(4),
             BatchId(1),
@@ -1870,14 +1897,8 @@ mod tests {
         // (n=2 members, so reference = 2·ln(3)/2 ≈ 1.098; one active edge →
         // density = min(1/1.098, 1.0) ≈ 0.911, coherence ≈ activity × 0.911).
         let mut world = World::new();
-        let rel_id = add_rel_with_changes(
-            &mut world,
-            &[
-                (2, 0.3, 0.1),
-                (3, 0.5, 0.2),
-                (5, 0.7, 0.3),
-            ],
-        );
+        let rel_id =
+            add_rel_with_changes(&mut world, &[(2, 0.3, 0.1), (3, 0.5, 0.2), (5, 0.7, 0.3)]);
         let e = Entity::born(
             EntityId(0),
             BatchId(1),
@@ -1898,7 +1919,9 @@ mod tests {
             assert!(
                 (got.1 - expected).abs() < 1e-5,
                 "coherence at {:?}: got {}, expected {}",
-                got.0, got.1, expected,
+                got.0,
+                got.1,
+                expected,
             );
         }
     }
@@ -1909,14 +1932,8 @@ mod tests {
         // resets the window, so only samples strictly after batch 3
         // (i.e. 4 and 6) should appear.
         let mut world = World::new();
-        let rel_id = add_rel_with_changes(
-            &mut world,
-            &[
-                (2, 0.3, 0.1),
-                (4, 0.5, 0.2),
-                (6, 0.7, 0.3),
-            ],
-        );
+        let rel_id =
+            add_rel_with_changes(&mut world, &[(2, 0.3, 0.1), (4, 0.5, 0.2), (6, 0.7, 0.3)]);
         let mut e = Entity::born(
             EntityId(0),
             BatchId(1),
@@ -1943,12 +1960,7 @@ mod tests {
         let mut world = World::new();
         let rel_id = add_rel_with_changes(
             &mut world,
-            &[
-                (2, 0.3, 0.1),
-                (3, 0.5, 0.2),
-                (4, 0.4, 0.4),
-                (5, 0.7, 0.5),
-            ],
+            &[(2, 0.3, 0.1), (3, 0.5, 0.2), (4, 0.4, 0.4), (5, 0.7, 0.5)],
         );
         let e = Entity::born(
             EntityId(0),
@@ -1957,8 +1969,8 @@ mod tests {
         );
         world.entities_mut().insert(e);
 
-        let psi = psi_scalar(&world, EntityId(0))
-            .expect("rich history should produce a Ψ estimate");
+        let psi =
+            psi_scalar(&world, EntityId(0)).expect("rich history should produce a Ψ estimate");
         assert_eq!(psi.n_samples, 3, "4 samples → 3 lag-1 pairs");
         assert_eq!(psi.n_components, 1);
 
@@ -1982,13 +1994,16 @@ mod tests {
         assert_eq!(r.unmeasured.len(), 2);
         assert_eq!(r.n_measured(), 0);
 
-        let dormant_found = r.unmeasured.iter()
+        let dormant_found = r
+            .unmeasured
+            .iter()
             .any(|u| u.entity == EntityId(1) && u.reason == UnmeasuredReason::Dormant);
         assert!(dormant_found, "dormant entity missing from unmeasured");
 
-        let short_found = r.unmeasured.iter()
-            .any(|u| u.entity == EntityId(2)
-                && matches!(u.reason, UnmeasuredReason::InsufficientStableWindow { .. }));
+        let short_found = r.unmeasured.iter().any(|u| {
+            u.entity == EntityId(2)
+                && matches!(u.reason, UnmeasuredReason::InsufficientStableWindow { .. })
+        });
         assert!(short_found, "short-window entity missing from unmeasured");
     }
 
@@ -2016,18 +2031,25 @@ mod tests {
     fn joint_mi_equal_to_individual_when_other_predictor_uncorrelated() {
         // X1 partially predicts Y; X2 alternates and is uncorrelated with
         // both X1 and Y. I(X1,X2;Y) ≈ I(X1;Y) since X2 adds nothing.
-        let y:  Vec<f64> = vec![1.0, 2.2, 2.9, 4.1, 5.3, 6.0, 7.2, 7.9, 9.1, 10.3];
+        let y: Vec<f64> = vec![1.0, 2.2, 2.9, 4.1, 5.3, 6.0, 7.2, 7.9, 9.1, 10.3];
         let x1: Vec<f64> = vec![1.2, 1.9, 3.1, 3.8, 5.0, 6.3, 6.9, 8.1, 9.0, 10.1];
         let x2: Vec<f64> = vec![1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0];
 
         let i_x1 = gaussian_mi_from_series(&x1, &y).unwrap();
         let i_joint = gaussian_joint_mi(&[x1, x2], &y).unwrap();
-        assert!(i_joint + 1e-6 >= i_x1,
-            "joint {} should be ≥ individual {}", i_joint, i_x1);
+        assert!(
+            i_joint + 1e-6 >= i_x1,
+            "joint {} should be ≥ individual {}",
+            i_joint,
+            i_x1
+        );
         // And within a reasonable margin — x2 contributes near-zero MI.
-        assert!(i_joint - i_x1 < 0.5,
+        assert!(
+            i_joint - i_x1 < 0.5,
             "joint {} should not far exceed individual {} with uncorrelated x2",
-            i_joint, i_x1);
+            i_joint,
+            i_x1
+        );
     }
 
     #[test]
@@ -2036,17 +2058,25 @@ mod tests {
         // explains ~½ of y; jointly they explain nearly all → super-additive.
         let x1: Vec<f64> = vec![1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0];
         let x2: Vec<f64> = vec![1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0];
-        let noise: Vec<f64> = vec![0.05, -0.03, 0.02, -0.04, 0.01, 0.03, -0.02, 0.04, -0.01, 0.02];
-        let y: Vec<f64> = x1.iter().zip(x2.iter()).zip(noise.iter())
+        let noise: Vec<f64> = vec![
+            0.05, -0.03, 0.02, -0.04, 0.01, 0.03, -0.02, 0.04, -0.01, 0.02,
+        ];
+        let y: Vec<f64> = x1
+            .iter()
+            .zip(x2.iter())
+            .zip(noise.iter())
             .map(|((a, b), n)| a + b + n)
             .collect();
 
         let i_x1 = gaussian_mi_from_series(&x1, &y).unwrap();
         let i_x2 = gaussian_mi_from_series(&x2, &y).unwrap();
         let i_joint = gaussian_joint_mi(&[x1, x2], &y).unwrap();
-        assert!(i_joint > i_x1 + i_x2,
+        assert!(
+            i_joint > i_x1 + i_x2,
             "synergistic predictors: joint {} should exceed sum {}",
-            i_joint, i_x1 + i_x2);
+            i_joint,
+            i_x1 + i_x2
+        );
     }
 
     #[test]
@@ -2101,25 +2131,34 @@ mod tests {
         );
         world.entities_mut().insert(e);
 
-        let synergy = psi_synergy(&world, EntityId(0))
-            .expect("rich history should produce a synergy Ψ");
+        let synergy =
+            psi_synergy(&world, EntityId(0)).expect("rich history should produce a synergy Ψ");
         assert_eq!(synergy.n_components, 2);
-        assert!(synergy.top_pairs.len() == 1,
-            "with 2 components there is exactly 1 pair");
+        assert!(
+            synergy.top_pairs.len() == 1,
+            "with 2 components there is exactly 1 pair"
+        );
         // Identity: R + U_a + U_b + S = joint_mi (within FP tolerance).
         let pair = &synergy.top_pairs[0];
         let unique_a = pair.mi_a - pair.redundancy;
         let unique_b = pair.mi_b - pair.redundancy;
         let reconstructed = pair.redundancy + unique_a + unique_b + pair.synergy;
-        assert!((reconstructed - pair.joint_mi).abs() < 1e-9,
-            "PID identity violated: {} vs {}", reconstructed, pair.joint_mi);
+        assert!(
+            (reconstructed - pair.joint_mi).abs() < 1e-9,
+            "PID identity violated: {} vs {}",
+            reconstructed,
+            pair.joint_mi
+        );
         // Joint MI cannot exceed individual MI plus its partner by more
         // than synergy — i.e. corrected Ψ ≤ naive Ψ + Σ redundancy_row.
         // Sanity: psi_corrected = i_self - i_joint ≥ psi_naive iff
         // i_joint ≤ i_sum_components, which is always true for Gaussian MI.
-        assert!(synergy.psi_corrected + 1e-9 >= synergy.psi_naive,
+        assert!(
+            synergy.psi_corrected + 1e-9 >= synergy.psi_naive,
             "psi_corrected {} should be ≥ psi_naive {} (joint ≤ sum)",
-            synergy.psi_corrected, synergy.psi_naive);
+            synergy.psi_corrected,
+            synergy.psi_naive
+        );
 
         // H5 aggregate fields. With exactly 2 components there is 1 pair:
         // n_pairs_evaluated = 1, and psi_pair_top3 reduces to
@@ -2127,9 +2166,12 @@ mod tests {
         assert_eq!(synergy.n_pairs_evaluated, 1);
         assert!((synergy.total_pair_synergy - pair.synergy).abs() < 1e-12);
         assert!((synergy.mean_pair_synergy - pair.synergy).abs() < 1e-12);
-        assert!((synergy.psi_pair_top3 - synergy.psi_corrected).abs() < 1e-9,
+        assert!(
+            (synergy.psi_pair_top3 - synergy.psi_corrected).abs() < 1e-9,
             "with 2 components, psi_pair_top3 ({}) should equal psi_corrected ({})",
-            synergy.psi_pair_top3, synergy.psi_corrected);
+            synergy.psi_pair_top3,
+            synergy.psi_corrected
+        );
     }
 
     // ─── H5 — pair-grain Ψ ──────────────────────────────────────────────
@@ -2144,24 +2186,36 @@ mod tests {
         let rel1 = add_rel_with_changes(
             &mut world,
             &[
-                (2, 0.3, 0.10), (3, 0.5, 0.22), (4, 0.4, 0.35),
-                (5, 0.6, 0.51), (6, 0.7, 0.60), (7, 0.8, 0.73),
+                (2, 0.3, 0.10),
+                (3, 0.5, 0.22),
+                (4, 0.4, 0.35),
+                (5, 0.6, 0.51),
+                (6, 0.7, 0.60),
+                (7, 0.8, 0.73),
                 (8, 0.9, 0.88),
             ],
         );
         let rel2 = add_rel_with_changes(
             &mut world,
             &[
-                (2, 0.4, 0.32), (3, 0.3, 0.31), (4, 0.5, 0.49),
-                (5, 0.4, 0.71), (6, 0.6, 0.79), (7, 0.7, 0.85),
+                (2, 0.4, 0.32),
+                (3, 0.3, 0.31),
+                (4, 0.5, 0.49),
+                (5, 0.4, 0.71),
+                (6, 0.6, 0.79),
+                (7, 0.7, 0.85),
                 (8, 0.85, 0.97),
             ],
         );
         let rel3 = add_rel_with_changes(
             &mut world,
             &[
-                (2, 0.5, 0.15), (3, 0.4, 0.28), (4, 0.6, 0.42),
-                (5, 0.5, 0.55), (6, 0.7, 0.68), (7, 0.6, 0.82),
+                (2, 0.5, 0.15),
+                (3, 0.4, 0.28),
+                (4, 0.6, 0.42),
+                (5, 0.5, 0.55),
+                (6, 0.7, 0.68),
+                (7, 0.6, 0.82),
                 (8, 0.8, 0.91),
             ],
         );
@@ -2179,10 +2233,13 @@ mod tests {
         // may be negative under MMI when pairs are purely redundant but
         // should match the stored per-pair values by construction.
         let top_sum: f64 = synergy.top_pairs.iter().map(|p| p.synergy).sum();
-        assert!((synergy.total_pair_synergy - top_sum).abs() < 1e-9,
+        assert!(
+            (synergy.total_pair_synergy - top_sum).abs() < 1e-9,
             "aggregate {} disagrees with top_pairs sum {} (only ≤ {} kept)",
-            synergy.total_pair_synergy, top_sum,
-            synergy.top_pairs.len());
+            synergy.total_pair_synergy,
+            top_sum,
+            synergy.top_pairs.len()
+        );
     }
 
     #[test]
@@ -2194,16 +2251,24 @@ mod tests {
         let rel1 = add_rel_with_changes(
             &mut world,
             &[
-                (2, 0.3, 0.10), (3, 0.5, 0.20), (4, 0.4, 0.35),
-                (5, 0.6, 0.48), (6, 0.7, 0.55), (7, 0.8, 0.72),
+                (2, 0.3, 0.10),
+                (3, 0.5, 0.20),
+                (4, 0.4, 0.35),
+                (5, 0.6, 0.48),
+                (6, 0.7, 0.55),
+                (7, 0.8, 0.72),
                 (8, 0.9, 0.88),
             ],
         );
         let rel2 = add_rel_with_changes(
             &mut world,
             &[
-                (2, 0.4, 0.30), (3, 0.3, 0.32), (4, 0.5, 0.48),
-                (5, 0.4, 0.72), (6, 0.6, 0.78), (7, 0.7, 0.86),
+                (2, 0.4, 0.30),
+                (3, 0.3, 0.32),
+                (4, 0.5, 0.48),
+                (5, 0.4, 0.72),
+                (6, 0.6, 0.78),
+                (7, 0.7, 0.86),
                 (8, 0.85, 0.95),
             ],
         );
@@ -2227,24 +2292,36 @@ mod tests {
         let rel1 = add_rel_with_changes(
             &mut world,
             &[
-                (2, 0.3, 0.10), (3, 0.5, 0.22), (4, 0.4, 0.35),
-                (5, 0.6, 0.51), (6, 0.7, 0.60), (7, 0.8, 0.73),
+                (2, 0.3, 0.10),
+                (3, 0.5, 0.22),
+                (4, 0.4, 0.35),
+                (5, 0.6, 0.51),
+                (6, 0.7, 0.60),
+                (7, 0.8, 0.73),
                 (8, 0.9, 0.88),
             ],
         );
         let rel2 = add_rel_with_changes(
             &mut world,
             &[
-                (2, 0.4, 0.32), (3, 0.3, 0.31), (4, 0.5, 0.49),
-                (5, 0.4, 0.71), (6, 0.6, 0.79), (7, 0.7, 0.85),
+                (2, 0.4, 0.32),
+                (3, 0.3, 0.31),
+                (4, 0.5, 0.49),
+                (5, 0.4, 0.71),
+                (6, 0.6, 0.79),
+                (7, 0.7, 0.85),
                 (8, 0.85, 0.97),
             ],
         );
         let rel3 = add_rel_with_changes(
             &mut world,
             &[
-                (2, 0.5, 0.15), (3, 0.4, 0.28), (4, 0.6, 0.42),
-                (5, 0.5, 0.55), (6, 0.7, 0.68), (7, 0.6, 0.82),
+                (2, 0.5, 0.15),
+                (3, 0.4, 0.28),
+                (4, 0.6, 0.42),
+                (5, 0.5, 0.55),
+                (6, 0.7, 0.68),
+                (7, 0.6, 0.82),
                 (8, 0.8, 0.91),
             ],
         );
@@ -2262,9 +2339,12 @@ mod tests {
         assert!((s.psi_pair_top3 - expected).abs() < 1e-9);
         // joint_sum > synergy_sum unless redundancy is zero, so the two
         // formulations are distinguishable.
-        assert!(joint_sum - synergy_sum > 1e-9,
+        assert!(
+            joint_sum - synergy_sum > 1e-9,
             "joint_sum {} should exceed synergy_sum {}",
-            joint_sum, synergy_sum);
+            joint_sum,
+            synergy_sum
+        );
     }
 
     // ─── H4.2 — leave-one-out ────────────────────────────────────────────
@@ -2276,16 +2356,24 @@ mod tests {
         let rel1 = add_rel_with_changes(
             &mut world,
             &[
-                (2, 0.3, 0.10), (3, 0.5, 0.22), (4, 0.4, 0.35),
-                (5, 0.6, 0.51), (6, 0.7, 0.60), (7, 0.8, 0.73),
+                (2, 0.3, 0.10),
+                (3, 0.5, 0.22),
+                (4, 0.4, 0.35),
+                (5, 0.6, 0.51),
+                (6, 0.7, 0.60),
+                (7, 0.8, 0.73),
                 (8, 0.9, 0.88),
             ],
         );
         let rel2 = add_rel_with_changes(
             &mut world,
             &[
-                (2, 0.4, 0.32), (3, 0.3, 0.31), (4, 0.5, 0.49),
-                (5, 0.4, 0.71), (6, 0.6, 0.79), (7, 0.7, 0.85),
+                (2, 0.4, 0.32),
+                (3, 0.3, 0.31),
+                (4, 0.5, 0.49),
+                (5, 0.4, 0.71),
+                (6, 0.6, 0.79),
+                (7, 0.7, 0.85),
                 (8, 0.85, 0.97),
             ],
         );
@@ -2305,24 +2393,36 @@ mod tests {
         let rel1 = add_rel_with_changes(
             &mut world,
             &[
-                (2, 0.3, 0.10), (3, 0.5, 0.22), (4, 0.4, 0.35),
-                (5, 0.6, 0.51), (6, 0.7, 0.60), (7, 0.8, 0.73),
+                (2, 0.3, 0.10),
+                (3, 0.5, 0.22),
+                (4, 0.4, 0.35),
+                (5, 0.6, 0.51),
+                (6, 0.7, 0.60),
+                (7, 0.8, 0.73),
                 (8, 0.9, 0.88),
             ],
         );
         let rel2 = add_rel_with_changes(
             &mut world,
             &[
-                (2, 0.4, 0.32), (3, 0.3, 0.31), (4, 0.5, 0.49),
-                (5, 0.4, 0.71), (6, 0.6, 0.79), (7, 0.7, 0.85),
+                (2, 0.4, 0.32),
+                (3, 0.3, 0.31),
+                (4, 0.5, 0.49),
+                (5, 0.4, 0.71),
+                (6, 0.6, 0.79),
+                (7, 0.7, 0.85),
                 (8, 0.85, 0.97),
             ],
         );
         let rel3 = add_rel_with_changes(
             &mut world,
             &[
-                (2, 0.5, 0.15), (3, 0.4, 0.28), (4, 0.6, 0.42),
-                (5, 0.5, 0.55), (6, 0.7, 0.68), (7, 0.6, 0.82),
+                (2, 0.5, 0.15),
+                (3, 0.4, 0.28),
+                (4, 0.6, 0.42),
+                (5, 0.5, 0.55),
+                (6, 0.7, 0.68),
+                (7, 0.6, 0.82),
                 (8, 0.8, 0.91),
             ],
         );
@@ -2335,8 +2435,7 @@ mod tests {
 
         let loo = psi_synergy_leave_one_out(&world, EntityId(0)).unwrap();
         assert_eq!(loo.baseline.n_components, 3);
-        assert_eq!(loo.drops.len(), 3,
-            "one drop per non-degenerate component");
+        assert_eq!(loo.drops.len(), 3, "one drop per non-degenerate component");
         // Each drop should reference a distinct rel from the member set.
         let mut dropped_ids: Vec<_> = loo.drops.iter().map(|d| d.dropped).collect();
         dropped_ids.sort_by_key(|r| r.0);
@@ -2354,24 +2453,36 @@ mod tests {
         let rel1 = add_rel_with_changes(
             &mut world,
             &[
-                (2, 0.3, 0.10), (3, 0.5, 0.22), (4, 0.4, 0.35),
-                (5, 0.6, 0.51), (6, 0.7, 0.60), (7, 0.8, 0.73),
+                (2, 0.3, 0.10),
+                (3, 0.5, 0.22),
+                (4, 0.4, 0.35),
+                (5, 0.6, 0.51),
+                (6, 0.7, 0.60),
+                (7, 0.8, 0.73),
                 (8, 0.9, 0.88),
             ],
         );
         let rel2 = add_rel_with_changes(
             &mut world,
             &[
-                (2, 0.4, 0.32), (3, 0.3, 0.31), (4, 0.5, 0.49),
-                (5, 0.4, 0.71), (6, 0.6, 0.79), (7, 0.7, 0.85),
+                (2, 0.4, 0.32),
+                (3, 0.3, 0.31),
+                (4, 0.5, 0.49),
+                (5, 0.4, 0.71),
+                (6, 0.6, 0.79),
+                (7, 0.7, 0.85),
                 (8, 0.85, 0.97),
             ],
         );
         let rel3 = add_rel_with_changes(
             &mut world,
             &[
-                (2, 0.5, 0.15), (3, 0.4, 0.28), (4, 0.6, 0.42),
-                (5, 0.5, 0.55), (6, 0.7, 0.68), (7, 0.6, 0.82),
+                (2, 0.5, 0.15),
+                (3, 0.4, 0.28),
+                (4, 0.6, 0.42),
+                (5, 0.5, 0.55),
+                (6, 0.7, 0.68),
+                (7, 0.6, 0.82),
                 (8, 0.8, 0.91),
             ],
         );
@@ -2386,12 +2497,14 @@ mod tests {
         for d in &loo.drops {
             let eps = 1e-9;
             assert!(
-                ((loo.baseline.psi_corrected - d.psi_corrected) - d.psi_corrected_delta).abs() < eps,
+                ((loo.baseline.psi_corrected - d.psi_corrected) - d.psi_corrected_delta).abs()
+                    < eps,
                 "delta_corrected invariant violated for drop {:?}",
                 d.dropped,
             );
             assert!(
-                ((loo.baseline.psi_pair_top3 - d.psi_pair_top3) - d.psi_pair_top3_delta).abs() < eps,
+                ((loo.baseline.psi_pair_top3 - d.psi_pair_top3) - d.psi_pair_top3_delta).abs()
+                    < eps,
                 "delta_pair_top3 invariant violated for drop {:?}",
                 d.dropped,
             );
@@ -2406,18 +2519,9 @@ mod tests {
         let mut world = World::new();
         let rel = add_rel_with_changes(
             &mut world,
-            &[
-                (2, 0.3, 0.1),
-                (3, 0.5, 0.2),
-                (4, 0.4, 0.35),
-                (5, 0.6, 0.5),
-            ],
+            &[(2, 0.3, 0.1), (3, 0.5, 0.2), (4, 0.4, 0.35), (5, 0.6, 0.5)],
         );
-        let e = Entity::born(
-            EntityId(0),
-            BatchId(1),
-            snapshot_with_rels(0.5, vec![rel]),
-        );
+        let e = Entity::born(EntityId(0), BatchId(1), snapshot_with_rels(0.5, vec![rel]));
         world.entities_mut().insert(e);
         assert!(psi_synergy(&world, EntityId(0)).is_none());
     }
@@ -2427,10 +2531,7 @@ mod tests {
     #[test]
     fn rel_activity_at_without_decay_returns_last_change_after() {
         let mut world = World::new();
-        let rel = add_rel_with_changes(
-            &mut world,
-            &[(2, 0.8, 0.1), (5, 0.6, 0.2)],
-        );
+        let rel = add_rel_with_changes(&mut world, &[(2, 0.8, 0.1), (5, 0.6, 0.2)]);
         // Query at batch 7 — two batches after last change at 5. No decay
         // map → returns 0.6 (the `after[0]` of the batch-5 change) as-is.
         let activity = rel_activity_at(BatchId(7), rel, &world, None);
@@ -2440,10 +2541,7 @@ mod tests {
     #[test]
     fn rel_activity_at_with_decay_applies_rate_over_gap() {
         let mut world = World::new();
-        let rel = add_rel_with_changes(
-            &mut world,
-            &[(5, 0.8, 0.1)],
-        );
+        let rel = add_rel_with_changes(&mut world, &[(5, 0.8, 0.1)]);
         // Decay rate 0.5 per batch → at batch 8 (gap of 3), expect
         // 0.8 * 0.5^3 = 0.1.
         let mut rates = DecayRates::default();
@@ -2455,10 +2553,7 @@ mod tests {
     #[test]
     fn rel_activity_at_decay_identity_when_rate_is_one() {
         let mut world = World::new();
-        let rel = add_rel_with_changes(
-            &mut world,
-            &[(5, 0.8, 0.1)],
-        );
+        let rel = add_rel_with_changes(&mut world, &[(5, 0.8, 0.1)]);
         let mut rates = DecayRates::default();
         rates.insert(InfluenceKindId(0), 1.0);
         // Rate = 1.0 → the `>= 1.0 - EPSILON` shortcut returns the
@@ -2472,10 +2567,7 @@ mod tests {
     #[test]
     fn rel_activity_at_no_decay_for_gap_zero() {
         let mut world = World::new();
-        let rel = add_rel_with_changes(
-            &mut world,
-            &[(5, 0.8, 0.1)],
-        );
+        let rel = add_rel_with_changes(&mut world, &[(5, 0.8, 0.1)]);
         let mut rates = DecayRates::default();
         rates.insert(InfluenceKindId(0), 0.5);
         // At the same batch as the change, gap = 0 → un-decayed.
@@ -2496,19 +2588,8 @@ mod tests {
         // To make the effect observable, we use activities that stay
         // above 0.1 but shrink significantly.
         let mut world = World::new();
-        let rel = add_rel_with_changes(
-            &mut world,
-            &[
-                (2, 0.8, 0.1),
-                (4, 0.6, 0.2),
-                (6, 0.4, 0.3),
-            ],
-        );
-        let e = Entity::born(
-            EntityId(0),
-            BatchId(1),
-            snapshot_with_rels(0.5, vec![rel]),
-        );
+        let rel = add_rel_with_changes(&mut world, &[(2, 0.8, 0.1), (4, 0.6, 0.2), (6, 0.4, 0.3)]);
+        let e = Entity::born(EntityId(0), BatchId(1), snapshot_with_rels(0.5, vec![rel]));
         world.entities_mut().insert(e);
 
         let no_decay = coherence_dense_series(&world, EntityId(0));
@@ -2530,8 +2611,10 @@ mod tests {
         // activity — so they actually match here too. This test mostly
         // guards that the with-decay path doesn't regress for gap=0.
         for ((_, c1), (_, c2)) in no_decay.iter().zip(with_decay.iter()) {
-            assert!((c1 - c2).abs() < 1e-6,
-                "single-rel series should agree when every sample is at that rel's change batch");
+            assert!(
+                (c1 - c2).abs() < 1e-6,
+                "single-rel series should agree when every sample is at that rel's change batch"
+            );
         }
     }
 

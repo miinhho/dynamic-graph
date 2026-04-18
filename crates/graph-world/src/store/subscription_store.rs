@@ -241,10 +241,7 @@ impl SubscriptionStore {
                 .entry(subscriber)
                 .or_default()
                 .insert(key);
-            self.kinds_by_anchor
-                .entry(anchor)
-                .or_default()
-                .insert(kind);
+            self.kinds_by_anchor.entry(anchor).or_default().insert(kind);
         }
     }
 
@@ -292,9 +289,7 @@ impl SubscriptionStore {
         batch: Option<BatchId>,
     ) {
         match scope {
-            SubscriptionScope::Specific(rel_id) => {
-                self.subscribe_at(subscriber, rel_id, batch)
-            }
+            SubscriptionScope::Specific(rel_id) => self.subscribe_at(subscriber, rel_id, batch),
             SubscriptionScope::AllOfKind(kind) => self.subscribe_to_kind(subscriber, kind),
             SubscriptionScope::TouchingLocus { anchor, kind } => {
                 self.subscribe_to_anchor_kind(subscriber, anchor, kind)
@@ -310,12 +305,8 @@ impl SubscriptionStore {
         batch: Option<BatchId>,
     ) {
         match scope {
-            SubscriptionScope::Specific(rel_id) => {
-                self.unsubscribe_at(subscriber, rel_id, batch)
-            }
-            SubscriptionScope::AllOfKind(kind) => {
-                self.unsubscribe_from_kind(subscriber, kind)
-            }
+            SubscriptionScope::Specific(rel_id) => self.unsubscribe_at(subscriber, rel_id, batch),
+            SubscriptionScope::AllOfKind(kind) => self.unsubscribe_from_kind(subscriber, kind),
             SubscriptionScope::TouchingLocus { anchor, kind } => {
                 self.unsubscribe_from_anchor_kind(subscriber, anchor, kind)
             }
@@ -356,10 +347,7 @@ impl SubscriptionStore {
     }
 
     /// Iterate loci subscribed to `kind` via the AllOfKind scope.
-    pub fn kind_subscribers(
-        &self,
-        kind: InfluenceKindId,
-    ) -> impl Iterator<Item = LocusId> + '_ {
+    pub fn kind_subscribers(&self, kind: InfluenceKindId) -> impl Iterator<Item = LocusId> + '_ {
         self.by_kind
             .get(&kind)
             .into_iter()
@@ -562,9 +550,7 @@ impl SubscriptionStore {
 
     /// `true` when no specific subscriptions are registered.
     pub fn is_empty(&self) -> bool {
-        self.by_relationship.is_empty()
-            && self.by_kind.is_empty()
-            && self.by_anchor_kind.is_empty()
+        self.by_relationship.is_empty() && self.by_kind.is_empty() && self.by_anchor_kind.is_empty()
     }
 
     /// Number of **Specific**-scope (subscriber, rel_id) pairs currently registered.
@@ -844,10 +830,12 @@ mod tests {
         store.remove_anchor_locus(anchor);
         assert!(!store.has_anchor_kind_subscribers(anchor, kind));
         // The subscriber itself is still alive — only the anchor entry is gone.
-        assert!(store
-            .anchor_kinds_by_subscriber
-            .get(&sub)
-            .map(|s| s.is_empty())
-            .unwrap_or(true));
+        assert!(
+            store
+                .anchor_kinds_by_subscriber
+                .get(&sub)
+                .map(|s| s.is_empty())
+                .unwrap_or(true)
+        );
     }
 }

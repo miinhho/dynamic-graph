@@ -63,7 +63,8 @@ impl World {
     pub fn restore_meta(&mut self, meta: &WorldMeta) {
         self.current_batch = meta.current_batch;
         self.next_change_id = meta.next_change_id;
-        self.relationships_mut().set_next_id(meta.next_relationship_id);
+        self.relationships_mut()
+            .set_next_id(meta.next_relationship_id);
         self.entities_mut().set_next_id(meta.next_entity_id);
     }
 
@@ -82,10 +83,26 @@ impl World {
             entities: self.entities.iter().cloned().collect(),
             log: self.log.iter().cloned().collect(),
             meta: self.world_meta(),
-            properties: self.properties.iter().map(|(id, p)| (id, p.clone())).collect(),
-            names: self.names.iter().map(|(n, id)| (n.to_owned(), id)).collect(),
-            aliases: self.names.aliases().map(|(a, id)| (a.to_owned(), id)).collect(),
-            bcm_thresholds: self.bcm_thresholds().iter().map(|(&id, &v)| (id, v)).collect(),
+            properties: self
+                .properties
+                .iter()
+                .map(|(id, p)| (id, p.clone()))
+                .collect(),
+            names: self
+                .names
+                .iter()
+                .map(|(n, id)| (n.to_owned(), id))
+                .collect(),
+            aliases: self
+                .names
+                .aliases()
+                .map(|(a, id)| (a.to_owned(), id))
+                .collect(),
+            bcm_thresholds: self
+                .bcm_thresholds()
+                .iter()
+                .map(|(&id, &v)| (id, v))
+                .collect(),
         }
     }
 
@@ -144,7 +161,10 @@ impl World {
             let mut writer = std::io::BufWriter::new(file);
             writer.write_all(&buf)?;
             writer.flush()?;
-            writer.into_inner().map_err(|e| e.into_error())?.sync_data()?;
+            writer
+                .into_inner()
+                .map_err(|e| e.into_error())?
+                .sync_data()?;
         }
         std::fs::rename(&tmp, path)?;
         Ok(())
@@ -188,10 +208,18 @@ mod tests {
         let id0 = LocusId(0);
         let id1 = LocusId(1);
         world.insert_locus(Locus::new(id0, LocusKindId(1), StateVector::zeros(2)));
-        world.insert_locus(Locus::new(id1, LocusKindId(1), StateVector::from_slice(&[0.5])));
+        world.insert_locus(Locus::new(
+            id1,
+            LocusKindId(1),
+            StateVector::from_slice(&[0.5]),
+        ));
 
-        world.properties_mut().insert(id0, props! { "name" => "Apple", "type" => "ORG" });
-        world.properties_mut().insert(id1, props! { "name" => "Google", "score" => 0.9_f64 });
+        world
+            .properties_mut()
+            .insert(id0, props! { "name" => "Apple", "type" => "ORG" });
+        world
+            .properties_mut()
+            .insert(id1, props! { "name" => "Google", "score" => 0.9_f64 });
 
         world.names_mut().insert("Apple", id0);
         world.names_mut().insert("Google", id1);
@@ -202,9 +230,18 @@ mod tests {
         let restored = World::from_snapshot(snapshot);
 
         // Properties survived.
-        assert_eq!(restored.properties().get(id0).unwrap().get_str("name"), Some("Apple"));
-        assert_eq!(restored.properties().get(id0).unwrap().get_str("type"), Some("ORG"));
-        assert_eq!(restored.properties().get(id1).unwrap().get_f64("score"), Some(0.9));
+        assert_eq!(
+            restored.properties().get(id0).unwrap().get_str("name"),
+            Some("Apple")
+        );
+        assert_eq!(
+            restored.properties().get(id0).unwrap().get_str("type"),
+            Some("ORG")
+        );
+        assert_eq!(
+            restored.properties().get(id1).unwrap().get_f64("score"),
+            Some(0.9)
+        );
 
         // Names survived.
         assert_eq!(restored.names().resolve("Apple"), Some(id0));
@@ -228,15 +265,23 @@ mod tests {
         let mut world = World::new();
         let id = LocusId(0);
         world.insert_locus(Locus::new(id, LocusKindId(1), StateVector::zeros(2)));
-        world.properties_mut().insert(id, props! { "label" => "test", "weight" => 1.5_f64 });
+        world
+            .properties_mut()
+            .insert(id, props! { "label" => "test", "weight" => 1.5_f64 });
         world.names_mut().insert("test_node", id);
         world.names_mut().add_alias("tn", id);
 
         world.save(&path).unwrap();
         let loaded = World::load(&path).unwrap();
 
-        assert_eq!(loaded.properties().get(id).unwrap().get_str("label"), Some("test"));
-        assert_eq!(loaded.properties().get(id).unwrap().get_f64("weight"), Some(1.5));
+        assert_eq!(
+            loaded.properties().get(id).unwrap().get_str("label"),
+            Some("test")
+        );
+        assert_eq!(
+            loaded.properties().get(id).unwrap().get_f64("weight"),
+            Some(1.5)
+        );
         assert_eq!(loaded.names().resolve("test_node"), Some(id));
         assert_eq!(loaded.names().resolve("tn"), Some(id));
     }

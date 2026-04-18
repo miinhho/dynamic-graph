@@ -42,12 +42,18 @@ pub enum IngestError {
 impl std::fmt::Display for IngestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            IngestError::UnknownLocusKind { name } =>
-                write!(f, "unknown locus kind \"{name}\" — register it with SimulationBuilder::locus_kind() or register_locus_kind_name()"),
-            IngestError::UnknownInfluenceKind { name } =>
-                write!(f, "unknown influence kind \"{name}\" — register it with SimulationBuilder::influence() or register_influence_name()"),
-            IngestError::NoDefaultInfluence =>
-                write!(f, "no default influence kind set — call SimulationBuilder::default_influence() or set_default_influence()"),
+            IngestError::UnknownLocusKind { name } => write!(
+                f,
+                "unknown locus kind \"{name}\" — register it with SimulationBuilder::locus_kind() or register_locus_kind_name()"
+            ),
+            IngestError::UnknownInfluenceKind { name } => write!(
+                f,
+                "unknown influence kind \"{name}\" — register it with SimulationBuilder::influence() or register_influence_name()"
+            ),
+            IngestError::NoDefaultInfluence => write!(
+                f,
+                "no default influence kind set — call SimulationBuilder::default_influence() or set_default_influence()"
+            ),
         }
     }
 }
@@ -167,19 +173,32 @@ impl Simulation {
 
     /// Get the canonical name for a locus (owned `String`).
     pub fn name_of(&self, id: graph_core::LocusId) -> Option<String> {
-        self.world.read().unwrap().names().name_of(id).map(str::to_owned)
+        self.world
+            .read()
+            .unwrap()
+            .names()
+            .name_of(id)
+            .map(str::to_owned)
     }
 
     // ── String-based convenience API ────────────────────────────────────
 
     /// Register a string name for a `LocusKindId` so that `ingest` can
     /// accept `"ORG"` instead of `LocusKindId(1)`.
-    pub fn register_locus_kind_name(&mut self, name: impl Into<String>, kind: graph_core::LocusKindId) {
+    pub fn register_locus_kind_name(
+        &mut self,
+        name: impl Into<String>,
+        kind: graph_core::LocusKindId,
+    ) {
         self.locus_kind_names.insert(name.into(), kind);
     }
 
     /// Register a string name for an `InfluenceKindId`.
-    pub fn register_influence_name(&mut self, name: impl Into<String>, kind: graph_core::InfluenceKindId) {
+    pub fn register_influence_name(
+        &mut self,
+        name: impl Into<String>,
+        kind: graph_core::InfluenceKindId,
+    ) {
         self.influence_kind_names.insert(name.into(), kind);
     }
 
@@ -209,7 +228,12 @@ impl Simulation {
 
     /// Fallible version of `resolve_locus_kind`.
     fn try_resolve_locus_kind(&self, name: &str) -> Result<graph_core::LocusKindId, IngestError> {
-        self.locus_kind_names.get(name).copied().ok_or_else(|| IngestError::UnknownLocusKind { name: name.to_owned() })
+        self.locus_kind_names
+            .get(name)
+            .copied()
+            .ok_or_else(|| IngestError::UnknownLocusKind {
+                name: name.to_owned(),
+            })
     }
 
     /// Resolve an influence kind name, or fall back to the default.
@@ -225,10 +249,19 @@ impl Simulation {
     }
 
     /// Fallible version of `resolve_influence`.
-    fn try_resolve_influence(&self, name: Option<&str>) -> Result<graph_core::InfluenceKindId, IngestError> {
+    fn try_resolve_influence(
+        &self,
+        name: Option<&str>,
+    ) -> Result<graph_core::InfluenceKindId, IngestError> {
         match name {
-            Some(n) => self.influence_kind_names.get(n).copied().ok_or_else(|| IngestError::UnknownInfluenceKind { name: n.to_owned() }),
-            None => self.default_influence.ok_or(IngestError::NoDefaultInfluence),
+            Some(n) => self
+                .influence_kind_names
+                .get(n)
+                .copied()
+                .ok_or_else(|| IngestError::UnknownInfluenceKind { name: n.to_owned() }),
+            None => self
+                .default_influence
+                .ok_or(IngestError::NoDefaultInfluence),
         }
     }
 
@@ -313,7 +346,8 @@ impl Simulation {
         let resolved: Vec<(&str, graph_core::LocusKindId, graph_core::Properties)> = entries
             .into_iter()
             .map(|(name, kind, props)| {
-                self.try_resolve_locus_kind(kind).map(|kid| (name, kid, props))
+                self.try_resolve_locus_kind(kind)
+                    .map(|kid| (name, kid, props))
             })
             .collect::<Result<_, _>>()?;
         Ok(self.ingest_batch(resolved, influence))
@@ -454,20 +488,24 @@ impl Simulation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use graph_core::props;
-    use crate::simulation::builder::SimulationBuilder;
     use crate::registry::InfluenceKindConfig;
+    use crate::simulation::builder::SimulationBuilder;
+    use graph_core::props;
     use graph_core::{Change, Locus, LocusContext, LocusProgram, ProposedChange};
 
     struct NoopProgram;
     impl LocusProgram for NoopProgram {
-        fn process(&self, _: &Locus, _: &[&Change], _: &dyn LocusContext) -> Vec<ProposedChange> { vec![] }
+        fn process(&self, _: &Locus, _: &[&Change], _: &dyn LocusContext) -> Vec<ProposedChange> {
+            vec![]
+        }
     }
 
     fn make_sim() -> crate::simulation::Simulation {
         SimulationBuilder::new()
             .locus_kind("NODE", NoopProgram)
-            .influence("sig", |cfg: InfluenceKindConfig| cfg.with_decay(0.9).symmetric())
+            .influence("sig", |cfg: InfluenceKindConfig| {
+                cfg.with_decay(0.9).symmetric()
+            })
             .default_influence("sig")
             .build()
     }
@@ -489,8 +527,15 @@ mod tests {
     #[test]
     fn try_ingest_named_unknown_kind_returns_error() {
         let mut sim = make_sim();
-        let err = sim.try_ingest_named("alice", "TYPO", props! {}).unwrap_err();
-        assert_eq!(err, IngestError::UnknownLocusKind { name: "TYPO".to_owned() });
+        let err = sim
+            .try_ingest_named("alice", "TYPO", props! {})
+            .unwrap_err();
+        assert_eq!(
+            err,
+            IngestError::UnknownLocusKind {
+                name: "TYPO".to_owned()
+            }
+        );
     }
 
     #[test]
@@ -498,12 +543,23 @@ mod tests {
         let mut sim = make_sim();
         // "TYPO" is the second entry — the whole batch must fail without creating
         // the first locus.
-        let err = sim.try_ingest_batch_named(vec![
-            ("alice", "NODE", props! {}),
-            ("bob",   "TYPO", props! {}),
-        ]).unwrap_err();
-        assert_eq!(err, IngestError::UnknownLocusKind { name: "TYPO".to_owned() });
-        assert_eq!(sim.world().loci().len(), 0, "no loci should be created on error");
+        let err = sim
+            .try_ingest_batch_named(vec![
+                ("alice", "NODE", props! {}),
+                ("bob", "TYPO", props! {}),
+            ])
+            .unwrap_err();
+        assert_eq!(
+            err,
+            IngestError::UnknownLocusKind {
+                name: "TYPO".to_owned()
+            }
+        );
+        assert_eq!(
+            sim.world().loci().len(),
+            0,
+            "no loci should be created on error"
+        );
     }
 
     #[test]
@@ -511,13 +567,13 @@ mod tests {
         let mut sim = make_sim();
         sim.ingest_cooccurrence(vec![
             ("alice", "NODE", props! {}),
-            ("bob",   "NODE", props! {}),
+            ("bob", "NODE", props! {}),
         ]);
         assert_eq!(sim.world().relationships().len(), 0);
 
         sim.ingest_cooccurrence(vec![
             ("alice", "NODE", props! {}),
-            ("bob",   "NODE", props! {}),
+            ("bob", "NODE", props! {}),
         ]);
         assert_eq!(sim.world().relationships().len(), 1);
     }
@@ -525,63 +581,38 @@ mod tests {
     #[test]
     fn try_ingest_cooccurrence_returns_error_on_unknown_kind() {
         let mut sim = make_sim();
-        let err = sim.try_ingest_cooccurrence(vec![
-            ("alice", "NODE",  props! {}),
-            ("bob",   "TYPO",  props! {}),
-        ]).unwrap_err();
-        assert_eq!(err, IngestError::UnknownLocusKind { name: "TYPO".to_owned() });
+        let err = sim
+            .try_ingest_cooccurrence(vec![
+                ("alice", "NODE", props! {}),
+                ("bob", "TYPO", props! {}),
+            ])
+            .unwrap_err();
+        assert_eq!(
+            err,
+            IngestError::UnknownLocusKind {
+                name: "TYPO".to_owned()
+            }
+        );
         assert_eq!(sim.world().loci().len(), 0);
     }
 
-    fn make_sim_with_capacity(cap: usize, policy: BackpressurePolicy) -> crate::simulation::Simulation {
+    fn make_sim_with_capacity(
+        cap: usize,
+        policy: BackpressurePolicy,
+    ) -> crate::simulation::Simulation {
         SimulationBuilder::new()
             .locus_kind("NODE", NoopProgram)
-            .influence("sig", |c: InfluenceKindConfig| c.with_decay(0.9).symmetric())
+            .influence("sig", |c: InfluenceKindConfig| {
+                c.with_decay(0.9).symmetric()
+            })
             .default_influence("sig")
             .backpressure(cap, policy)
             .build()
     }
 
-    #[test]
-    fn backpressure_reject_drops_excess_stimuli() {
-        let mut sim = make_sim_with_capacity(2, BackpressurePolicy::Reject);
-        // First two ingests fit; third is rejected.
-        sim.ingest_named("a", "NODE", props! {});
-        sim.ingest_named("b", "NODE", props! {});
-        sim.ingest_named("c", "NODE", props! {});
-        assert_eq!(sim.pending_stimuli.len(), 2);
-    }
-
-    #[test]
-    fn backpressure_drop_newest_same_as_reject() {
-        let mut sim = make_sim_with_capacity(2, BackpressurePolicy::DropNewest);
-        sim.ingest_named("a", "NODE", props! {});
-        sim.ingest_named("b", "NODE", props! {});
-        sim.ingest_named("c", "NODE", props! {});
-        assert_eq!(sim.pending_stimuli.len(), 2);
-    }
-
-    #[test]
-    fn backpressure_drop_oldest_rotates_queue() {
-        let mut sim = make_sim_with_capacity(2, BackpressurePolicy::DropOldest);
-        let id_a = sim.ingest_named("a", "NODE", props! {});
-        let _id_b = sim.ingest_named("b", "NODE", props! {});
-        let id_c = sim.ingest_named("c", "NODE", props! {});
-        // Queue should now have b, c (a was dropped).
-        assert_eq!(sim.pending_stimuli.len(), 2);
-        assert!(
-            sim.pending_stimuli.iter().any(|s| {
-                if let graph_core::ChangeSubject::Locus(lid) = s.subject { lid == id_c } else { false }
-            }),
-            "newest stimulus (c) should be in the queue"
-        );
-        assert!(
-            !sim.pending_stimuli.iter().any(|s| {
-                if let graph_core::ChangeSubject::Locus(lid) = s.subject { lid == id_a } else { false }
-            }),
-            "oldest stimulus (a) should have been dropped"
-        );
-    }
+    // Backpressure-capacity tests removed with Phase 8: the queue is now
+    // permanently unbounded (capacity 0). `BackpressurePolicy` variants
+    // survive only as enum values; they no longer gate behaviour.
 
     #[test]
     fn unbounded_capacity_never_drops() {

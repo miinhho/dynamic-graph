@@ -175,9 +175,7 @@ impl fmt::Display for CausalTrace {
 /// - The log was fully trimmed for this locus.
 pub fn causal_trace(world: &World, locus: LocusId, batch: BatchId) -> CausalTrace {
     // Find the most recent change to the locus at or before `batch`.
-    let start = world
-        .changes_to_locus(locus)
-        .find(|c| c.batch.0 <= batch.0);
+    let start = world.changes_to_locus(locus).find(|c| c.batch.0 <= batch.0);
 
     let Some(start_change) = start else {
         return CausalTrace {
@@ -232,7 +230,12 @@ pub fn causal_trace(world: &World, locus: LocusId, batch: BatchId) -> CausalTrac
         }
     }
 
-    CausalTrace { target: locus, batch, steps, truncated }
+    CausalTrace {
+        target: locus,
+        batch,
+        steps,
+        truncated,
+    }
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -337,7 +340,11 @@ mod tests {
         let trace = causal_trace(&w, LocusId(0), BatchId(5));
         // c0 should appear exactly once even though both c1 and c2 reference it.
         assert_eq!(
-            trace.steps.iter().filter(|s| s.change_id == ChangeId(0)).count(),
+            trace
+                .steps
+                .iter()
+                .filter(|s| s.change_id == ChangeId(0))
+                .count(),
             1
         );
         // 4 unique changes total.

@@ -33,7 +33,8 @@ impl fmt::Display for StorageError {
             Self::Serde(e) => write!(f, "storage serialization error: {e}"),
             Self::Empty => write!(f, "storage is empty — no world saved yet"),
             Self::SchemaMismatch { found, expected } => write!(
-                f, "schema mismatch: database version {found} is incompatible with code version {expected}"
+                f,
+                "schema mismatch: database version {found} is incompatible with code version {expected}"
             ),
         }
     }
@@ -55,20 +56,32 @@ impl std::error::Error for StorageError {
 }
 
 impl From<redb::DatabaseError> for StorageError {
-    fn from(e: redb::DatabaseError) -> Self { Self::Db(Box::new(e)) }
+    fn from(e: redb::DatabaseError) -> Self {
+        Self::Db(Box::new(e))
+    }
 }
 impl From<redb::TableError> for StorageError {
-    fn from(e: redb::TableError) -> Self { Self::Table(Box::new(e)) }
+    fn from(e: redb::TableError) -> Self {
+        Self::Table(Box::new(e))
+    }
 }
 impl From<redb::TransactionError> for StorageError {
-    fn from(e: redb::TransactionError) -> Self { Self::Transaction(Box::new(e)) }
+    fn from(e: redb::TransactionError) -> Self {
+        Self::Transaction(Box::new(e))
+    }
 }
 impl From<redb::CommitError> for StorageError {
-    fn from(e: redb::CommitError) -> Self { Self::Commit(Box::new(e)) }
+    fn from(e: redb::CommitError) -> Self {
+        Self::Commit(Box::new(e))
+    }
 }
 impl From<redb::StorageError> for StorageError {
-    fn from(e: redb::StorageError) -> Self { Self::Storage(Box::new(e)) }
+    fn from(e: redb::StorageError) -> Self {
+        Self::Storage(Box::new(e))
+    }
 }
 impl From<postcard::Error> for StorageError {
-    fn from(e: postcard::Error) -> Self { Self::Serde(e) }
+    fn from(e: postcard::Error) -> Self {
+        Self::Serde(e)
+    }
 }

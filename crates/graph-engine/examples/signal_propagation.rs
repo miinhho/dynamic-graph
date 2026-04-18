@@ -33,8 +33,8 @@ use graph_core::{
     ProposedChange, StateVector,
 };
 use graph_engine::{
-    DefaultCoherePerspective, DefaultEmergencePerspective, Engine, EngineConfig, InfluenceKindConfig,
-    InfluenceKindRegistry, LocusKindRegistry,
+    DefaultCoherePerspective, DefaultEmergencePerspective, Engine, EngineConfig,
+    InfluenceKindConfig, InfluenceKindRegistry, LocusKindRegistry,
 };
 use graph_query::{connected_components, path_between, reachable_from};
 use graph_world::World;
@@ -59,7 +59,12 @@ struct EmitterProgram {
     gain: f32,
 }
 impl LocusProgram for EmitterProgram {
-    fn process(&self, _: &Locus, incoming: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+    fn process(
+        &self,
+        _: &Locus,
+        incoming: &[&Change],
+        _: &dyn graph_core::LocusContext,
+    ) -> Vec<ProposedChange> {
         let stimuli_total: f32 = incoming
             .iter()
             .filter(|c| c.is_stimulus())
@@ -70,11 +75,13 @@ impl LocusProgram for EmitterProgram {
         }
         self.downstream
             .iter()
-            .map(|&dst| ProposedChange::new(
-                ChangeSubject::Locus(dst),
-                SIGNAL,
-                StateVector::from_slice(&[stimuli_total * self.gain]),
-            ))
+            .map(|&dst| {
+                ProposedChange::new(
+                    ChangeSubject::Locus(dst),
+                    SIGNAL,
+                    StateVector::from_slice(&[stimuli_total * self.gain]),
+                )
+            })
             .collect()
     }
 }
@@ -86,7 +93,12 @@ struct RelayProgram {
     gain: f32,
 }
 impl LocusProgram for RelayProgram {
-    fn process(&self, _: &Locus, incoming: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+    fn process(
+        &self,
+        _: &Locus,
+        incoming: &[&Change],
+        _: &dyn graph_core::LocusContext,
+    ) -> Vec<ProposedChange> {
         let total: f32 = incoming.iter().flat_map(|c| c.after.as_slice()).sum();
         if total < 0.01 {
             return Vec::new();
@@ -108,7 +120,12 @@ impl LocusProgram for RelayProgram {
 /// Accepts incoming, never emits.
 struct SinkProgram;
 impl LocusProgram for SinkProgram {
-    fn process(&self, _: &Locus, _: &[&Change], _: &dyn graph_core::LocusContext) -> Vec<ProposedChange> {
+    fn process(
+        &self,
+        _: &Locus,
+        _: &[&Change],
+        _: &dyn graph_core::LocusContext,
+    ) -> Vec<ProposedChange> {
         Vec::new()
     }
 }
@@ -132,15 +149,15 @@ fn build_world() -> (World, LocusKindRegistry, InfluenceKindRegistry) {
     );
     loci.insert(
         KIND_RELAY,
-        Box::new(RelayProgram { downstream: L3, gain: 0.8 }),
+        Box::new(RelayProgram {
+            downstream: L3,
+            gain: 0.8,
+        }),
     );
     loci.insert(KIND_SINK, Box::new(SinkProgram));
 
     let mut influences = InfluenceKindRegistry::new();
-    influences.insert(
-        SIGNAL,
-        InfluenceKindConfig::new("signal").with_decay(0.9),
-    );
+    influences.insert(SIGNAL, InfluenceKindConfig::new("signal").with_decay(0.9));
 
     (world, loci, influences)
 }
@@ -176,11 +193,20 @@ fn main() {
     // ── WorldDiff ────────────────────────────────────────────────────────────
 
     let diff = world.diff_since(before_tick);
-    println!("--- WorldDiff (batch {} → {}) ---",
-        before_tick.0, world.current_batch().0);
+    println!(
+        "--- WorldDiff (batch {} → {}) ---",
+        before_tick.0,
+        world.current_batch().0
+    );
     println!("  changes:               {}", diff.change_ids.len());
-    println!("  relationships created: {}", diff.relationships_created.len());
-    println!("  relationships updated: {}", diff.relationships_updated.len());
+    println!(
+        "  relationships created: {}",
+        diff.relationships_created.len()
+    );
+    println!(
+        "  relationships updated: {}",
+        diff.relationships_updated.len()
+    );
     println!();
 
     // ── WorldMetrics ─────────────────────────────────────────────────────────
@@ -188,10 +214,16 @@ fn main() {
     let m = world.metrics();
     println!("--- WorldMetrics ---");
     println!("  loci:              {}", m.locus_count);
-    println!("  relationships:     {} ({} active)", m.relationship_count, m.active_relationship_count);
+    println!(
+        "  relationships:     {} ({} active)",
+        m.relationship_count, m.active_relationship_count
+    );
     println!("  mean activity:     {:.4}", m.mean_activity);
     println!("  max activity:      {:.4}", m.max_activity);
-    println!("  components:        {} (largest: {} loci)", m.component_count, m.largest_component_size);
+    println!(
+        "  components:        {} (largest: {} loci)",
+        m.component_count, m.largest_component_size
+    );
     println!("  max degree:        {}", m.max_degree);
     if let Some((lid, deg)) = m.top_loci_by_degree.first() {
         println!("  top locus by deg:  L{} ({} edges)", lid.0, deg);
@@ -215,8 +247,11 @@ fn main() {
     );
 
     let components = connected_components(&world);
-    println!("Connected components: {} (largest: {} loci)", components.len(),
-        components.iter().map(Vec::len).max().unwrap_or(0));
+    println!(
+        "Connected components: {} (largest: {} loci)",
+        components.len(),
+        components.iter().map(Vec::len).max().unwrap_or(0)
+    );
     println!();
 
     // ── Change log ────────────────────────────────────────────────────────────
@@ -246,7 +281,10 @@ fn main() {
         };
         println!(
             "  L{}→L{}  activity={:.3}  touches={}",
-            f, t, r.activity(), r.lineage.change_count
+            f,
+            t,
+            r.activity(),
+            r.lineage.change_count
         );
     }
     println!();
@@ -255,7 +293,7 @@ fn main() {
 
     // Lower threshold so freshly-decayed activities are still visible.
     let ep = DefaultEmergencePerspective {
-        min_activity_threshold: 0.01,
+        min_activity_threshold: Some(0.01),
         ..Default::default()
     };
     engine.recognize_entities(&mut world, &influences, &ep);
@@ -268,7 +306,9 @@ fn main() {
         let members: Vec<u64> = e.current.members.iter().map(|l| l.0).collect();
         println!(
             "  entity#{} members={members:?} coherence={:.3} layers={}",
-            e.id.0, e.current.coherence, e.layer_count()
+            e.id.0,
+            e.current.coherence,
+            e.layer_count()
         );
     }
     println!();
@@ -276,7 +316,7 @@ fn main() {
     // ── Cohere extraction ─────────────────────────────────────────────────────
 
     let cp = DefaultCoherePerspective {
-        min_bridge_activity: 0.01,
+        min_bridge_activity: Some(0.01),
         ..Default::default()
     };
     engine.extract_cohere(&mut world, &influences, &cp);
@@ -285,8 +325,11 @@ fn main() {
     println!("--- Coheres ({}) ---", coheres.len());
     for c in coheres {
         let ms = match &c.members {
-            graph_core::CohereMembers::Entities(ids) =>
-                ids.iter().map(|e| format!("entity#{}", e.0)).collect::<Vec<_>>().join(", "),
+            graph_core::CohereMembers::Entities(ids) => ids
+                .iter()
+                .map(|e| format!("entity#{}", e.0))
+                .collect::<Vec<_>>()
+                .join(", "),
             _ => "(mixed)".to_string(),
         };
         println!("  cohere#{} [{ms}] strength={:.3}", c.id.0, c.strength);

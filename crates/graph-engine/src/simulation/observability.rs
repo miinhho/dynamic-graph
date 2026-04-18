@@ -24,8 +24,8 @@
 use std::collections::VecDeque;
 
 use graph_core::{BatchId, LocusId, WorldEvent};
-use graph_world::World;
 use graph_query::BatchStats;
+use graph_world::World;
 
 use super::super::engine::TickResult;
 

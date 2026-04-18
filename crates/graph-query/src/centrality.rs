@@ -53,10 +53,7 @@ pub fn structural_constraint(world: &World, locus: LocusId) -> Option<f32> {
     }
 
     // p_ij for each neighbor j
-    let p: FxHashMap<LocusId, f32> = w_i
-        .iter()
-        .map(|(&j, &wij)| (j, wij / total_i))
-        .collect();
+    let p: FxHashMap<LocusId, f32> = w_i.iter().map(|(&j, &wij)| (j, wij / total_i)).collect();
 
     // Pre-compute each neighbor q's strength map so we can compute p_qj efficiently.
     // For each q in i's neighborhood, we need: p_qj = w_qj / Σ_k w_qk
@@ -273,8 +270,7 @@ pub fn unstable_triangles(world: &World, threshold: f32) -> Vec<(LocusId, LocusI
     all_triangles(world)
         .into_iter()
         .filter(|&(a, b, c)| {
-            triangle_balance(world, a, b, c, threshold)
-                == Some(TriangleBalance::Unstable)
+            triangle_balance(world, a, b, c, threshold) == Some(TriangleBalance::Unstable)
         })
         .collect()
 }
@@ -434,8 +430,7 @@ fn all_betweenness_inner(world: &World) -> Vec<(LocusId, f32)> {
     let norm = (n - 1) as f32 * (n - 2) as f32;
 
     // Locus id → compact index.
-    let idx: FxHashMap<LocusId, usize> =
-        loci.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+    let idx: FxHashMap<LocusId, usize> = loci.iter().enumerate().map(|(i, &id)| (id, i)).collect();
 
     // Build undirected adjacency via dedup sets, then convert to sorted Vecs
     // for sequential (cache-friendly) iteration in the hot BFS loop.
@@ -452,25 +447,29 @@ fn all_betweenness_inner(world: &World) -> Vec<(LocusId, f32)> {
     }
     let adj: Vec<Vec<usize>> = adj_set
         .into_iter()
-        .map(|s| { let mut v: Vec<usize> = s.into_iter().collect(); v.sort_unstable(); v })
+        .map(|s| {
+            let mut v: Vec<usize> = s.into_iter().collect();
+            v.sort_unstable();
+            v
+        })
         .collect();
 
     let mut cb = vec![0.0f32; n];
 
     // ── Reusable per-source buffers (reset via `visited` list, not full clear) ──
-    let mut stack:   Vec<usize>       = Vec::with_capacity(n);
-    let mut queue:   VecDeque<usize>  = VecDeque::with_capacity(n);
-    let mut visited: Vec<usize>       = Vec::with_capacity(n);
-    let mut sigma:   Vec<f32>         = vec![0.0; n];
-    let mut dist:    Vec<i32>         = vec![-1; n];
-    let mut delta:   Vec<f32>         = vec![0.0; n];
-    let mut pred:    Vec<Vec<usize>>  = vec![Vec::new(); n];
+    let mut stack: Vec<usize> = Vec::with_capacity(n);
+    let mut queue: VecDeque<usize> = VecDeque::with_capacity(n);
+    let mut visited: Vec<usize> = Vec::with_capacity(n);
+    let mut sigma: Vec<f32> = vec![0.0; n];
+    let mut dist: Vec<i32> = vec![-1; n];
+    let mut delta: Vec<f32> = vec![0.0; n];
+    let mut pred: Vec<Vec<usize>> = vec![Vec::new(); n];
 
     for s in 0..n {
         // Reset only the nodes touched in the previous iteration.
         for &v in &visited {
             sigma[v] = 0.0;
-            dist[v]  = -1;
+            dist[v] = -1;
             delta[v] = 0.0;
             pred[v].clear();
         }
@@ -479,7 +478,7 @@ fn all_betweenness_inner(world: &World) -> Vec<(LocusId, f32)> {
         queue.clear();
 
         sigma[s] = 1.0;
-        dist[s]  = 0;
+        dist[s] = 0;
         visited.push(s);
         queue.push_back(s);
 
@@ -557,8 +556,7 @@ pub fn all_closeness(world: &World) -> Vec<(LocusId, f32)> {
         return Vec::new();
     }
 
-    let idx: FxHashMap<LocusId, usize> =
-        loci.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+    let idx: FxHashMap<LocusId, usize> = loci.iter().enumerate().map(|(i, &id)| (id, i)).collect();
 
     // Index-based undirected adjacency (dedup via FxHashSet, stored as Vec for
     // cache-friendly iteration).
@@ -575,20 +573,26 @@ pub fn all_closeness(world: &World) -> Vec<(LocusId, f32)> {
     }
     let adj: Vec<Vec<usize>> = adj_set
         .into_iter()
-        .map(|s| { let mut v: Vec<usize> = s.into_iter().collect(); v.sort_unstable(); v })
+        .map(|s| {
+            let mut v: Vec<usize> = s.into_iter().collect();
+            v.sort_unstable();
+            v
+        })
         .collect();
 
     // Shared BFS buffers — reset only touched nodes between iterations.
-    let mut dist:    Vec<i32>        = vec![-1; n];
-    let mut queue:   VecDeque<usize> = VecDeque::with_capacity(n);
-    let mut visited: Vec<usize>      = Vec::with_capacity(n);
+    let mut dist: Vec<i32> = vec![-1; n];
+    let mut queue: VecDeque<usize> = VecDeque::with_capacity(n);
+    let mut visited: Vec<usize> = Vec::with_capacity(n);
 
     let denom = n as f32 - 1.0;
     let mut result: Vec<(LocusId, f32)> = Vec::with_capacity(n);
 
     for s in 0..n {
         // Partial reset: only nodes visited in the previous BFS.
-        for &v in &visited { dist[v] = -1; }
+        for &v in &visited {
+            dist[v] = -1;
+        }
         visited.clear();
         queue.clear();
 
@@ -668,8 +672,7 @@ pub fn pagerank(world: &World, damping: f32, max_iter: usize, tol: f32) -> Vec<(
     if n == 0 {
         return Vec::new();
     }
-    let idx: FxHashMap<LocusId, usize> =
-        loci.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+    let idx: FxHashMap<LocusId, usize> = loci.iter().enumerate().map(|(i, &id)| (id, i)).collect();
 
     // Build weighted out-edges and total out-activity per node.
     // in_edges[v] = list of (u, normalised_weight) where u→v.
@@ -734,8 +737,11 @@ pub fn pagerank(world: &World, damping: f32, max_iter: usize, tol: f32) -> Vec<(
         }
     }
 
-    let mut result: Vec<(LocusId, f32)> =
-        loci.into_iter().enumerate().map(|(i, id)| (id, pr[i])).collect();
+    let mut result: Vec<(LocusId, f32)> = loci
+        .into_iter()
+        .enumerate()
+        .map(|(i, id)| (id, pr[i]))
+        .collect();
     result.sort_by(|a, b| b.1.total_cmp(&a.1));
     result
 }
@@ -793,8 +799,7 @@ pub fn louvain_with_resolution(world: &World, gamma: f32) -> Vec<Vec<LocusId>> {
         return Vec::new();
     }
 
-    let idx: FxHashMap<LocusId, usize> =
-        loci.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+    let idx: FxHashMap<LocusId, usize> = loci.iter().enumerate().map(|(i, &id)| (id, i)).collect();
 
     // Build undirected weighted adjacency (parallel edges summed).
     let mut adj_map: Vec<FxHashMap<usize, f32>> = vec![FxHashMap::default(); n];
@@ -812,8 +817,10 @@ pub fn louvain_with_resolution(world: &World, gamma: f32) -> Vec<Vec<LocusId>> {
             *adj_map[bi].entry(ai).or_insert(0.0) += w;
         }
     }
-    let adj: Vec<Vec<(usize, f32)>> =
-        adj_map.into_iter().map(|m| m.into_iter().collect()).collect();
+    let adj: Vec<Vec<(usize, f32)>> = adj_map
+        .into_iter()
+        .map(|m| m.into_iter().collect())
+        .collect();
 
     // k[v] = total incident weight; m2 = 2m = Σ k[v].
     let k: Vec<f32> = adj.iter().map(|e| e.iter().map(|(_, w)| w).sum()).collect();
@@ -866,21 +873,21 @@ pub fn louvain_with_resolution(world: &World, gamma: f32) -> Vec<Vec<LocusId>> {
             }
 
             // Find the best target community.
-            let mut best_c     = cv;
+            let mut best_c = cv;
             let mut best_score = score_stay;
             for &(c, k_v_in_c) in &nc_buf {
                 let score = k_v_in_c - gamma * k[v] * sigma_tot[c] / m2;
                 if score > best_score {
                     best_score = score;
-                    best_c     = c;
+                    best_c = c;
                 }
             }
 
             if best_c != cv {
-                sigma_tot[cv]    -= k[v];
+                sigma_tot[cv] -= k[v];
                 sigma_tot[best_c] += k[v];
-                community[v]      = best_c;
-                improved          = true;
+                community[v] = best_c;
+                improved = true;
             }
         }
     }
@@ -1347,7 +1354,10 @@ mod tests {
         let w = star_world(); // undirected star → symmetric edges
         let scores = pagerank(&w, 0.85, 100, 1e-6);
         let total: f32 = scores.iter().map(|(_, v)| v).sum();
-        assert!((total - 1.0).abs() < 1e-4, "scores should sum to 1, got {total}");
+        assert!(
+            (total - 1.0).abs() < 1e-4,
+            "scores should sum to 1, got {total}"
+        );
     }
 
     #[test]

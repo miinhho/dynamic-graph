@@ -1,27 +1,32 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use std::hint::black_box;
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use graph_core::{
     BatchId, Change, ChangeId, ChangeSubject, Endpoints, InfluenceKindId, KindObservation, Locus,
     LocusId, LocusKindId, Relationship, RelationshipLineage, StateVector,
 };
+use graph_query::api::{Query, RelSort, RelationshipPredicate, execute};
 use graph_query::*;
-use graph_query::api::{execute, Query, RelationshipPredicate, RelSort};
 use graph_world::World;
 use smallvec::smallvec;
+use std::hint::black_box;
 use std::time::Duration;
 
 // ─── Minimal LCG (no external deps) ──────────────────────────────────────────
 
 struct Lcg(u64);
 impl Lcg {
-    fn new(seed: u64) -> Self { Self(seed) }
+    fn new(seed: u64) -> Self {
+        Self(seed)
+    }
     fn next(&mut self) -> u64 {
-        self.0 = self.0
+        self.0 = self
+            .0
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1_442_695_040_888_963_407);
         self.0
     }
-    fn range(&mut self, n: u64) -> u64 { self.next() % n }
+    fn range(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
     fn f32_01(&mut self) -> f32 {
         (self.next() >> 11) as f32 / (1u64 << 53) as f32
     }
@@ -37,7 +42,10 @@ fn add_sym(world: &mut World, a: u64, b: u64, activity: f32) {
     world.relationships_mut().insert(Relationship {
         id,
         kind: RK,
-        endpoints: Endpoints::Symmetric { a: LocusId(a), b: LocusId(b) },
+        endpoints: Endpoints::Symmetric {
+            a: LocusId(a),
+            b: LocusId(b),
+        },
         state: StateVector::from_slice(&[activity, 0.5]),
         lineage: RelationshipLineage {
             created_by: None,
@@ -56,7 +64,10 @@ fn add_dir(world: &mut World, from: u64, to: u64, activity: f32) {
     world.relationships_mut().insert(Relationship {
         id,
         kind: RK,
-        endpoints: Endpoints::Directed { from: LocusId(from), to: LocusId(to) },
+        endpoints: Endpoints::Directed {
+            from: LocusId(from),
+            to: LocusId(to),
+        },
         state: StateVector::from_slice(&[activity, 0.5]),
         lineage: RelationshipLineage {
             created_by: None,
@@ -110,16 +121,16 @@ fn directed_random(n: u64, m: u64, seed: u64) -> World {
 
 fn worlds() -> Vec<(&'static str, World)> {
     vec![
-        ("n=200",  erdos_renyi(200,  5.0, 42)),
-        ("n=800",  erdos_renyi(800,  5.0, 42)),
+        ("n=200", erdos_renyi(200, 5.0, 42)),
+        ("n=800", erdos_renyi(800, 5.0, 42)),
         ("n=3000", erdos_renyi(3000, 5.0, 42)),
     ]
 }
 
 fn dir_worlds() -> Vec<(&'static str, World)> {
     vec![
-        ("n=200",  directed_random(200,  3, 42)),
-        ("n=800",  directed_random(800,  3, 42)),
+        ("n=200", directed_random(200, 3, 42)),
+        ("n=800", directed_random(800, 3, 42)),
         ("n=3000", directed_random(3000, 3, 42)),
     ]
 }
@@ -137,13 +148,17 @@ fn bench_traversal(c: &mut Criterion) {
             b.iter(|| path_between(black_box(w), LocusId(0), LocusId(n - 1)))
         });
 
-        g.bench_with_input(BenchmarkId::new("reachable_from/depth=3", label), &world, |b, w| {
-            b.iter(|| reachable_from(black_box(w), LocusId(0), 3))
-        });
+        g.bench_with_input(
+            BenchmarkId::new("reachable_from/depth=3", label),
+            &world,
+            |b, w| b.iter(|| reachable_from(black_box(w), LocusId(0), 3)),
+        );
 
-        g.bench_with_input(BenchmarkId::new("connected_components", label), &world, |b, w| {
-            b.iter(|| connected_components(black_box(w)))
-        });
+        g.bench_with_input(
+            BenchmarkId::new("connected_components", label),
+            &world,
+            |b, w| b.iter(|| connected_components(black_box(w))),
+        );
     }
 
     for (label, world) in dir_worlds() {
@@ -166,9 +181,11 @@ fn bench_centrality(c: &mut Criterion) {
         ("n=200", erdos_renyi(200, 5.0, 42)),
         ("n=800", erdos_renyi(800, 5.0, 42)),
     ] {
-        g.bench_with_input(BenchmarkId::new("all_betweenness", label), &world, |b, w| {
-            b.iter(|| all_betweenness(black_box(w)))
-        });
+        g.bench_with_input(
+            BenchmarkId::new("all_betweenness", label),
+            &world,
+            |b, w| b.iter(|| all_betweenness(black_box(w))),
+        );
     }
 
     // closeness is O(V·E) — small/medium/large
@@ -220,11 +237,9 @@ fn bench_filter(c: &mut Criterion) {
             |b, w| b.iter(|| relationships_with_activity(black_box(w), |a| a > 0.5)),
         );
 
-        g.bench_with_input(
-            BenchmarkId::new("hub_loci/min=5", label),
-            &world,
-            |b, w| b.iter(|| hub_loci(black_box(w), 5)),
-        );
+        g.bench_with_input(BenchmarkId::new("hub_loci/min=5", label), &world, |b, w| {
+            b.iter(|| hub_loci(black_box(w), 5))
+        });
     }
 
     g.finish();
@@ -389,7 +404,7 @@ fn bench_active_traversal(c: &mut Criterion) {
 
     // 50% dormant edges — reachable_from will traverse dead edges; active skips them.
     for (label, n) in [("n=200", 200u64), ("n=800", 800u64), ("n=3000", 3000u64)] {
-        let world_mixed  = mixed_activity_graph(n, 5.0, 0.5, 42);
+        let world_mixed = mixed_activity_graph(n, 5.0, 0.5, 42);
         let world_sparse = mixed_activity_graph(n, 5.0, 0.2, 42); // 80% dormant
 
         g.bench_with_input(
@@ -467,12 +482,12 @@ fn bench_reach_active_scaling(c: &mut Criterion) {
 /// Returns the world and the last ChangeId.
 fn linear_change_chain(depth: usize) -> (World, ChangeId) {
     let kind = InfluenceKindId(1);
-    let lk   = LocusKindId(1);
+    let lk = LocusKindId(1);
     let mut world = World::new();
     world.insert_locus(Locus::new(LocusId(0), lk, StateVector::zeros(1)));
 
     let before = StateVector::zeros(1);
-    let after  = StateVector::from_slice(&[1.0]);
+    let after = StateVector::from_slice(&[1.0]);
 
     let mut prev: Option<ChangeId> = None;
     let mut last_id = ChangeId(0);

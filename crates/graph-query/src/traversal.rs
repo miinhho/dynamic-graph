@@ -43,11 +43,12 @@ pub fn strongest_path(world: &World, from: LocusId, to: LocusId) -> Option<Vec<L
         return Some(vec![from]);
     }
     dijkstra_path(from, to, |locus, buf| {
-        buf.extend(
-            world
-                .relationships_for_locus(locus)
-                .map(|rel| (rel.endpoints.other_than(locus), 1.0 / rel.activity().max(1e-6))),
-        );
+        buf.extend(world.relationships_for_locus(locus).map(|rel| {
+            (
+                rel.endpoints.other_than(locus),
+                1.0 / rel.activity().max(1e-6),
+            )
+        }));
     })
 }
 
@@ -157,10 +158,7 @@ pub fn connected_components(world: &World) -> Vec<Vec<LocusId>> {
 /// Weakly connected components restricted to relationships of `kind`.
 ///
 /// Loci with no edges of that kind form singleton components.
-pub fn connected_components_of_kind(
-    world: &World,
-    kind: RelationshipKindId,
-) -> Vec<Vec<LocusId>> {
+pub fn connected_components_of_kind(world: &World, kind: RelationshipKindId) -> Vec<Vec<LocusId>> {
     let all_loci: Vec<LocusId> = world.loci().iter().map(|l| l.id).collect();
     bfs_components(&all_loci, |locus, buf| {
         buf.extend(neighbors(world, locus, Some(kind)))
@@ -199,14 +197,24 @@ pub fn upstream_of(world: &World, start: LocusId, depth: usize) -> Vec<LocusId> 
 
 /// Directed variants of `downstream_of` and `upstream_of` restricted to
 /// relationships of `kind`.
-pub fn downstream_of_kind(world: &World, start: LocusId, depth: usize, kind: RelationshipKindId) -> Vec<LocusId> {
+pub fn downstream_of_kind(
+    world: &World,
+    start: LocusId,
+    depth: usize,
+    kind: RelationshipKindId,
+) -> Vec<LocusId> {
     bfs_reachable(start, depth, |locus, buf| {
         buf.extend(successors(world, locus, Some(kind)))
     })
 }
 
 /// Upstream traversal restricted to relationships of `kind`.
-pub fn upstream_of_kind(world: &World, start: LocusId, depth: usize, kind: RelationshipKindId) -> Vec<LocusId> {
+pub fn upstream_of_kind(
+    world: &World,
+    start: LocusId,
+    depth: usize,
+    kind: RelationshipKindId,
+) -> Vec<LocusId> {
     bfs_reachable(start, depth, |locus, buf| {
         buf.extend(predecessors(world, locus, Some(kind)))
     })
@@ -850,10 +858,7 @@ pub fn infer_transitive(
 
     let result = match rule {
         TransitiveRule::Product => activities.iter().product(),
-        TransitiveRule::Min => activities
-            .iter()
-            .cloned()
-            .fold(f32::INFINITY, f32::min),
+        TransitiveRule::Min => activities.iter().cloned().fold(f32::INFINITY, f32::min),
         TransitiveRule::Mean => activities.iter().sum::<f32>() / activities.len() as f32,
     };
 
@@ -882,7 +887,10 @@ mod tests {
             w.relationships_mut().insert(Relationship {
                 id,
                 kind: rk,
-                endpoints: Endpoints::Directed { from: LocusId(i), to: LocusId(i + 1) },
+                endpoints: Endpoints::Directed {
+                    from: LocusId(i),
+                    to: LocusId(i + 1),
+                },
                 state: StateVector::from_slice(&[1.0, 0.0]),
                 lineage: RelationshipLineage {
                     created_by: None,
@@ -890,9 +898,9 @@ mod tests {
                     change_count: 1,
                     kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
                 },
-            created_batch: graph_core::BatchId(0),
-            last_decayed_batch: 0,
-            metadata: None,
+                created_batch: graph_core::BatchId(0),
+                last_decayed_batch: 0,
+                metadata: None,
             });
         }
         w
@@ -910,7 +918,10 @@ mod tests {
             w.relationships_mut().insert(Relationship {
                 id,
                 kind: rk,
-                endpoints: Endpoints::Directed { from: LocusId(from), to: LocusId(to) },
+                endpoints: Endpoints::Directed {
+                    from: LocusId(from),
+                    to: LocusId(to),
+                },
                 state: StateVector::from_slice(&[1.0, 0.0]),
                 lineage: RelationshipLineage {
                     created_by: None,
@@ -918,9 +929,9 @@ mod tests {
                     change_count: 1,
                     kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
                 },
-            created_batch: graph_core::BatchId(0),
-            last_decayed_batch: 0,
-            metadata: None,
+                created_batch: graph_core::BatchId(0),
+                last_decayed_batch: 0,
+                metadata: None,
             });
         }
         w
@@ -929,20 +940,30 @@ mod tests {
     #[test]
     fn path_between_same_locus_returns_singleton() {
         let w = chain_world(4);
-        assert_eq!(path_between(&w, LocusId(2), LocusId(2)), Some(vec![LocusId(2)]));
+        assert_eq!(
+            path_between(&w, LocusId(2), LocusId(2)),
+            Some(vec![LocusId(2)])
+        );
     }
 
     #[test]
     fn path_between_finds_shortest_path() {
         let w = chain_world(5);
         let path = path_between(&w, LocusId(0), LocusId(4)).unwrap();
-        assert_eq!(path, vec![LocusId(0), LocusId(1), LocusId(2), LocusId(3), LocusId(4)]);
+        assert_eq!(
+            path,
+            vec![LocusId(0), LocusId(1), LocusId(2), LocusId(3), LocusId(4)]
+        );
     }
 
     #[test]
     fn path_between_returns_none_for_disconnected_loci() {
         let mut w = chain_world(3);
-        w.insert_locus(Locus::new(LocusId(99), LocusKindId(1), StateVector::zeros(1)));
+        w.insert_locus(Locus::new(
+            LocusId(99),
+            LocusKindId(1),
+            StateVector::zeros(1),
+        ));
         assert!(path_between(&w, LocusId(0), LocusId(99)).is_none());
     }
 
@@ -987,7 +1008,10 @@ mod tests {
             w.relationships_mut().insert(Relationship {
                 id,
                 kind: rk,
-                endpoints: Endpoints::Directed { from: LocusId(from), to: LocusId(to) },
+                endpoints: Endpoints::Directed {
+                    from: LocusId(from),
+                    to: LocusId(to),
+                },
                 state: StateVector::from_slice(&[activity, 0.0]),
                 lineage: RelationshipLineage {
                     created_by: None,
@@ -995,9 +1019,9 @@ mod tests {
                     change_count: 1,
                     kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
                 },
-            created_batch: graph_core::BatchId(0),
-            last_decayed_batch: 0,
-            metadata: None,
+                created_batch: graph_core::BatchId(0),
+                last_decayed_batch: 0,
+                metadata: None,
             });
         }
         w
@@ -1006,13 +1030,20 @@ mod tests {
     #[test]
     fn strongest_path_same_locus_returns_singleton() {
         let w = chain_world(4);
-        assert_eq!(strongest_path(&w, LocusId(1), LocusId(1)), Some(vec![LocusId(1)]));
+        assert_eq!(
+            strongest_path(&w, LocusId(1), LocusId(1)),
+            Some(vec![LocusId(1)])
+        );
     }
 
     #[test]
     fn strongest_path_returns_none_for_disconnected() {
         let mut w = chain_world(3);
-        w.insert_locus(Locus::new(LocusId(99), LocusKindId(1), StateVector::zeros(1)));
+        w.insert_locus(Locus::new(
+            LocusId(99),
+            LocusKindId(1),
+            StateVector::zeros(1),
+        ));
         assert!(strongest_path(&w, LocusId(0), LocusId(99)).is_none());
     }
 
@@ -1056,7 +1087,10 @@ mod tests {
             w.relationships_mut().insert(Relationship {
                 id,
                 kind,
-                endpoints: Endpoints::Directed { from: LocusId(from), to: LocusId(to) },
+                endpoints: Endpoints::Directed {
+                    from: LocusId(from),
+                    to: LocusId(to),
+                },
                 state: StateVector::from_slice(&[1.0, 0.0]),
                 lineage: RelationshipLineage {
                     created_by: None,
@@ -1064,9 +1098,9 @@ mod tests {
                     change_count: 1,
                     kinds_observed: smallvec::smallvec![KindObservation::synthetic(kind)],
                 },
-            created_batch: graph_core::BatchId(0),
-            last_decayed_batch: 0,
-            metadata: None,
+                created_batch: graph_core::BatchId(0),
+                last_decayed_batch: 0,
+                metadata: None,
             });
         }
         // kind_a view: {0,1} connected, {2} and {3} isolated
@@ -1097,15 +1131,20 @@ mod tests {
             w.relationships_mut().insert(Relationship {
                 id,
                 kind: rk,
-                endpoints: Endpoints::Directed { from: LocusId(from), to: LocusId(to) },
+                endpoints: Endpoints::Directed {
+                    from: LocusId(from),
+                    to: LocusId(to),
+                },
                 state: StateVector::from_slice(&[1.0, 0.0]),
                 lineage: RelationshipLineage {
-                    created_by: None, last_touched_by: None,
-                    change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
+                    created_by: None,
+                    last_touched_by: None,
+                    change_count: 1,
+                    kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
                 },
-            created_batch: graph_core::BatchId(0),
-            last_decayed_batch: 0,
-            metadata: None,
+                created_batch: graph_core::BatchId(0),
+                last_decayed_batch: 0,
+                metadata: None,
             });
         }
         w
@@ -1175,15 +1214,20 @@ mod tests {
             w.relationships_mut().insert(Relationship {
                 id,
                 kind: rk,
-                endpoints: Endpoints::Directed { from: LocusId(from), to: LocusId(to) },
+                endpoints: Endpoints::Directed {
+                    from: LocusId(from),
+                    to: LocusId(to),
+                },
                 state: StateVector::from_slice(&[1.0, 0.0]),
                 lineage: RelationshipLineage {
-                    created_by: None, last_touched_by: None,
-                    change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
+                    created_by: None,
+                    last_touched_by: None,
+                    change_count: 1,
+                    kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
                 },
-            created_batch: graph_core::BatchId(0),
-            last_decayed_batch: 0,
-            metadata: None,
+                created_batch: graph_core::BatchId(0),
+                last_decayed_batch: 0,
+                metadata: None,
             });
         }
         w
@@ -1193,7 +1237,9 @@ mod tests {
     fn reciprocal_of_finds_reverse_directed_edge() {
         let w = reciprocal_world();
         // L0→L1 should have L1→L0 as reciprocal.
-        let rel_01 = w.relationships().relationships_from(LocusId(0))
+        let rel_01 = w
+            .relationships()
+            .relationships_from(LocusId(0))
             .find(|r| r.endpoints.target() == Some(LocusId(1)))
             .map(|r| r.id)
             .unwrap();
@@ -1208,7 +1254,9 @@ mod tests {
     fn reciprocal_of_returns_none_for_one_way_edge() {
         let w = reciprocal_world();
         // L0→L2 has no reverse.
-        let rel_02 = w.relationships().relationships_from(LocusId(0))
+        let rel_02 = w
+            .relationships()
+            .relationships_from(LocusId(0))
             .find(|r| r.endpoints.target() == Some(LocusId(2)))
             .map(|r| r.id)
             .unwrap();
@@ -1227,11 +1275,16 @@ mod tests {
         w.relationships_mut().insert(Relationship {
             id,
             kind: rk,
-            endpoints: Endpoints::Symmetric { a: LocusId(0), b: LocusId(1) },
+            endpoints: Endpoints::Symmetric {
+                a: LocusId(0),
+                b: LocusId(1),
+            },
             state: StateVector::from_slice(&[1.0, 0.0]),
             lineage: RelationshipLineage {
-                created_by: None, last_touched_by: None,
-                change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
+                created_by: None,
+                last_touched_by: None,
+                change_count: 1,
+                kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
             },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
@@ -1282,11 +1335,16 @@ mod tests {
         w.relationships_mut().insert(Relationship {
             id,
             kind: rk,
-            endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(1) },
+            endpoints: Endpoints::Directed {
+                from: LocusId(0),
+                to: LocusId(1),
+            },
             state: StateVector::from_slice(&[1.0, 0.0]),
             lineage: RelationshipLineage {
-                created_by: None, last_touched_by: None,
-                change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
+                created_by: None,
+                last_touched_by: None,
+                change_count: 1,
+                kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
             },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
@@ -1309,20 +1367,30 @@ mod tests {
         for (a, b, sym) in [(0u64, 1u64, true), (1, 2, false)] {
             let id = w.relationships_mut().mint_id();
             let endpoints = if sym {
-                Endpoints::Symmetric { a: LocusId(a), b: LocusId(b) }
+                Endpoints::Symmetric {
+                    a: LocusId(a),
+                    b: LocusId(b),
+                }
             } else {
-                Endpoints::Directed { from: LocusId(a), to: LocusId(b) }
+                Endpoints::Directed {
+                    from: LocusId(a),
+                    to: LocusId(b),
+                }
             };
             w.relationships_mut().insert(Relationship {
-                id, kind: rk, endpoints,
+                id,
+                kind: rk,
+                endpoints,
                 state: StateVector::from_slice(&[1.0, 0.0]),
                 lineage: RelationshipLineage {
-                    created_by: None, last_touched_by: None,
-                    change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
+                    created_by: None,
+                    last_touched_by: None,
+                    change_count: 1,
+                    kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
                 },
-            created_batch: graph_core::BatchId(0),
-            last_decayed_batch: 0,
-            metadata: None,
+                created_batch: graph_core::BatchId(0),
+                last_decayed_batch: 0,
+                metadata: None,
             });
         }
         // downstream from 0: crosses symmetric 0↔1, then directed 1→2 → reaches {1, 2}
@@ -1361,20 +1429,40 @@ mod tests {
         let rk2: RelationshipKindId = InfluenceKindId(2);
         let id1 = w.relationships_mut().mint_id();
         w.relationships_mut().insert(Relationship {
-            id: id1, kind: rk1,
-            endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(1) },
+            id: id1,
+            kind: rk1,
+            endpoints: Endpoints::Directed {
+                from: LocusId(0),
+                to: LocusId(1),
+            },
             state: StateVector::from_slice(&[1.0, 0.0]),
-            lineage: RelationshipLineage { created_by: None, last_touched_by: None, change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk1)] },
-            created_batch: graph_core::BatchId(0), last_decayed_batch: 0,
+            lineage: RelationshipLineage {
+                created_by: None,
+                last_touched_by: None,
+                change_count: 1,
+                kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk1)],
+            },
+            created_batch: graph_core::BatchId(0),
+            last_decayed_batch: 0,
             metadata: None,
         });
         let id2 = w.relationships_mut().mint_id();
         w.relationships_mut().insert(Relationship {
-            id: id2, kind: rk2,
-            endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(2) },
+            id: id2,
+            kind: rk2,
+            endpoints: Endpoints::Directed {
+                from: LocusId(0),
+                to: LocusId(2),
+            },
             state: StateVector::from_slice(&[1.0, 0.0]),
-            lineage: RelationshipLineage { created_by: None, last_touched_by: None, change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk2)] },
-            created_batch: graph_core::BatchId(0), last_decayed_batch: 0,
+            lineage: RelationshipLineage {
+                created_by: None,
+                last_touched_by: None,
+                change_count: 1,
+                kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk2)],
+            },
+            created_batch: graph_core::BatchId(0),
+            last_decayed_batch: 0,
             metadata: None,
         });
         // Kind 1 neighbor of L0 is L1 only
@@ -1390,7 +1478,10 @@ mod tests {
 
     fn trust_chain_world() -> World {
         // A→B TRUST(0.8), B→C TRUST(0.7)
-        use graph_core::{Endpoints, InfluenceKindId, LocusKindId, Relationship, RelationshipKindId, RelationshipLineage, StateVector};
+        use graph_core::{
+            Endpoints, InfluenceKindId, LocusKindId, Relationship, RelationshipKindId,
+            RelationshipLineage, StateVector,
+        };
         let lk = LocusKindId(1);
         let trust: RelationshipKindId = InfluenceKindId(10);
         let mut w = World::new();
@@ -1399,19 +1490,41 @@ mod tests {
         }
         let id1 = w.relationships_mut().mint_id();
         w.relationships_mut().insert(Relationship {
-            id: id1, kind: trust,
-            endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(1) },
+            id: id1,
+            kind: trust,
+            endpoints: Endpoints::Directed {
+                from: LocusId(0),
+                to: LocusId(1),
+            },
             state: StateVector::from_slice(&[0.8, 0.0]),
-            lineage: RelationshipLineage { created_by: None, last_touched_by: None, change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(trust)] },
-            created_batch: graph_core::BatchId(0), last_decayed_batch: 0, metadata: None,
+            lineage: RelationshipLineage {
+                created_by: None,
+                last_touched_by: None,
+                change_count: 1,
+                kinds_observed: smallvec::smallvec![KindObservation::synthetic(trust)],
+            },
+            created_batch: graph_core::BatchId(0),
+            last_decayed_batch: 0,
+            metadata: None,
         });
         let id2 = w.relationships_mut().mint_id();
         w.relationships_mut().insert(Relationship {
-            id: id2, kind: trust,
-            endpoints: Endpoints::Directed { from: LocusId(1), to: LocusId(2) },
+            id: id2,
+            kind: trust,
+            endpoints: Endpoints::Directed {
+                from: LocusId(1),
+                to: LocusId(2),
+            },
             state: StateVector::from_slice(&[0.7, 0.0]),
-            lineage: RelationshipLineage { created_by: None, last_touched_by: None, change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(trust)] },
-            created_batch: graph_core::BatchId(0), last_decayed_batch: 0, metadata: None,
+            lineage: RelationshipLineage {
+                created_by: None,
+                last_touched_by: None,
+                change_count: 1,
+                kinds_observed: smallvec::smallvec![KindObservation::synthetic(trust)],
+            },
+            created_batch: graph_core::BatchId(0),
+            last_decayed_batch: 0,
+            metadata: None,
         });
         w
     }
@@ -1450,7 +1563,9 @@ mod tests {
         let w = trust_chain_world();
         // Reverse direction: no C→A path
         let trust: graph_core::RelationshipKindId = InfluenceKindId(10);
-        assert!(infer_transitive(&w, LocusId(2), LocusId(0), trust, TransitiveRule::Product).is_none());
+        assert!(
+            infer_transitive(&w, LocusId(2), LocusId(0), trust, TransitiveRule::Product).is_none()
+        );
     }
 
     #[test]
@@ -1458,7 +1573,9 @@ mod tests {
         use graph_core::InfluenceKindId;
         let w = trust_chain_world();
         let trust: graph_core::RelationshipKindId = InfluenceKindId(10);
-        assert!(infer_transitive(&w, LocusId(0), LocusId(0), trust, TransitiveRule::Product).is_none());
+        assert!(
+            infer_transitive(&w, LocusId(0), LocusId(0), trust, TransitiveRule::Product).is_none()
+        );
     }
 
     // ── has_cycle ────────────────────────────────────────────────────────────
@@ -1484,11 +1601,16 @@ mod tests {
             w.relationships_mut().insert(Relationship {
                 id,
                 kind: rk,
-                endpoints: Endpoints::Directed { from: LocusId(from), to: LocusId(to) },
+                endpoints: Endpoints::Directed {
+                    from: LocusId(from),
+                    to: LocusId(to),
+                },
                 state: StateVector::from_slice(&[1.0, 0.0]),
                 lineage: RelationshipLineage {
-                    created_by: None, last_touched_by: None,
-                    change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
+                    created_by: None,
+                    last_touched_by: None,
+                    change_count: 1,
+                    kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
                 },
                 created_batch: graph_core::BatchId(0),
                 last_decayed_batch: 0,
@@ -1511,11 +1633,16 @@ mod tests {
         w.relationships_mut().insert(Relationship {
             id,
             kind: rk,
-            endpoints: Endpoints::Symmetric { a: LocusId(0), b: LocusId(1) },
+            endpoints: Endpoints::Symmetric {
+                a: LocusId(0),
+                b: LocusId(1),
+            },
             state: StateVector::from_slice(&[1.0, 0.0]),
             lineage: RelationshipLineage {
-                created_by: None, last_touched_by: None,
-                change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
+                created_by: None,
+                last_touched_by: None,
+                change_count: 1,
+                kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
             },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,
@@ -1537,7 +1664,11 @@ mod tests {
         let w = chain_world(4);
         let mut sources = source_loci(&w);
         sources.sort();
-        assert_eq!(sources, vec![LocusId(0)], "only locus 0 has no incoming edges");
+        assert_eq!(
+            sources,
+            vec![LocusId(0)],
+            "only locus 0 has no incoming edges"
+        );
     }
 
     #[test]
@@ -1545,7 +1676,11 @@ mod tests {
         let w = chain_world(4);
         let mut sinks = sink_loci(&w);
         sinks.sort();
-        assert_eq!(sinks, vec![LocusId(3)], "only locus 3 has no outgoing edges");
+        assert_eq!(
+            sinks,
+            vec![LocusId(3)],
+            "only locus 3 has no outgoing edges"
+        );
     }
 
     #[test]
@@ -1561,11 +1696,16 @@ mod tests {
             w.relationships_mut().insert(Relationship {
                 id,
                 kind: rk,
-                endpoints: Endpoints::Directed { from: LocusId(from), to: LocusId(to) },
+                endpoints: Endpoints::Directed {
+                    from: LocusId(from),
+                    to: LocusId(to),
+                },
                 state: StateVector::from_slice(&[1.0, 0.0]),
                 lineage: RelationshipLineage {
-                    created_by: None, last_touched_by: None,
-                    change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
+                    created_by: None,
+                    last_touched_by: None,
+                    change_count: 1,
+                    kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
                 },
                 created_batch: graph_core::BatchId(0),
                 last_decayed_batch: 0,
@@ -1592,7 +1732,10 @@ mod tests {
             w.relationships_mut().insert(Relationship {
                 id,
                 kind: rk,
-                endpoints: Endpoints::Directed { from: LocusId(from), to: LocusId(to) },
+                endpoints: Endpoints::Directed {
+                    from: LocusId(from),
+                    to: LocusId(to),
+                },
                 state: StateVector::from_slice(&[activity, 0.0]),
                 lineage: RelationshipLineage {
                     created_by: None,
@@ -1690,11 +1833,16 @@ mod tests {
         w.relationships_mut().insert(Relationship {
             id,
             kind: rk,
-            endpoints: Endpoints::Symmetric { a: LocusId(0), b: LocusId(1) },
+            endpoints: Endpoints::Symmetric {
+                a: LocusId(0),
+                b: LocusId(1),
+            },
             state: StateVector::from_slice(&[1.0, 0.0]),
             lineage: RelationshipLineage {
-                created_by: None, last_touched_by: None,
-                change_count: 1, kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
+                created_by: None,
+                last_touched_by: None,
+                change_count: 1,
+                kinds_observed: smallvec::smallvec![KindObservation::synthetic(rk)],
             },
             created_batch: graph_core::BatchId(0),
             last_decayed_batch: 0,

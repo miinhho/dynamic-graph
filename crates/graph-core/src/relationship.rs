@@ -40,13 +40,21 @@ pub struct KindObservation {
 impl KindObservation {
     /// Create a first-touch observation at the given batch.
     pub fn once(kind: InfluenceKindId, batch: BatchId) -> Self {
-        Self { kind, touch_count: 1, last_batch: batch }
+        Self {
+            kind,
+            touch_count: 1,
+            last_batch: batch,
+        }
     }
 
     /// Create a placeholder observation for synthetic relationships that have
     /// no batch context (e.g. test fixtures, query-internal temporaries).
     pub fn synthetic(kind: InfluenceKindId) -> Self {
-        Self { kind, touch_count: 1, last_batch: BatchId(0) }
+        Self {
+            kind,
+            touch_count: 1,
+            last_batch: BatchId(0),
+        }
     }
 }
 
@@ -103,7 +111,11 @@ pub struct RelationshipSlotDef {
 
 impl RelationshipSlotDef {
     pub fn new(name: &'static str, default: f32) -> Self {
-        Self { name, default, decay: None }
+        Self {
+            name,
+            default,
+            decay: None,
+        }
     }
 
     pub fn with_decay(mut self, decay: f32) -> Self {
@@ -166,10 +178,18 @@ impl Endpoints {
     pub fn other_than(&self, locus: LocusId) -> LocusId {
         match self {
             Endpoints::Directed { from, to } => {
-                if *from == locus { *to } else { *from }
+                if *from == locus {
+                    *to
+                } else {
+                    *from
+                }
             }
             Endpoints::Symmetric { a, b } => {
-                if *a == locus { *b } else { *a }
+                if *a == locus {
+                    *b
+                } else {
+                    *a
+                }
             }
         }
     }
@@ -313,7 +333,8 @@ impl RelationshipLineage {
         self.kinds_observed
             .iter()
             .max_by(|a, b| {
-                a.touch_count.cmp(&b.touch_count)
+                a.touch_count
+                    .cmp(&b.touch_count)
                     .then_with(|| b.kind.0.cmp(&a.kind.0)) // lower id wins tie
             })
             .map(|obs| obs.kind)
@@ -388,12 +409,20 @@ impl Relationship {
 
     /// Read the activity score (slot 0).
     pub fn activity(&self) -> f32 {
-        self.state.as_slice().get(Self::ACTIVITY_SLOT).copied().unwrap_or(0.0)
+        self.state
+            .as_slice()
+            .get(Self::ACTIVITY_SLOT)
+            .copied()
+            .unwrap_or(0.0)
     }
 
     /// Read the learned Hebbian weight (slot 1).
     pub fn weight(&self) -> f32 {
-        self.state.as_slice().get(Self::WEIGHT_SLOT).copied().unwrap_or(0.0)
+        self.state
+            .as_slice()
+            .get(Self::WEIGHT_SLOT)
+            .copied()
+            .unwrap_or(0.0)
     }
 
     /// How many batches old this relationship is: `current_batch - created_batch`.

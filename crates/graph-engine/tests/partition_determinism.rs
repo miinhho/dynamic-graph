@@ -8,9 +8,9 @@
 //! the engine yet. Once parallel Apply is wired in (step 3 of §10) this test
 //! will catch any determinism regressions.
 
-use std::sync::Arc;
 use graph_engine::Simulation;
 use graph_testkit::fixtures::{ring_world, stimulus};
+use std::sync::Arc;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -30,7 +30,10 @@ fn snapshot(sim: &Simulation) -> WorldSnapshot {
         .collect();
     rel_states.sort_by_key(|(id, _)| *id);
 
-    WorldSnapshot { locus_states, rel_states }
+    WorldSnapshot {
+        locus_states,
+        rel_states,
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -57,9 +60,7 @@ fn ring_p4_matches_single_partition_after_20_ticks() {
 
     // --- with partition fn ---
     let (mut world_p4, loci, influences) = ring_world(N, 0.5);
-    world_p4.set_partition_fn(Some(Arc::new(move |locus| {
-        locus.id.0 * P / N
-    })));
+    world_p4.set_partition_fn(Some(Arc::new(move |locus| locus.id.0 * P / N)));
     let mut sim_p4 = Simulation::new(world_p4, loci, influences);
     for _ in 0..TICKS {
         sim_p4.step(vec![stimulus(1.0)]);
@@ -103,7 +104,9 @@ fn partition_index_tracks_loci_correctly() {
     let (mut world, _, _) = ring_world(N, 0.5);
     world.set_partition_fn(Some(Arc::new(move |locus| locus.id.0 * P / N)));
 
-    let idx = world.partition_index().expect("partition index should be set");
+    let idx = world
+        .partition_index()
+        .expect("partition index should be set");
     assert_eq!(idx.bucket_count(), P as usize);
 
     // Every locus is assigned to exactly one bucket.

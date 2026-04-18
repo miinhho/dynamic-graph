@@ -149,10 +149,7 @@ impl LocusContext for TestLocusContext {
         let ids = self.by_locus.get(&locus);
         match ids {
             None => Box::new(std::iter::empty::<&Relationship>()),
-            Some(ids) => Box::new(
-                ids.iter()
-                    .filter_map(|id| self.relationships.get(id)),
-            ),
+            Some(ids) => Box::new(ids.iter().filter_map(|id| self.relationships.get(id))),
         }
     }
 
@@ -251,7 +248,8 @@ impl ProgramFixture {
     /// Add a neighbor locus to the test context with a specific state.
     pub fn with_neighbor_state(mut self, id: LocusId, state: StateVector) -> Self {
         let dims = state.as_slice().len();
-        self.context_loci.push(Locus::new(id, LocusKindId(1), state));
+        self.context_loci
+            .push(Locus::new(id, LocusKindId(1), state));
         // ensure the target locus is also in the context with the right dimensionality
         let _ = dims;
         self
@@ -378,7 +376,10 @@ impl ProgramFixture {
         let proposed = program.process(&self.target, &incoming, &ctx);
         let structural = program.structural_proposals(&self.target, &incoming, &ctx);
 
-        ProgramOutput { proposed, structural }
+        ProgramOutput {
+            proposed,
+            structural,
+        }
     }
 }
 
@@ -411,7 +412,10 @@ mod tests {
     fn forward_program_produces_downstream_change() {
         let output = ProgramFixture::for_locus(LocusId(0), StateVector::zeros(1))
             .incoming_activation(LocusId(1), TEST_KIND, 0.8)
-            .run(&ForwardProgram { downstream: LocusId(2), gain: 0.5 });
+            .run(&ForwardProgram {
+                downstream: LocusId(2),
+                gain: 0.5,
+            });
 
         assert_eq!(output.proposed.len(), 1);
         let change = &output.proposed[0];
@@ -424,7 +428,10 @@ mod tests {
     fn forward_program_silent_below_noise_floor() {
         let output = ProgramFixture::for_locus(LocusId(0), StateVector::zeros(1))
             .incoming_activation(LocusId(1), TEST_KIND, 0.0001)
-            .run(&ForwardProgram { downstream: LocusId(2), gain: 1.0 });
+            .run(&ForwardProgram {
+                downstream: LocusId(2),
+                gain: 1.0,
+            });
         assert!(output.proposed.is_empty());
     }
 
@@ -449,13 +456,18 @@ mod tests {
         let downstreams = vec![LocusId(1), LocusId(2), LocusId(3)];
         let output = ProgramFixture::for_locus(LocusId(0), StateVector::zeros(1))
             .incoming_activation(LocusId(9), TEST_KIND, 0.6)
-            .run(&BroadcastProgram { downstreams: downstreams.clone(), gain: 0.5 });
+            .run(&BroadcastProgram {
+                downstreams: downstreams.clone(),
+                gain: 0.5,
+            });
 
         assert_eq!(output.proposed.len(), 3);
         for (i, change) in output.proposed.iter().enumerate() {
             assert!(
                 matches!(change.subject, ChangeSubject::Locus(id) if id == downstreams[i]),
-                "expected downstream {:?}, got {:?}", downstreams[i], change.subject
+                "expected downstream {:?}, got {:?}",
+                downstreams[i],
+                change.subject
             );
             let val = change.after.as_slice()[0];
             assert!((val - 0.3).abs() < 1e-5, "expected 0.3, got {val}");
@@ -468,7 +480,10 @@ mod tests {
     fn has_change_to_detects_by_locus() {
         let output = ProgramFixture::for_locus(LocusId(0), StateVector::zeros(1))
             .incoming_activation(LocusId(1), TEST_KIND, 0.5)
-            .run(&ForwardProgram { downstream: LocusId(7), gain: 1.0 });
+            .run(&ForwardProgram {
+                downstream: LocusId(7),
+                gain: 1.0,
+            });
 
         assert!(output.has_change_to(LocusId(7)));
         assert!(!output.has_change_to(LocusId(0)));
@@ -530,8 +545,11 @@ mod tests {
 
     #[test]
     fn no_inbox_produces_no_output() {
-        let output = ProgramFixture::for_locus(LocusId(0), StateVector::zeros(1))
-            .run(&ForwardProgram { downstream: LocusId(1), gain: 1.0 });
+        let output =
+            ProgramFixture::for_locus(LocusId(0), StateVector::zeros(1)).run(&ForwardProgram {
+                downstream: LocusId(1),
+                gain: 1.0,
+            });
         assert!(output.is_empty());
     }
 }

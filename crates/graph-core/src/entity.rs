@@ -40,13 +40,9 @@ pub enum LifecycleCause {
         weak_bridges: Vec<RelationshipId>,
     },
     /// Entity absorbed others via merge (survivor's perspective).
-    MergedFrom {
-        absorbed: Vec<EntityId>,
-    },
+    MergedFrom { absorbed: Vec<EntityId> },
     /// Entity was absorbed into another (absorbed entity's perspective).
-    MergedInto {
-        survivor: EntityId,
-    },
+    MergedInto { survivor: EntityId },
 }
 
 /// Stable identity of an entity. Immutable across its entire sediment
@@ -128,9 +124,7 @@ impl LayerTransition {
     pub fn is_significant(&self) -> bool {
         matches!(
             self,
-            LayerTransition::Born
-                | LayerTransition::Split { .. }
-                | LayerTransition::Merged { .. }
+            LayerTransition::Born | LayerTransition::Split { .. } | LayerTransition::Merged { .. }
         )
     }
 }
@@ -261,9 +255,15 @@ impl Entity {
 
     /// Deposit a new layer on top of the sediment stack, updating
     /// `current` to reflect the transition.
-    pub fn deposit(&mut self, batch: BatchId, snapshot: EntitySnapshot, transition: LayerTransition) {
+    pub fn deposit(
+        &mut self,
+        batch: BatchId,
+        snapshot: EntitySnapshot,
+        transition: LayerTransition,
+    ) {
         self.current = snapshot.clone();
-        self.layers.push(EntityLayer::new(batch, snapshot, transition));
+        self.layers
+            .push(EntityLayer::new(batch, snapshot, transition));
     }
 
     /// Total number of layers deposited (including the birth layer).

@@ -37,15 +37,15 @@
 //! let history   = graph_query::changes_to_locus_in_range(&world, locus, from, to);
 //! ```
 
-mod causality;
+mod api_dogfood;
 pub mod causal_strength;
-mod entity_causality;
-mod time_travel;
+mod causality;
 mod centrality;
 mod counterfactual;
 mod debug;
 mod deviation;
 mod emergence;
+mod entity_causality;
 mod entity_query;
 mod export;
 mod filter;
@@ -53,109 +53,86 @@ mod labels;
 mod planner;
 mod profile;
 mod query;
-mod api_dogfood;
 mod query_api;
 mod temporal;
+mod time_travel;
 mod traversal;
 
 pub use causal_strength::{
-    causal_direction, causal_in_strength, causal_out_strength,
-    dominant_causes, dominant_effects, feedback_pairs,
-};
-pub use centrality::{
-    all_betweenness, all_closeness, all_constraints,
-    betweenness_centrality, closeness_centrality,
-    effective_network_size, structural_constraint,
-    louvain, louvain_with_resolution,
-    pagerank, pagerank_centrality,
-    TriangleBalance, all_triangles, balance_index, triangle_balance, unstable_triangles,
-    modularity,
+    causal_direction, causal_in_strength, causal_out_strength, dominant_causes, dominant_effects,
+    feedback_pairs,
 };
 pub use causality::{
-    causal_ancestors, causal_coarse_trail, causal_depth, causal_descendants,
-    changes_to_locus_in_range,
-    changes_to_relationship_in_range, common_ancestors, committed_batches,
-    is_ancestor_of, last_change_to_locus, last_change_to_relationship,
-    loci_changed_in_batch, relationship_volatility, relationship_volatility_all,
-    relationship_activity_trend, relationship_activity_trend_with_threshold,
-    relationship_weight_delta, relationship_weight_trend,
-    relationship_weight_trend_delta, relationship_weight_trend_with_threshold, Trend,
-    relationships_changed_in_batch, root_stimuli, root_stimuli_for_relationship,
-    CoarseTrail,
+    CoarseTrail, Trend, causal_ancestors, causal_coarse_trail, causal_depth, causal_descendants,
+    changes_to_locus_in_range, changes_to_relationship_in_range, committed_batches,
+    common_ancestors, is_ancestor_of, last_change_to_locus, last_change_to_relationship,
+    loci_changed_in_batch, relationship_activity_trend, relationship_activity_trend_with_threshold,
+    relationship_volatility, relationship_volatility_all, relationship_weight_delta,
+    relationship_weight_trend, relationship_weight_trend_delta,
+    relationship_weight_trend_with_threshold, relationships_changed_in_batch, root_stimuli,
+    root_stimuli_for_relationship,
+};
+pub use centrality::{
+    TriangleBalance, all_betweenness, all_closeness, all_constraints, all_triangles, balance_index,
+    betweenness_centrality, closeness_centrality, effective_network_size, louvain,
+    louvain_with_resolution, modularity, pagerank, pagerank_centrality, structural_constraint,
+    triangle_balance, unstable_triangles,
 };
 pub use filter::{
-    active_entities, entities_matching, entities_with_coherence, entities_with_member,
-    entity_member_loci, locus_entities, top_entity_members,
-    incoming_activity_sum, outgoing_activity_sum, net_influence_balance,
-    net_influence_between,
-    loci_matching, loci_of_kind, loci_top_n_by_state, loci_with_f64_property,
-    loci_with_state, loci_with_str_property,
-    locus_degree, locus_in_degree, locus_out_degree,
-    lookup_loci, lookup_relationships,
-    most_connected_loci, most_connected_loci_with_degree,
-    most_changed_relationships, most_similar_relationships, relationships_by_change_count,
-    relationships_above_strength, relationships_top_n_by_strength,
-    relationships_created_in, relationships_idle_for, relationships_older_than,
-    relationship_touch_rate,
-    relationships_between, relationships_between_of_kind,
-    relationships_from, relationships_from_of_kind,
-    relationships_to, relationships_to_of_kind,
-    relationships_matching, relationships_matching_slots,
-    relationships_of_kind, relationships_of_kinds,
-    relationships_with_activity, relationships_with_slot, relationships_with_weight,
-    relationships_with_str_property, relationships_with_f64_property,
-    dominant_flow_kind, kind_flow_diversity, kind_transition_rate,
+    active_entities, dominant_flow_kind, entities_matching, entities_with_coherence,
+    entities_with_member, entity_member_loci, incoming_activity_sum, kind_flow_diversity,
+    kind_transition_rate, loci_matching, loci_of_kind, loci_top_n_by_state, loci_with_f64_property,
+    loci_with_state, loci_with_str_property, locus_degree, locus_entities, locus_in_degree,
+    locus_out_degree, lookup_loci, lookup_relationships, most_changed_relationships,
+    most_connected_loci, most_connected_loci_with_degree, most_similar_relationships,
+    net_influence_balance, net_influence_between, outgoing_activity_sum, relationship_touch_rate,
+    relationships_above_strength, relationships_between, relationships_between_of_kind,
+    relationships_by_change_count, relationships_created_in, relationships_from,
+    relationships_from_of_kind, relationships_idle_for, relationships_matching,
+    relationships_matching_slots, relationships_of_kind, relationships_of_kinds,
+    relationships_older_than, relationships_to, relationships_to_of_kind,
+    relationships_top_n_by_strength, relationships_with_activity, relationships_with_f64_property,
+    relationships_with_slot, relationships_with_str_property, relationships_with_weight,
+    top_entity_members,
 };
-pub use profile::{relationship_profile, RelationshipBundle};
+pub use profile::{RelationshipBundle, relationship_profile};
 // `RelationshipBundle::profile_trend_similarity` is a method — no separate re-export needed.
 // `net_influence_between` is also re-exported via filter; callers that prefer
 // the bundle-first style should use `relationship_profile(...).net_activity_with_interactions(...)`.
-pub use query::{
-    loci, loci_from_ids, LociQuery,
-    relationships, relationships_from_ids, RelationshipsQuery,
-    ActivityStats,
-};
-pub use entity_query::{
-    all_coheres, coheres, entities,
-    CohereQuery, EntitiesQuery,
-};
-pub use temporal::{
-    batch_stats, changed_since,
-    last_n_changes_to_locus, last_n_changes_to_relationship,
-    loci_by_change_frequency, relationships_by_change_frequency,
-    BatchStats,
-};
 pub use counterfactual::{
-    counterfactual, counterfactual_replay,
+    CounterfactualDiff, CounterfactualQuery, counterfactual, counterfactual_replay,
     relationships_absent_without, relationships_caused_by,
-    CounterfactualDiff, CounterfactualQuery,
 };
-pub use debug::{causal_trace, CausalStep, CausalTrace};
-pub use deviation::{entity_diff, entity_deviations_since, EntityDiff};
+pub use debug::{CausalStep, CausalTrace, causal_trace};
+pub use deviation::{EntityDiff, entity_deviations_since, entity_diff};
 pub use emergence::{
-    coherence_autocorrelation, coherence_dense_series, coherence_dense_series_with_decay,
-    coherence_stable_series,
-    emergence_report, emergence_report_synergy,
-    emergence_report_synergy_with_decay, emergence_report_with_decay,
-    psi_scalar, psi_scalar_with_decay, psi_synergy,
-    psi_synergy_leave_one_out, psi_synergy_leave_one_out_with_decay,
-    psi_synergy_with_decay,
     DecayRates, DropResult, EmergenceEntry, EmergenceReport, EmergenceSynergyEntry,
-    EmergenceSynergyReport, LeaveOneOutResult,
-    PsiResult, PsiSynergyResult, SynergyPair,
-    UnmeasuredEntry, UnmeasuredReason,
+    EmergenceSynergyReport, LeaveOneOutResult, PsiResult, PsiSynergyResult, SynergyPair,
+    UnmeasuredEntry, UnmeasuredReason, coherence_autocorrelation, coherence_dense_series,
+    coherence_dense_series_with_decay, coherence_stable_series, emergence_report,
+    emergence_report_synergy, emergence_report_synergy_with_decay, emergence_report_with_decay,
+    psi_scalar, psi_scalar_with_decay, psi_synergy, psi_synergy_leave_one_out,
+    psi_synergy_leave_one_out_with_decay, psi_synergy_with_decay,
 };
 pub use entity_causality::{
     cause_seed_changes, entity_layers_in_range, entity_transition_cause,
     entity_upstream_transitions,
 };
-pub use time_travel::{time_travel, TimeTravelResult};
+pub use entity_query::{CohereQuery, EntitiesQuery, all_coheres, coheres, entities};
 pub use export::{to_dot, to_dot_filtered};
 pub use labels::{
-    entities_summary, entity_summary, relationship_list,
-    to_dot_named, to_dot_named_filtered,
-    EntitySummary, NameMap,
+    EntitySummary, NameMap, entities_summary, entity_summary, relationship_list, to_dot_named,
+    to_dot_named_filtered,
 };
+pub use query::{
+    ActivityStats, LociQuery, RelationshipsQuery, loci, loci_from_ids, relationships,
+    relationships_from_ids,
+};
+pub use temporal::{
+    BatchStats, batch_stats, changed_since, last_n_changes_to_locus,
+    last_n_changes_to_relationship, loci_by_change_frequency, relationships_by_change_frequency,
+};
+pub use time_travel::{TimeTravelResult, time_travel};
 /// Serializable query API — [`Query`], [`QueryResult`], [`api::execute`], and [`api::explain`].
 ///
 /// Notable additions over the base traversal layer:
@@ -164,30 +141,20 @@ pub use labels::{
 /// - `LocusPredicate::ReachableFromActive` / `DownstreamOfActive` / `UpstreamOfActive`
 ///   for filtering loci in `FindLoci` using active-subgraph reachability.
 pub mod api {
+    pub use super::planner::{CostClass, PlanStep, QueryPlan, explain};
     pub use super::query_api::{
-        execute,
-        EntityPredicate, EntitySort, LocusPredicate, LocusSort, Query, QueryResult,
-        RelationshipPredicate, RelationshipProfileResult, RelSort,
-        RelationshipSummary, LocusSummary,
-        EntityDiffSummary, CohereResult, TrendResult,
-        WorldMetricsResult,
-        FindRelationshipsBuilder, FindLociBuilder, FindEntitiesBuilder,
+        CohereResult, EntityDiffSummary, EntityPredicate, EntitySort, FindEntitiesBuilder,
+        FindLociBuilder, FindRelationshipsBuilder, LocusPredicate, LocusSort, LocusSummary, Query,
+        QueryResult, RelSort, RelationshipPredicate, RelationshipProfileResult,
+        RelationshipSummary, TrendResult, WorldMetricsResult, execute,
     };
-    pub use super::planner::{explain, CostClass, PlanStep, QueryPlan};
 }
 
 pub use traversal::{
-    connected_components, connected_components_of_kind,
-    directed_path, directed_path_of_kind,
-    downstream_of, downstream_of_active, downstream_of_kind,
-    has_cycle,
-    hub_loci, infer_transitive, isolated_loci,
-    neighbors_of, neighbors_of_kind,
-    path_between, path_between_active, path_between_of_kind,
-    reachable_from, reachable_from_active, reachable_from_of_kind, reachable_matching,
-    reciprocal_of, reciprocal_pairs,
-    sink_loci, source_loci,
-    strongest_path,
-    upstream_of, upstream_of_active, upstream_of_kind,
-    TransitiveRule,
+    TransitiveRule, connected_components, connected_components_of_kind, directed_path,
+    directed_path_of_kind, downstream_of, downstream_of_active, downstream_of_kind, has_cycle,
+    hub_loci, infer_transitive, isolated_loci, neighbors_of, neighbors_of_kind, path_between,
+    path_between_active, path_between_of_kind, reachable_from, reachable_from_active,
+    reachable_from_of_kind, reachable_matching, reciprocal_of, reciprocal_pairs, sink_loci,
+    source_loci, strongest_path, upstream_of, upstream_of_active, upstream_of_kind,
 };

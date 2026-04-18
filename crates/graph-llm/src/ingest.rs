@@ -105,7 +105,11 @@ impl<'c> TextIngestor<'c> {
                     })
                     .unwrap_or_default();
 
-                Ok(ExtractedNode { name, kind, properties })
+                Ok(ExtractedNode {
+                    name,
+                    kind,
+                    properties,
+                })
             })
             .collect()
     }
@@ -158,7 +162,10 @@ mod tests {
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[0].name, "Alice");
         assert_eq!(nodes[0].kind, "PERSON");
-        assert_eq!(nodes[0].properties.get("role").map(|s| s.as_str()), Some("author"));
+        assert_eq!(
+            nodes[0].properties.get("role").map(|s| s.as_str()),
+            Some("author")
+        );
         assert_eq!(nodes[1].name, "MIT");
         assert_eq!(nodes[1].kind, "ORG");
     }

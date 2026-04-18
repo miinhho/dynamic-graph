@@ -122,7 +122,9 @@ pub fn last_n_changes_to_relationship(
 pub fn changed_since(world: &World, since_batch: BatchId) -> Vec<(LocusId, usize)> {
     let mut counts: FxHashMap<LocusId, usize> = FxHashMap::default();
     for c in world.log().iter() {
-        if c.batch >= since_batch && let ChangeSubject::Locus(id) = c.subject {
+        if c.batch >= since_batch
+            && let ChangeSubject::Locus(id) = c.subject
+        {
             *counts.entry(id).or_insert(0) += 1;
         }
     }
@@ -143,7 +145,10 @@ pub fn loci_by_change_frequency(
 ) -> Vec<(LocusId, usize)> {
     let mut counts: FxHashMap<LocusId, usize> = FxHashMap::default();
     for c in world.log().iter() {
-        if c.batch >= from_batch && c.batch <= to_batch && let ChangeSubject::Locus(id) = c.subject {
+        if c.batch >= from_batch
+            && c.batch <= to_batch
+            && let ChangeSubject::Locus(id) = c.subject
+        {
             *counts.entry(id).or_insert(0) += 1;
         }
     }
@@ -167,7 +172,10 @@ pub fn relationships_by_change_frequency(
 ) -> Vec<(RelationshipId, usize)> {
     let mut counts: FxHashMap<RelationshipId, usize> = FxHashMap::default();
     for c in world.log().iter() {
-        if c.batch >= from_batch && c.batch <= to_batch && let ChangeSubject::Relationship(id) = c.subject {
+        if c.batch >= from_batch
+            && c.batch <= to_batch
+            && let ChangeSubject::Relationship(id) = c.subject
+        {
             *counts.entry(id).or_insert(0) += 1;
         }
     }
@@ -184,7 +192,14 @@ mod tests {
     use graph_core::{Change, ChangeId, ChangeSubject, InfluenceKindId, LocusId, StateVector};
     use graph_world::World;
 
-    fn push_locus_change(world: &mut World, id: u64, locus: u64, batch: u64, before: f32, after: f32) {
+    fn push_locus_change(
+        world: &mut World,
+        id: u64,
+        locus: u64,
+        batch: u64,
+        before: f32,
+        after: f32,
+    ) {
         let cid = ChangeId(id);
         world.log_mut().append(Change {
             id: cid,

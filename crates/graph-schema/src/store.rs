@@ -282,7 +282,10 @@ mod tests {
         let removed = store.retract_between(LocusId(1), &kind("likes"), LocusId(2));
         assert_eq!(removed, 1);
         assert_eq!(store.active_facts().count(), 1);
-        assert_eq!(store.active_facts().next().unwrap().predicate, kind("trusts"));
+        assert_eq!(
+            store.active_facts().next().unwrap().predicate,
+            kind("trusts")
+        );
     }
 
     #[test]

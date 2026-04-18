@@ -31,8 +31,7 @@
 //! ```
 
 use graph_engine::{
-    DefaultCoherePerspective, DefaultEmergencePerspective,
-    InfluenceKindConfig, PlasticityConfig,
+    DefaultCoherePerspective, DefaultEmergencePerspective, InfluenceKindConfig, PlasticityConfig,
 };
 
 use crate::client::LlmClient;
@@ -82,9 +81,6 @@ Field reference (all optional):
 
   "max_weight": <>0>
       // Maximum learned weight. Typical: 1.0–2.0.
-
-  "stdp": <true|false>
-      // Spike-Timing Dependent Plasticity — causal co-activations strengthen more.
 }
 
 Return ONLY valid JSON. No markdown, no explanation, no code fences."#;
@@ -98,12 +94,6 @@ object with these optional fields:
       // Minimum relationship activity to include in community detection.
       // 0.01 = include nearly everything, 0.1 = default (ignore very weak links),
       // 0.3 = only strong links, 0.5 = only dominant links.
-
-  "overlap_threshold": <0.0–1.0>
-      // Jaccard similarity required to match a new component to an existing entity.
-      // 0.3 = lenient matching (entities can drift significantly),
-      // 0.5 = default (moderate stability),
-      // 0.7 = strict matching (entities must stay very stable).
 }
 
 Return ONLY valid JSON. No markdown, no explanation, no code fences."#;
@@ -126,9 +116,9 @@ Return ONLY valid JSON. No markdown, no explanation, no code fences."#;
 /// Extract the first `{…}` JSON object from a string, stripping markdown fences
 /// and leading/trailing text that LLMs sometimes add despite the prompt.
 fn extract_json(raw: &str) -> Result<serde_json::Value, LlmError> {
-    let start = raw.find('{').ok_or_else(|| {
-        LlmError::ParseError(format!("no JSON object in LLM response: {raw}"))
-    })?;
+    let start = raw
+        .find('{')
+        .ok_or_else(|| LlmError::ParseError(format!("no JSON object in LLM response: {raw}")))?;
     let end = raw.rfind('}').ok_or_else(|| {
         LlmError::ParseError(format!("unclosed JSON object in LLM response: {raw}"))
     })?;
@@ -140,7 +130,8 @@ fn extract_json(raw: &str) -> Result<serde_json::Value, LlmError> {
 fn opt_f32(json: &serde_json::Value, key: &str, default: f32) -> Result<f32, LlmError> {
     match json.get(key) {
         None | Some(serde_json::Value::Null) => Ok(default),
-        Some(v) => v.as_f64()
+        Some(v) => v
+            .as_f64()
             .map(|f| f as f32)
             .ok_or_else(|| LlmError::ParseError(format!("expected float for '{key}', got: {v}"))),
     }
@@ -151,9 +142,9 @@ fn opt_nullable_f32(json: &serde_json::Value, key: &str) -> Result<Option<f32>, 
     match json.get(key) {
         None => Ok(None),
         Some(serde_json::Value::Null) => Ok(None),
-        Some(v) => v.as_f64()
-            .map(|f| Some(f as f32))
-            .ok_or_else(|| LlmError::ParseError(format!("expected float or null for '{key}', got: {v}"))),
+        Some(v) => v.as_f64().map(|f| Some(f as f32)).ok_or_else(|| {
+            LlmError::ParseError(format!("expected float or null for '{key}', got: {v}"))
+        }),
     }
 }
 
@@ -161,7 +152,8 @@ fn opt_nullable_f32(json: &serde_json::Value, key: &str) -> Result<Option<f32>, 
 fn opt_bool(json: &serde_json::Value, key: &str, default: bool) -> Result<bool, LlmError> {
     match json.get(key) {
         None => Ok(default),
-        Some(v) => v.as_bool()
+        Some(v) => v
+            .as_bool()
             .ok_or_else(|| LlmError::ParseError(format!("expected bool for '{key}', got: {v}"))),
     }
 }
@@ -203,47 +195,31 @@ pub fn configure_influence(
     } else {
         opt_f32(&json, "decay_per_batch", 1.0)?
     };
-    let activity_contrib   = opt_f32(&json, "activity_contribution",    1.0)?;
-    let min_emerge         = opt_f32(&json, "min_emerge_activity",       0.0)?;
-    let max_activity       = opt_nullable_f32(&json, "max_activity")?;
-    let prune_threshold    = opt_f32(&json, "prune_activity_threshold",  0.0)?;
-    let learning_rate      = opt_f32(&json, "learning_rate",             0.0)?;
-    let weight_decay       = opt_f32(&json, "weight_decay",              1.0)?;
-    let max_weight         = opt_f32(&json, "max_weight",                f32::MAX)?;
-    let stdp               = opt_bool(&json, "stdp",                     false)?;
+    let activity_contrib = opt_f32(&json, "activity_contribution", 1.0)?;
+    // Phase 5: min_emerge_activity / max_activity / prune_activity_threshold
+    // removed. JSON keys are still parsed for back-compat but ignored.
+    let _min_emerge = opt_f32(&json, "min_emerge_activity", 0.0)?;
+    let _max_activity = opt_nullable_f32(&json, "max_activity")?;
+    let _prune_threshold = opt_f32(&json, "prune_activity_threshold", 0.0)?;
+    let learning_rate = opt_f32(&json, "learning_rate", 0.0)?;
+    let weight_decay = opt_f32(&json, "weight_decay", 1.0)?;
+    let max_weight = opt_f32(&json, "max_weight", f32::MAX)?;
+    let _stdp = opt_bool(&json, "stdp", false)?;
 
-    // Validate ranges (mirrors InfluenceKindRegistry::insert assertions).
-    validate_range("decay_per_batch",          decay,           0.0, 1.0, true)?;
-    validate_positive("max_weight",            max_weight)?;
-    validate_range("weight_decay",             weight_decay,    0.0, 1.0, true)?;
-    validate_non_negative("min_emerge_activity",  min_emerge)?;
-    validate_non_negative("prune_activity_threshold", prune_threshold)?;
-    validate_non_negative("learning_rate",     learning_rate)?;
-    if let Some(cap) = max_activity {
-        if !cap.is_finite() || cap <= 0.0 {
-            return Err(LlmError::ParseError(format!(
-                "max_activity must be finite and > 0, got {cap}"
-            )));
-        }
-    }
+    validate_range("decay_per_batch", decay, 0.0, 1.0, true)?;
+    validate_positive("max_weight", max_weight)?;
+    validate_range("weight_decay", weight_decay, 0.0, 1.0, true)?;
+    validate_non_negative("learning_rate", learning_rate)?;
 
     let mut cfg = InfluenceKindConfig::new(name)
         .with_decay(decay)
-        .with_activity_contribution(activity_contrib)
-        .with_min_emerge_activity(min_emerge)
-        .with_prune_threshold(prune_threshold);
-
-    if let Some(cap) = max_activity {
-        cfg = cfg.with_max_activity(cap);
-    }
+        .with_activity_contribution(activity_contrib);
 
     if learning_rate > 0.0 {
         cfg = cfg.with_plasticity(PlasticityConfig {
             learning_rate,
             weight_decay,
             max_weight,
-            stdp,
-            ..Default::default()
         });
     }
 
@@ -252,19 +228,11 @@ pub fn configure_influence(
 
 /// Infer `DefaultEmergencePerspective` thresholds from a natural-language description.
 ///
-/// Controls how the engine detects emergent entity clusters from the
-/// relationship graph. The two tunable parameters are:
+/// Since the locus-flow rewrite the perspective has a single knob:
 /// - `min_activity_threshold` — which relationships are "active enough" to count
-/// - `overlap_threshold` — how similar a new component must be to an existing entity
 ///
-/// # Example
-///
-/// ```ignore
-/// let perspective = configure_emergence(&client,
-///     "detect any cluster with at least faint activity; be lenient when
-///      matching new components to existing entities")?;
-/// handle.recognize_entities(&perspective);
-/// ```
+/// (The former `overlap_threshold` was removed when component-to-entity
+/// reconciliation moved from Jaccard overlap to direct locus-flow analysis.)
 pub fn configure_emergence(
     client: &dyn LlmClient,
     description: &str,
@@ -273,14 +241,10 @@ pub fn configure_emergence(
     let json = extract_json(&raw)?;
 
     let min_activity = opt_f32(&json, "min_activity_threshold", 0.1)?;
-    let overlap      = opt_f32(&json, "overlap_threshold",      0.5)?;
-
     validate_range("min_activity_threshold", min_activity, 0.0, 1.0, false)?;
-    validate_range("overlap_threshold",      overlap,      0.0, 1.0, false)?;
 
     Ok(DefaultEmergencePerspective {
-        min_activity_threshold: min_activity,
-        overlap_threshold: overlap,
+        min_activity_threshold: Some(min_activity),
     })
 }
 
@@ -309,18 +273,25 @@ pub fn configure_cohere(
 
     Ok(DefaultCoherePerspective {
         name: "llm-configured".to_string(),
-        min_bridge_activity: bridge,
+        min_bridge_activity: Some(bridge),
     })
 }
 
 // ── Validation helpers ────────────────────────────────────────────────────────
 
-fn validate_range(field: &str, v: f32, lo: f32, hi: f32, exclusive_lo: bool) -> Result<(), LlmError> {
+fn validate_range(
+    field: &str,
+    v: f32,
+    lo: f32,
+    hi: f32,
+    exclusive_lo: bool,
+) -> Result<(), LlmError> {
     let in_range = if exclusive_lo { v > lo } else { v >= lo };
     if !in_range || v > hi {
         return Err(LlmError::ParseError(format!(
             "field '{field}' = {v} is out of range ({}{}–{hi})",
-            if exclusive_lo { "(" } else { "[" }, lo,
+            if exclusive_lo { "(" } else { "[" },
+            lo,
         )));
     }
     Ok(())
@@ -328,14 +299,18 @@ fn validate_range(field: &str, v: f32, lo: f32, hi: f32, exclusive_lo: bool) -> 
 
 fn validate_positive(field: &str, v: f32) -> Result<(), LlmError> {
     if !v.is_finite() || v <= 0.0 {
-        return Err(LlmError::ParseError(format!("field '{field}' must be > 0, got {v}")));
+        return Err(LlmError::ParseError(format!(
+            "field '{field}' must be > 0, got {v}"
+        )));
     }
     Ok(())
 }
 
 fn validate_non_negative(field: &str, v: f32) -> Result<(), LlmError> {
     if v < 0.0 {
-        return Err(LlmError::ParseError(format!("field '{field}' must be >= 0, got {v}")));
+        return Err(LlmError::ParseError(format!(
+            "field '{field}' must be >= 0, got {v}"
+        )));
     }
     Ok(())
 }
@@ -352,36 +327,28 @@ mod tests {
         let json = r#"{
             "decay_per_batch": 0.85,
             "activity_contribution": 1.5,
-            "min_emerge_activity": 0.1,
-            "max_activity": 3.0,
-            "prune_activity_threshold": 0.05,
             "learning_rate": 0.05,
             "weight_decay": 0.99,
-            "max_weight": 1.0,
-            "stdp": false
+            "max_weight": 1.0
         }"#;
         let client = MockLlmClient::new(json);
         let cfg = configure_influence(&client, "test", "excitatory synapse").unwrap();
         assert_eq!(cfg.decay_per_batch, 0.85);
         assert_eq!(cfg.activity_contribution, 1.5);
-        assert_eq!(cfg.min_emerge_activity, 0.1);
-        assert_eq!(cfg.max_activity, Some(3.0));
-        assert_eq!(cfg.prune_activity_threshold, 0.05);
     }
 
     #[test]
     fn configure_influence_partial_json_uses_defaults() {
-        // LLM only specifies decay; everything else should default.
         let client = MockLlmClient::new(r#"{"decay_per_batch": 0.7}"#);
         let cfg = configure_influence(&client, "signal", "fast-fading signal").unwrap();
         assert_eq!(cfg.decay_per_batch, 0.7);
-        assert_eq!(cfg.activity_contribution, 1.0);  // default
-        assert_eq!(cfg.max_activity, None);            // default
+        assert_eq!(cfg.activity_contribution, 1.0);
     }
 
     #[test]
     fn configure_influence_inhibitory() {
-        let client = MockLlmClient::new(r#"{"activity_contribution": -1.0, "decay_per_batch": 0.9}"#);
+        let client =
+            MockLlmClient::new(r#"{"activity_contribution": -1.0, "decay_per_batch": 0.9}"#);
         let cfg = configure_influence(&client, "inhibitory", "inhibitory interneuron").unwrap();
         assert!(cfg.activity_contribution < 0.0);
     }
@@ -403,25 +370,23 @@ mod tests {
 
     #[test]
     fn configure_emergence_full() {
-        let client = MockLlmClient::new(r#"{"min_activity_threshold": 0.05, "overlap_threshold": 0.4}"#);
+        let client = MockLlmClient::new(r#"{"min_activity_threshold": 0.05}"#);
         let p = configure_emergence(&client, "lenient detection").unwrap();
-        assert_eq!(p.min_activity_threshold, 0.05);
-        assert_eq!(p.overlap_threshold, 0.4);
+        assert_eq!(p.min_activity_threshold, Some(0.05));
     }
 
     #[test]
     fn configure_emergence_empty_json_uses_defaults() {
         let client = MockLlmClient::new("{}");
         let p = configure_emergence(&client, "default").unwrap();
-        assert_eq!(p.min_activity_threshold, 0.1);
-        assert_eq!(p.overlap_threshold, 0.5);
+        assert_eq!(p.min_activity_threshold, Some(0.1));
     }
 
     #[test]
     fn configure_cohere_sets_bridge_threshold() {
         let client = MockLlmClient::new(r#"{"min_bridge_activity": 0.6}"#);
         let p = configure_cohere(&client, "tight clusters only").unwrap();
-        assert_eq!(p.min_bridge_activity, 0.6);
+        assert_eq!(p.min_bridge_activity, Some(0.6));
     }
 
     #[test]

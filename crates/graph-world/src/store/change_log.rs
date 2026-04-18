@@ -22,7 +22,9 @@
 
 use std::collections::VecDeque;
 
-use graph_core::{BatchId, Change, ChangeId, ChangeSubject, InfluenceKindId, LocusId, RelationshipId, TrimSummary};
+use graph_core::{
+    BatchId, Change, ChangeId, ChangeSubject, InfluenceKindId, LocusId, RelationshipId, TrimSummary,
+};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Append-only log with O(1) lookup by id and O(k) subject/batch-filtered iteration.
@@ -196,7 +198,10 @@ impl ChangeLog {
     /// Iterate the changes whose subject is a given relationship, newest
     /// first. Analogous to `changes_to_locus`.
     /// O(k) where k is the number of changes to this relationship.
-    pub fn changes_to_relationship(&self, rel: RelationshipId) -> impl Iterator<Item = &Change> + '_ {
+    pub fn changes_to_relationship(
+        &self,
+        rel: RelationshipId,
+    ) -> impl Iterator<Item = &Change> + '_ {
         self.by_relationship
             .get(&rel)
             .into_iter()
@@ -231,7 +236,9 @@ impl ChangeLog {
         // Both guards must hold: if `get()` returns None the id was trimmed
         // and traversal stops for that branch (no panic, no queue extension).
         while let Some(id) = queue.pop_front() {
-            if visited.insert(id) && let Some(change) = self.get(id) {
+            if visited.insert(id)
+                && let Some(change) = self.get(id)
+            {
                 result.push(change);
                 queue.extend(change.predecessors.iter().copied());
             }
@@ -252,7 +259,8 @@ impl ChangeLog {
         let Some(desc) = self.get(descendant) else {
             return false;
         };
-        let mut stack: Vec<ChangeId> = desc.predecessors
+        let mut stack: Vec<ChangeId> = desc
+            .predecessors
             .iter()
             .copied()
             .filter(|&pid| pid.0 >= ancestor.0)
@@ -262,9 +270,14 @@ impl ChangeLog {
             if id == ancestor {
                 return true;
             }
-            if visited.insert(id) && let Some(c) = self.get(id) {
+            if visited.insert(id)
+                && let Some(c) = self.get(id)
+            {
                 stack.extend(
-                    c.predecessors.iter().copied().filter(|&pid| pid.0 >= ancestor.0),
+                    c.predecessors
+                        .iter()
+                        .copied()
+                        .filter(|&pid| pid.0 >= ancestor.0),
                 );
             }
         }
@@ -288,7 +301,9 @@ impl ChangeLog {
     /// compressed layers) or in workloads where old predecessor ids are
     /// never queried.
     pub fn trim_before_batch(&mut self, retain_from_batch: BatchId) -> usize {
-        let split = self.changes.partition_point(|c| c.batch < retain_from_batch);
+        let split = self
+            .changes
+            .partition_point(|c| c.batch < retain_from_batch);
         if split == 0 {
             return 0;
         }
@@ -297,16 +312,30 @@ impl ChangeLog {
         // Walk only the to-be-trimmed slice to aggregate per-locus stats
         // and populate the trimmed_id_to_locus reverse index.
         {
-            let mut locus_stats: FxHashMap<LocusId, (u32, Vec<f32>, Vec<f32>, Vec<InfluenceKindId>, BatchId)> =
-                FxHashMap::default();
+            let mut locus_stats: FxHashMap<
+                LocusId,
+                (u32, Vec<f32>, Vec<f32>, Vec<InfluenceKindId>, BatchId),
+            > = FxHashMap::default();
             for change in &self.changes[..split] {
-                let ChangeSubject::Locus(locus) = change.subject else { continue };
+                let ChangeSubject::Locus(locus) = change.subject else {
+                    continue;
+                };
                 // Build the trimmed-id reverse index so causal_coarse_trail can
                 // resolve trimmed predecessor IDs back to their subject locus.
                 self.trimmed_id_to_locus.insert(change.id, locus);
                 let entry = locus_stats.entry(locus).or_insert_with(|| {
-                    let dim = change.after.as_slice().len().max(change.before.as_slice().len());
-                    (0, vec![0.0f32; dim], vec![0.0f32; dim], Vec::new(), change.batch)
+                    let dim = change
+                        .after
+                        .as_slice()
+                        .len()
+                        .max(change.before.as_slice().len());
+                    (
+                        0,
+                        vec![0.0f32; dim],
+                        vec![0.0f32; dim],
+                        Vec::new(),
+                        change.batch,
+                    )
                 });
                 entry.0 += 1;
                 // Sum after and before independently; delta = sum_after - sum_before.
@@ -327,7 +356,11 @@ impl ChangeLog {
             }
 
             for (locus, (count, sum_after, sum_before, kinds, batch_from)) in locus_stats {
-                let delta: Vec<f32> = sum_after.iter().zip(sum_before.iter()).map(|(a, b)| a - b).collect();
+                let delta: Vec<f32> = sum_after
+                    .iter()
+                    .zip(sum_before.iter())
+                    .map(|(a, b)| a - b)
+                    .collect();
                 let summary = TrimSummary {
                     locus,
                     batch_from,
@@ -484,7 +517,11 @@ mod tests {
         log.append(change_with_preds(3, 10, 1, vec![1, 2]));
         log.append(change_with_preds(4, 10, 2, vec![3]));
 
-        let mut ancestors: Vec<u64> = log.causal_ancestors(ChangeId(4)).iter().map(|c| c.id.0).collect();
+        let mut ancestors: Vec<u64> = log
+            .causal_ancestors(ChangeId(4))
+            .iter()
+            .map(|c| c.id.0)
+            .collect();
         ancestors.sort_unstable();
         assert_eq!(ancestors, vec![1, 2, 3]);
     }
@@ -527,7 +564,11 @@ mod tests {
         log.append(change_with_preds(2, 12, 1, vec![0]));
         log.append(change_with_preds(3, 10, 2, vec![1, 2]));
 
-        let mut ancestors: Vec<u64> = log.causal_ancestors(ChangeId(3)).iter().map(|c| c.id.0).collect();
+        let mut ancestors: Vec<u64> = log
+            .causal_ancestors(ChangeId(3))
+            .iter()
+            .map(|c| c.id.0)
+            .collect();
         ancestors.sort_unstable();
         assert_eq!(ancestors, vec![0, 1, 2]);
     }

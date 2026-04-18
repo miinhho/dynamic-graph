@@ -32,9 +32,8 @@
 //! **not** supported (not serializable). Use the builder API for arbitrary closures.
 
 use graph_core::{
-    BatchId, ChangeId, CohereId, EndpointKey, Endpoints,
-    EntityId, InfluenceKindId,
-    LocusId, LocusKindId, RelationshipId, RelationshipKindId,
+    BatchId, ChangeId, CohereId, EndpointKey, Endpoints, EntityId, InfluenceKindId, LocusId,
+    LocusKindId, RelationshipId, RelationshipKindId,
 };
 use graph_world::World;
 
@@ -105,11 +104,23 @@ pub enum LocusPredicate {
     ///
     /// Dormant edges are pruned *during* BFS — loci reachable only through
     /// them are excluded. Use this to query the **live-signal subgraph**.
-    ReachableFromActive { start: LocusId, depth: usize, min_activity: f32 },
+    ReachableFromActive {
+        start: LocusId,
+        depth: usize,
+        min_activity: f32,
+    },
     /// Like `DownstreamOf` but only traverses forward edges with `activity >= min_activity`.
-    DownstreamOfActive { start: LocusId, depth: usize, min_activity: f32 },
+    DownstreamOfActive {
+        start: LocusId,
+        depth: usize,
+        min_activity: f32,
+    },
     /// Like `UpstreamOf` but only traverses backward edges with `activity >= min_activity`.
-    UpstreamOfActive { start: LocusId, depth: usize, min_activity: f32 },
+    UpstreamOfActive {
+        start: LocusId,
+        depth: usize,
+        min_activity: f32,
+    },
 }
 
 /// A serializable filter for relationships. All elements in a
@@ -134,7 +145,10 @@ pub enum RelationshipPredicate {
     /// Keep only relationships created within `[from, to]` batch range.
     CreatedInRange { from: BatchId, to: BatchId },
     /// Keep only relationships older than `min_batches` (age = current - created).
-    OlderThan { current_batch: BatchId, min_batches: u64 },
+    OlderThan {
+        current_batch: BatchId,
+        min_batches: u64,
+    },
     /// Keep only relationships with change count ≥ `min`.
     MinChangeCount(u64),
 }
@@ -250,13 +264,16 @@ pub enum TrendResult {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Query {
     // ── Structural traversal ─────────────────────────────────────────────────
-
     /// BFS shortest path between two loci (undirected). Returns `None` if
     /// unreachable.
     PathBetween { from: LocusId, to: LocusId },
 
     /// BFS shortest path restricted to a specific relationship kind.
-    PathBetweenOfKind { from: LocusId, to: LocusId, kind: InfluenceKindId },
+    PathBetweenOfKind {
+        from: LocusId,
+        to: LocusId,
+        kind: InfluenceKindId,
+    },
 
     /// Directed (source → target) shortest path.
     DirectedPath { from: LocusId, to: LocusId },
@@ -281,18 +298,34 @@ pub enum Query {
     ///
     /// Dormant edges are pruned during BFS — not post-filtered.
     /// Returns loci in the **live-signal subgraph** of the running simulation.
-    ReachableFromActive { start: LocusId, depth: usize, min_activity: f32 },
+    ReachableFromActive {
+        start: LocusId,
+        depth: usize,
+        min_activity: f32,
+    },
 
     /// Directed downstream reachability restricted to active edges.
-    DownstreamOfActive { start: LocusId, depth: usize, min_activity: f32 },
+    DownstreamOfActive {
+        start: LocusId,
+        depth: usize,
+        min_activity: f32,
+    },
 
     /// Directed upstream reachability restricted to active edges.
-    UpstreamOfActive { start: LocusId, depth: usize, min_activity: f32 },
+    UpstreamOfActive {
+        start: LocusId,
+        depth: usize,
+        min_activity: f32,
+    },
 
     /// BFS shortest path restricted to edges with `activity >= min_activity`.
     ///
     /// Returns `None` if no path exists through sufficiently active edges.
-    PathBetweenActive { from: LocusId, to: LocusId, min_activity: f32 },
+    PathBetweenActive {
+        from: LocusId,
+        to: LocusId,
+        min_activity: f32,
+    },
 
     /// All immediate neighbors of `locus` (undirected).
     NeighborsOf(LocusId),
@@ -316,7 +349,6 @@ pub enum Query {
     StrongestPath { from: LocusId, to: LocusId },
 
     // ── Centrality ───────────────────────────────────────────────────────────
-
     /// PageRank score for every locus (or top `limit` if given).
     PageRank {
         /// Damping factor (typically 0.85).
@@ -330,7 +362,12 @@ pub enum Query {
     },
 
     /// PageRank score for a single locus.
-    PageRankFor { locus: LocusId, damping: f32, iterations: usize, tolerance: f32 },
+    PageRankFor {
+        locus: LocusId,
+        damping: f32,
+        iterations: usize,
+        tolerance: f32,
+    },
 
     /// Betweenness centrality for every locus (or top `limit`).
     AllBetweenness { limit: Option<usize> },
@@ -360,7 +397,6 @@ pub enum Query {
     Modularity,
 
     // ── Causal log queries ───────────────────────────────────────────────────
-
     /// All causal ancestors of a change (BFS over predecessor DAG).
     CausalAncestors(ChangeId),
 
@@ -371,16 +407,27 @@ pub enum Query {
     CausalDepth(ChangeId),
 
     /// Whether `ancestor` is a causal ancestor of `descendant`.
-    IsAncestorOf { ancestor: ChangeId, descendant: ChangeId },
+    IsAncestorOf {
+        ancestor: ChangeId,
+        descendant: ChangeId,
+    },
 
     /// Leaf ancestors (no predecessors) of a change — original stimuli.
     RootStimuli(ChangeId),
 
     /// All changes to a locus within a batch range.
-    ChangesToLocusInRange { locus: LocusId, from: BatchId, to: BatchId },
+    ChangesToLocusInRange {
+        locus: LocusId,
+        from: BatchId,
+        to: BatchId,
+    },
 
     /// All changes to a relationship within a batch range.
-    ChangesToRelationshipInRange { relationship: RelationshipId, from: BatchId, to: BatchId },
+    ChangesToRelationshipInRange {
+        relationship: RelationshipId,
+        from: BatchId,
+        to: BatchId,
+    },
 
     /// All loci changed in a specific batch.
     LociChangedInBatch(BatchId),
@@ -389,7 +436,6 @@ pub enum Query {
     RelationshipsChangedInBatch(BatchId),
 
     // ── Filtered lookups with sort + limit ───────────────────────────────────
-
     /// Find loci matching all given predicates (AND), with optional sort and limit.
     ///
     /// Returns [`QueryResult::LocusSummaries`] — includes kind and full state
@@ -418,7 +464,6 @@ pub enum Query {
     },
 
     // ── Single locus state lookup ────────────────────────────────────────────
-
     /// Read a single slot of a locus's state vector.
     ///
     /// Common pattern in examples:
@@ -426,12 +471,10 @@ pub enum Query {
     LocusStateSlot { locus: LocusId, slot: usize },
 
     // ── Relationship profiles ────────────────────────────────────────────────
-
     /// Full relationship bundle (all edges between two loci + metadata).
     RelationshipProfile { from: LocusId, to: LocusId },
 
     // ── Activity trend analysis ──────────────────────────────────────────────
-
     /// OLS regression on a relationship's activity over a batch window.
     ///
     /// Returns `Trend::Insufficient` when fewer than 2 log entries exist.
@@ -442,7 +485,6 @@ pub enum Query {
     },
 
     // ── Entity deviation detection ───────────────────────────────────────────
-
     /// How have entities changed since `baseline_batch`?
     ///
     /// Returns deviations for every entity that exists or existed since the
@@ -450,7 +492,6 @@ pub enum Query {
     EntityDeviationsSince(BatchId),
 
     // ── Counterfactual analysis ──────────────────────────────────────────────
-
     /// Which relationships would not exist without these root changes?
     ///
     /// `root_changes` is typically the output of `ChangesToLocusInRange` or
@@ -458,7 +499,6 @@ pub enum Query {
     RelationshipsAbsentWithout(Vec<ChangeId>),
 
     // ── Cohere cluster queries ───────────────────────────────────────────────
-
     /// All cohere clusters stored under the default perspective key (`"default"`).
     Coheres,
 
@@ -466,12 +506,10 @@ pub enum Query {
     CoheresNamed(String),
 
     // ── Metrics / aggregation ────────────────────────────────────────────────
-
     /// World-wide summary statistics.
     WorldMetrics,
 
     // ── Causal strength (STDP-weight derived) ────────────────────────────────
-
     /// Net causal direction between two loci for a given influence kind.
     ///
     /// Returns a value in `[-1.0, 1.0]` (positive = `from` causes `to`).
@@ -501,10 +539,16 @@ pub enum Query {
     },
 
     /// Sum of directed incoming weights to `locus` for `kind`.
-    CausalInStrength { locus: LocusId, kind: InfluenceKindId },
+    CausalInStrength {
+        locus: LocusId,
+        kind: InfluenceKindId,
+    },
 
     /// Sum of directed outgoing weights from `locus` for `kind`.
-    CausalOutStrength { locus: LocusId, kind: InfluenceKindId },
+    CausalOutStrength {
+        locus: LocusId,
+        kind: InfluenceKindId,
+    },
 
     /// Locus pairs with roughly balanced A→B and B→A weights (oscillators/feedback).
     ///
@@ -516,7 +560,6 @@ pub enum Query {
     },
 
     // ── D2: Granger-style temporal causality ─────────────────────────────────
-
     /// Empirical Granger score: fraction of `from`'s changes followed by a
     /// `to` change within `lag_batches`. Returns `QueryResult::Score`.
     GrangerScore {
@@ -545,23 +588,16 @@ pub enum Query {
     },
 
     // ── B3: Time-travel queries ───────────────────────────────────────────
-
     /// Reconstruct the structural inverse diff to reach `target_batch`.
     /// Returns `QueryResult::TimeTravelResult`.
-    TimeTravel {
-        target_batch: BatchId,
-    },
+    TimeTravel { target_batch: BatchId },
 
     // ── D3: Structural counterfactual replay ─────────────────────────────
-
     /// Compute the structural impact of removing `remove_changes` from the world.
     /// Returns `QueryResult::Counterfactual`.
-    CounterfactualReplay {
-        remove_changes: Vec<ChangeId>,
-    },
+    CounterfactualReplay { remove_changes: Vec<ChangeId> },
 
     // ── D4: Entity-level causality ───────────────────────────────────────
-
     /// Get the lifecycle cause for `entity_id`'s layer at `at_batch`.
     /// Returns `QueryResult::EntityCause`.
     EntityTransitionCause {
@@ -665,7 +701,13 @@ pub enum QueryResult {
 
     /// Entity lifecycle layers in a batch range:
     /// `(batch, transition, cause)` tuples.
-    EntityLayers(Vec<(BatchId, graph_core::LayerTransition, graph_core::LifecycleCause)>),
+    EntityLayers(
+        Vec<(
+            BatchId,
+            graph_core::LayerTransition,
+            graph_core::LifecycleCause,
+        )>,
+    ),
 }
 
 /// Owned snapshot of key relationship profile fields.
@@ -709,59 +751,66 @@ pub struct WorldMetricsResult {
 ///
 /// This is a pure read operation — `world` is borrowed immutably.
 pub fn execute(world: &World, query: &Query) -> QueryResult {
-    use crate::*;
     use crate::traversal::{
-        downstream_of_active, path_between_active,
-        reachable_from_active, upstream_of_active,
+        downstream_of_active, path_between_active, reachable_from_active, upstream_of_active,
     };
+    use crate::*;
 
     match query {
         // ── Structural traversal ─────────────────────────────────────────────
+        Query::PathBetween { from, to } => QueryResult::Path(path_between(world, *from, *to)),
 
-        Query::PathBetween { from, to } =>
-            QueryResult::Path(path_between(world, *from, *to)),
+        Query::PathBetweenOfKind { from, to, kind } => {
+            QueryResult::Path(path_between_of_kind(world, *from, *to, *kind))
+        }
 
-        Query::PathBetweenOfKind { from, to, kind } =>
-            QueryResult::Path(path_between_of_kind(world, *from, *to, *kind)),
+        Query::DirectedPath { from, to } => QueryResult::Path(directed_path(world, *from, *to)),
 
-        Query::DirectedPath { from, to } =>
-            QueryResult::Path(directed_path(world, *from, *to)),
+        Query::ReachableFrom { start, depth } => {
+            QueryResult::Loci(reachable_from(world, *start, *depth))
+        }
 
-        Query::ReachableFrom { start, depth } =>
-            QueryResult::Loci(reachable_from(world, *start, *depth)),
+        Query::DownstreamOf { start, depth } => {
+            QueryResult::Loci(downstream_of(world, *start, *depth))
+        }
 
-        Query::DownstreamOf { start, depth } =>
-            QueryResult::Loci(downstream_of(world, *start, *depth)),
+        Query::UpstreamOf { start, depth } => QueryResult::Loci(upstream_of(world, *start, *depth)),
 
-        Query::UpstreamOf { start, depth } =>
-            QueryResult::Loci(upstream_of(world, *start, *depth)),
+        Query::ReachableFromActive {
+            start,
+            depth,
+            min_activity,
+        } => QueryResult::Loci(reachable_from_active(world, *start, *depth, *min_activity)),
 
-        Query::ReachableFromActive { start, depth, min_activity } =>
-            QueryResult::Loci(reachable_from_active(world, *start, *depth, *min_activity)),
+        Query::DownstreamOfActive {
+            start,
+            depth,
+            min_activity,
+        } => QueryResult::Loci(downstream_of_active(world, *start, *depth, *min_activity)),
 
-        Query::DownstreamOfActive { start, depth, min_activity } =>
-            QueryResult::Loci(downstream_of_active(world, *start, *depth, *min_activity)),
+        Query::UpstreamOfActive {
+            start,
+            depth,
+            min_activity,
+        } => QueryResult::Loci(upstream_of_active(world, *start, *depth, *min_activity)),
 
-        Query::UpstreamOfActive { start, depth, min_activity } =>
-            QueryResult::Loci(upstream_of_active(world, *start, *depth, *min_activity)),
+        Query::PathBetweenActive {
+            from,
+            to,
+            min_activity,
+        } => QueryResult::Path(path_between_active(world, *from, *to, *min_activity)),
 
-        Query::PathBetweenActive { from, to, min_activity } =>
-            QueryResult::Path(path_between_active(world, *from, *to, *min_activity)),
+        Query::ConnectedComponents => QueryResult::Components(connected_components(world)),
 
-        Query::ConnectedComponents =>
-            QueryResult::Components(connected_components(world)),
+        Query::ConnectedComponentsOfKind(kind) => {
+            QueryResult::Components(connected_components_of_kind(world, *kind))
+        }
 
-        Query::ConnectedComponentsOfKind(kind) =>
-            QueryResult::Components(connected_components_of_kind(world, *kind)),
+        Query::NeighborsOf(locus) => QueryResult::Loci(neighbors_of(world, *locus)),
 
-        Query::NeighborsOf(locus) =>
-            QueryResult::Loci(neighbors_of(world, *locus)),
+        Query::IsolatedLoci => QueryResult::Loci(isolated_loci(world)),
 
-        Query::IsolatedLoci =>
-            QueryResult::Loci(isolated_loci(world)),
-
-        Query::HubLoci(n) =>
-            QueryResult::Loci(hub_loci(world, *n)),
+        Query::HubLoci(n) => QueryResult::Loci(hub_loci(world, *n)),
 
         Query::ReciprocOf(rel_id) => {
             let result = reciprocal_of(world, *rel_id);
@@ -776,19 +825,29 @@ pub fn execute(world: &World, query: &Query) -> QueryResult {
 
         Query::HasCycle => QueryResult::Bool(has_cycle(world)),
 
-        Query::StrongestPath { from, to } =>
-            QueryResult::Path(strongest_path(world, *from, *to)),
+        Query::StrongestPath { from, to } => QueryResult::Path(strongest_path(world, *from, *to)),
 
         // ── Centrality ───────────────────────────────────────────────────────
-
-        Query::PageRank { damping, iterations, tolerance, limit } => {
+        Query::PageRank {
+            damping,
+            iterations,
+            tolerance,
+            limit,
+        } => {
             let mut scores = pagerank(world, *damping, *iterations, *tolerance);
             scores.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
-            if let Some(n) = limit { scores.truncate(*n); }
+            if let Some(n) = limit {
+                scores.truncate(*n);
+            }
             QueryResult::LocusScores(scores)
         }
 
-        Query::PageRankFor { locus, damping, iterations, tolerance } => {
+        Query::PageRankFor {
+            locus,
+            damping,
+            iterations,
+            tolerance,
+        } => {
             let scores = pagerank(world, *damping, *iterations, *tolerance);
             let map: rustc_hash::FxHashMap<LocusId, f32> = scores.into_iter().collect();
             QueryResult::MaybeScore(map.get(locus).copied())
@@ -797,38 +856,43 @@ pub fn execute(world: &World, query: &Query) -> QueryResult {
         Query::AllBetweenness { limit } => {
             let mut scores: Vec<(LocusId, f32)> = all_betweenness(world).into_iter().collect();
             scores.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
-            if let Some(n) = limit { scores.truncate(*n); }
+            if let Some(n) = limit {
+                scores.truncate(*n);
+            }
             QueryResult::LocusScores(scores)
         }
 
-        Query::BetweennessFor(locus) =>
-            QueryResult::Score(betweenness_centrality(world, *locus)),
+        Query::BetweennessFor(locus) => QueryResult::Score(betweenness_centrality(world, *locus)),
 
         Query::AllCloseness { limit } => {
             let mut scores: Vec<(LocusId, f32)> = all_closeness(world).into_iter().collect();
             scores.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
-            if let Some(n) = limit { scores.truncate(*n); }
+            if let Some(n) = limit {
+                scores.truncate(*n);
+            }
             QueryResult::LocusScores(scores)
         }
 
-        Query::ClosenessFor(locus) =>
-            QueryResult::MaybeScore(closeness_centrality(world, *locus)),
+        Query::ClosenessFor(locus) => QueryResult::MaybeScore(closeness_centrality(world, *locus)),
 
         Query::AllConstraints { limit } => {
             let mut scores: Vec<(LocusId, f32)> = all_constraints(world).into_iter().collect();
             scores.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
-            if let Some(n) = limit { scores.truncate(*n); }
+            if let Some(n) = limit {
+                scores.truncate(*n);
+            }
             QueryResult::LocusScores(scores)
         }
 
-        Query::ConstraintFor(locus) =>
-            QueryResult::MaybeScore(structural_constraint(world, *locus)),
+        Query::ConstraintFor(locus) => {
+            QueryResult::MaybeScore(structural_constraint(world, *locus))
+        }
 
-        Query::Louvain =>
-            QueryResult::Communities(louvain(world)),
+        Query::Louvain => QueryResult::Communities(louvain(world)),
 
-        Query::LouvainWithResolution(resolution) =>
-            QueryResult::Communities(louvain_with_resolution(world, *resolution)),
+        Query::LouvainWithResolution(resolution) => {
+            QueryResult::Communities(louvain_with_resolution(world, *resolution))
+        }
 
         Query::Modularity => {
             let communities = louvain(world);
@@ -836,41 +900,49 @@ pub fn execute(world: &World, query: &Query) -> QueryResult {
         }
 
         // ── Causal log queries ───────────────────────────────────────────────
+        Query::CausalAncestors(change_id) => {
+            QueryResult::Changes(causal_ancestors(world, *change_id))
+        }
 
-        Query::CausalAncestors(change_id) =>
-            QueryResult::Changes(causal_ancestors(world, *change_id)),
+        Query::CausalDescendants(change_id) => {
+            QueryResult::Changes(causal_descendants(world, *change_id))
+        }
 
-        Query::CausalDescendants(change_id) =>
-            QueryResult::Changes(causal_descendants(world, *change_id)),
+        Query::CausalDepth(change_id) => QueryResult::Count(causal_depth(world, *change_id)),
 
-        Query::CausalDepth(change_id) =>
-            QueryResult::Count(causal_depth(world, *change_id)),
+        Query::IsAncestorOf {
+            ancestor,
+            descendant,
+        } => QueryResult::Bool(is_ancestor_of(world, *ancestor, *descendant)),
 
-        Query::IsAncestorOf { ancestor, descendant } =>
-            QueryResult::Bool(is_ancestor_of(world, *ancestor, *descendant)),
-
-        Query::RootStimuli(change_id) =>
-            QueryResult::Changes(root_stimuli(world, *change_id)),
+        Query::RootStimuli(change_id) => QueryResult::Changes(root_stimuli(world, *change_id)),
 
         Query::ChangesToLocusInRange { locus, from, to } => {
             let changes = changes_to_locus_in_range(world, *locus, *from, *to);
             QueryResult::Changes(changes.into_iter().map(|c| c.id).collect())
         }
 
-        Query::ChangesToRelationshipInRange { relationship, from, to } => {
+        Query::ChangesToRelationshipInRange {
+            relationship,
+            from,
+            to,
+        } => {
             let changes = changes_to_relationship_in_range(world, *relationship, *from, *to);
             QueryResult::Changes(changes.into_iter().map(|c| c.id).collect())
         }
 
-        Query::LociChangedInBatch(batch) =>
-            QueryResult::Loci(loci_changed_in_batch(world, *batch)),
+        Query::LociChangedInBatch(batch) => QueryResult::Loci(loci_changed_in_batch(world, *batch)),
 
-        Query::RelationshipsChangedInBatch(batch) =>
-            QueryResult::Relationships(relationships_changed_in_batch(world, *batch)),
+        Query::RelationshipsChangedInBatch(batch) => {
+            QueryResult::Relationships(relationships_changed_in_batch(world, *batch))
+        }
 
         // ── Filtered lookups ─────────────────────────────────────────────────
-
-        Query::FindLoci { predicates, sort_by, limit } => {
+        Query::FindLoci {
+            predicates,
+            sort_by,
+            limit,
+        } => {
             let mut summaries = find_loci_summaries(world, predicates);
             if let Some(sort) = sort_by {
                 match sort {
@@ -882,65 +954,91 @@ pub fn execute(world: &World, query: &Query) -> QueryResult {
                         });
                     }
                     LocusSort::DegreeDesc => {
-                        summaries.sort_unstable_by_key(|s| {
-                            std::cmp::Reverse(world.degree(s.id))
-                        });
+                        summaries.sort_unstable_by_key(|s| std::cmp::Reverse(world.degree(s.id)));
                     }
                 }
             }
-            if let Some(n) = limit { summaries.truncate(*n); }
+            if let Some(n) = limit {
+                summaries.truncate(*n);
+            }
             QueryResult::LocusSummaries(summaries)
         }
 
-        Query::FindRelationships { predicates, sort_by, limit } => {
-            let summaries = find_relationship_summaries(
-                world, predicates, sort_by.as_ref(), *limit,
-            );
+        Query::FindRelationships {
+            predicates,
+            sort_by,
+            limit,
+        } => {
+            let summaries =
+                find_relationship_summaries(world, predicates, sort_by.as_ref(), *limit);
             QueryResult::RelationshipSummaries(summaries)
         }
 
-        Query::FindEntities { predicates, sort_by, limit } => {
+        Query::FindEntities {
+            predicates,
+            sort_by,
+            limit,
+        } => {
             let mut ids = find_entities_inner(world, predicates);
             if let Some(sort) = sort_by {
                 match sort {
                     EntitySort::CoherenceDesc => {
                         ids.sort_unstable_by(|a, b| {
-                            let ca = world.entities().get(*a).map(|e| e.current.coherence).unwrap_or(0.0);
-                            let cb = world.entities().get(*b).map(|e| e.current.coherence).unwrap_or(0.0);
+                            let ca = world
+                                .entities()
+                                .get(*a)
+                                .map(|e| e.current.coherence)
+                                .unwrap_or(0.0);
+                            let cb = world
+                                .entities()
+                                .get(*b)
+                                .map(|e| e.current.coherence)
+                                .unwrap_or(0.0);
                             cb.total_cmp(&ca)
                         });
                     }
                     EntitySort::MemberCountDesc => {
                         ids.sort_unstable_by_key(|id| {
                             std::cmp::Reverse(
-                                world.entities().get(*id).map(|e| e.current.members.len()).unwrap_or(0)
+                                world
+                                    .entities()
+                                    .get(*id)
+                                    .map(|e| e.current.members.len())
+                                    .unwrap_or(0),
                             )
                         });
                     }
                 }
             }
-            if let Some(n) = limit { ids.truncate(*n); }
+            if let Some(n) = limit {
+                ids.truncate(*n);
+            }
             QueryResult::Entities(ids)
         }
 
         // ── Single locus state lookup ────────────────────────────────────────
-
         Query::LocusStateSlot { locus, slot } => {
-            let v = world.locus(*locus)
+            let v = world
+                .locus(*locus)
                 .and_then(|l| l.state.as_slice().get(*slot).copied());
             QueryResult::MaybeScore(v)
         }
 
         // ── Relationship profiles ────────────────────────────────────────────
-
         Query::RelationshipProfile { from, to } => {
             let bundle = relationship_profile(world, *from, *to);
             use graph_core::Endpoints;
-            let forward: f32 = bundle.relationships.iter()
-                .filter(|r| matches!(r.endpoints, Endpoints::Directed { from: f, .. } if f == *from))
+            let forward: f32 = bundle
+                .relationships
+                .iter()
+                .filter(
+                    |r| matches!(r.endpoints, Endpoints::Directed { from: f, .. } if f == *from),
+                )
                 .map(|r| r.activity())
                 .sum();
-            let backward: f32 = bundle.relationships.iter()
+            let backward: f32 = bundle
+                .relationships
+                .iter()
                 .filter(|r| matches!(r.endpoints, Endpoints::Directed { to: t, .. } if t == *from))
                 .map(|r| r.activity())
                 .sum();
@@ -958,8 +1056,11 @@ pub fn execute(world: &World, query: &Query) -> QueryResult {
         }
 
         // ── Activity trend ───────────────────────────────────────────────────
-
-        Query::ActivityTrend { relationship, from_batch, to_batch } => {
+        Query::ActivityTrend {
+            relationship,
+            from_batch,
+            to_batch,
+        } => {
             let trend = relationship_activity_trend(world, *relationship, *from_batch, *to_batch);
             let result = match trend {
                 None => TrendResult::Insufficient,
@@ -971,31 +1072,33 @@ pub fn execute(world: &World, query: &Query) -> QueryResult {
         }
 
         // ── Entity deviation detection ───────────────────────────────────────
-
         Query::EntityDeviationsSince(baseline) => {
             let diffs = entity_deviations_since(world, *baseline);
-            let summaries = diffs.into_iter().map(|d| EntityDiffSummary {
-                entity_id: d.entity_id,
-                born_after_baseline: d.born_after_baseline,
-                went_dormant: d.went_dormant,
-                revived: d.revived,
-                members_added: d.members_added,
-                members_removed: d.members_removed,
-                membership_event_count: d.membership_event_count,
-                coherence_at_baseline: d.coherence_at_baseline,
-                coherence_now: d.coherence_now,
-                coherence_delta: d.coherence_delta,
-                member_count_delta: d.member_count_delta,
-                latest_change_batch: d.latest_change_batch,
-            }).collect();
+            let summaries = diffs
+                .into_iter()
+                .map(|d| EntityDiffSummary {
+                    entity_id: d.entity_id,
+                    born_after_baseline: d.born_after_baseline,
+                    went_dormant: d.went_dormant,
+                    revived: d.revived,
+                    members_added: d.members_added,
+                    members_removed: d.members_removed,
+                    membership_event_count: d.membership_event_count,
+                    coherence_at_baseline: d.coherence_at_baseline,
+                    coherence_now: d.coherence_now,
+                    coherence_delta: d.coherence_delta,
+                    member_count_delta: d.member_count_delta,
+                    latest_change_batch: d.latest_change_batch,
+                })
+                .collect();
             QueryResult::EntityDeviations(summaries)
         }
 
         // ── Counterfactual analysis ──────────────────────────────────────────
-
         Query::RelationshipsAbsentWithout(root_changes) => {
             let absent_ids = relationships_absent_without(world, root_changes);
-            let summaries = absent_ids.iter()
+            let summaries = absent_ids
+                .iter()
                 .filter_map(|&id| world.relationships().get(id))
                 .map(rel_to_summary)
                 .collect();
@@ -1003,72 +1106,111 @@ pub fn execute(world: &World, query: &Query) -> QueryResult {
         }
 
         // ── Cohere cluster queries ───────────────────────────────────────────
+        Query::Coheres => QueryResult::Coheres(coheres_to_results(
+            world.coheres().get("default").unwrap_or(&[]),
+        )),
 
-        Query::Coheres =>
-            QueryResult::Coheres(coheres_to_results(world.coheres().get("default").unwrap_or(&[]))),
-
-        Query::CoheresNamed(key) =>
-            QueryResult::Coheres(coheres_to_results(world.coheres().get(key.as_str()).unwrap_or(&[]))),
+        Query::CoheresNamed(key) => QueryResult::Coheres(coheres_to_results(
+            world.coheres().get(key.as_str()).unwrap_or(&[]),
+        )),
 
         // ── Causal strength ──────────────────────────────────────────────────
-
-        Query::CausalDirection { from, to, kind } => {
-            QueryResult::Score(crate::causal_strength::causal_direction(world, *from, *to, *kind))
-        }
-        Query::DominantCauses { target, kind, n } => {
-            QueryResult::LocusScores(crate::causal_strength::dominant_causes(world, *target, *kind, *n))
-        }
-        Query::DominantEffects { source, kind, n } => {
-            QueryResult::LocusScores(crate::causal_strength::dominant_effects(world, *source, *kind, *n))
-        }
-        Query::CausalInStrength { locus, kind } => {
-            QueryResult::Score(crate::causal_strength::causal_in_strength(world, *locus, *kind))
-        }
-        Query::CausalOutStrength { locus, kind } => {
-            QueryResult::Score(crate::causal_strength::causal_out_strength(world, *locus, *kind))
-        }
-        Query::FeedbackPairs { kind, min_weight, min_balance } => {
-            QueryResult::FeedbackPairs(crate::causal_strength::feedback_pairs(world, *kind, *min_weight, *min_balance))
-        }
+        Query::CausalDirection { from, to, kind } => QueryResult::Score(
+            crate::causal_strength::causal_direction(world, *from, *to, *kind),
+        ),
+        Query::DominantCauses { target, kind, n } => QueryResult::LocusScores(
+            crate::causal_strength::dominant_causes(world, *target, *kind, *n),
+        ),
+        Query::DominantEffects { source, kind, n } => QueryResult::LocusScores(
+            crate::causal_strength::dominant_effects(world, *source, *kind, *n),
+        ),
+        Query::CausalInStrength { locus, kind } => QueryResult::Score(
+            crate::causal_strength::causal_in_strength(world, *locus, *kind),
+        ),
+        Query::CausalOutStrength { locus, kind } => QueryResult::Score(
+            crate::causal_strength::causal_out_strength(world, *locus, *kind),
+        ),
+        Query::FeedbackPairs {
+            kind,
+            min_weight,
+            min_balance,
+        } => QueryResult::FeedbackPairs(crate::causal_strength::feedback_pairs(
+            world,
+            *kind,
+            *min_weight,
+            *min_balance,
+        )),
 
         // ── D2: Granger-style causality ──────────────────────────────────────
-
-        Query::GrangerScore { from, to, kind, lag_batches } => {
-            QueryResult::Score(crate::causal_strength::granger_score(world, *from, *to, *kind, *lag_batches))
-        }
-        Query::GrangerDominantCauses { target, kind, lag_batches, n } => {
-            QueryResult::LocusScores(crate::causal_strength::granger_dominant_causes(world, *target, *kind, *lag_batches, *n))
-        }
-        Query::GrangerDominantEffects { source, kind, lag_batches, n } => {
-            QueryResult::LocusScores(crate::causal_strength::granger_dominant_effects(world, *source, *kind, *lag_batches, *n))
-        }
+        Query::GrangerScore {
+            from,
+            to,
+            kind,
+            lag_batches,
+        } => QueryResult::Score(crate::causal_strength::granger_score(
+            world,
+            *from,
+            *to,
+            *kind,
+            *lag_batches,
+        )),
+        Query::GrangerDominantCauses {
+            target,
+            kind,
+            lag_batches,
+            n,
+        } => QueryResult::LocusScores(crate::causal_strength::granger_dominant_causes(
+            world,
+            *target,
+            *kind,
+            *lag_batches,
+            *n,
+        )),
+        Query::GrangerDominantEffects {
+            source,
+            kind,
+            lag_batches,
+            n,
+        } => QueryResult::LocusScores(crate::causal_strength::granger_dominant_effects(
+            world,
+            *source,
+            *kind,
+            *lag_batches,
+            *n,
+        )),
 
         // ── B3: Time-travel queries ───────────────────────────────────────────
-
         Query::TimeTravel { target_batch } => {
             QueryResult::TimeTravelResult(crate::time_travel::time_travel(world, *target_batch))
         }
 
         // ── D3: Structural counterfactual replay ─────────────────────────────
-
         Query::CounterfactualReplay { remove_changes } => {
             QueryResult::Counterfactual(crate::counterfactual_replay(world, remove_changes.clone()))
         }
 
         // ── D4: Entity-level causality ───────────────────────────────────────
-
-        Query::EntityTransitionCause { entity_id, at_batch } => {
-            QueryResult::EntityCause(crate::entity_causality::entity_transition_cause(world, *entity_id, *at_batch))
-        }
-        Query::EntityUpstreamTransitions { entity_id, at_batch } => {
-            QueryResult::EntityTransitions(crate::entity_causality::entity_upstream_transitions(world, *entity_id, *at_batch))
-        }
-        Query::EntityLayersInRange { entity_id, from, to } => {
-            QueryResult::EntityLayers(crate::entity_causality::entity_layers_in_range(world, *entity_id, *from, *to))
-        }
+        Query::EntityTransitionCause {
+            entity_id,
+            at_batch,
+        } => QueryResult::EntityCause(crate::entity_causality::entity_transition_cause(
+            world, *entity_id, *at_batch,
+        )),
+        Query::EntityUpstreamTransitions {
+            entity_id,
+            at_batch,
+        } => QueryResult::EntityTransitions(crate::entity_causality::entity_upstream_transitions(
+            world, *entity_id, *at_batch,
+        )),
+        Query::EntityLayersInRange {
+            entity_id,
+            from,
+            to,
+        } => QueryResult::EntityLayers(crate::entity_causality::entity_layers_in_range(
+            world, *entity_id, *from, *to,
+        )),
 
         // ── Metrics ──────────────────────────────────────────────────────────
-
         Query::WorldMetrics => {
             let m = world.metrics();
             QueryResult::WorldMetrics(WorldMetricsResult {
@@ -1091,7 +1233,7 @@ fn rel_to_summary(r: &graph_core::Relationship) -> RelationshipSummary {
     use graph_core::Endpoints;
     let (from, to, directed) = match r.endpoints {
         Endpoints::Directed { from, to } => (from, to, true),
-        Endpoints::Symmetric { a, b }   => (a, b, false),
+        Endpoints::Symmetric { a, b } => (a, b, false),
     };
     RelationshipSummary {
         id: r.id,
@@ -1108,24 +1250,33 @@ fn rel_to_summary(r: &graph_core::Relationship) -> RelationshipSummary {
 
 fn coheres_to_results(coheres: &[graph_core::Cohere]) -> Vec<CohereResult> {
     use graph_core::CohereMembers;
-    coheres.iter().map(|c| {
-        let (entity_ids, relationship_ids) = match &c.members {
-            CohereMembers::Entities(ids) => (ids.clone(), vec![]),
-            CohereMembers::Relationships(ids) => (vec![], ids.clone()),
-            CohereMembers::Mixed { entities, relationships } =>
-                (entities.clone(), relationships.clone()),
-        };
-        CohereResult { id: c.id, entity_ids, relationship_ids, strength: c.strength }
-    }).collect()
+    coheres
+        .iter()
+        .map(|c| {
+            let (entity_ids, relationship_ids) = match &c.members {
+                CohereMembers::Entities(ids) => (ids.clone(), vec![]),
+                CohereMembers::Relationships(ids) => (vec![], ids.clone()),
+                CohereMembers::Mixed {
+                    entities,
+                    relationships,
+                } => (entities.clone(), relationships.clone()),
+            };
+            CohereResult {
+                id: c.id,
+                entity_ids,
+                relationship_ids,
+                strength: c.strength,
+            }
+        })
+        .collect()
 }
 
 fn find_loci_summaries(world: &World, predicates: &[LocusPredicate]) -> Vec<LocusSummary> {
-    use crate::traversal::{
-        downstream_of, downstream_of_active,
-        reachable_from, reachable_from_active,
-        upstream_of, upstream_of_active,
-    };
     use crate::planner::plan_loci_predicates;
+    use crate::traversal::{
+        downstream_of, downstream_of_active, reachable_from, reachable_from_active, upstream_of,
+        upstream_of_active,
+    };
     use rustc_hash::FxHashSet;
 
     let mut candidates: Vec<LocusId> = world.loci().iter().map(|l| l.id).collect();
@@ -1140,28 +1291,34 @@ fn find_loci_summaries(world: &World, predicates: &[LocusPredicate]) -> Vec<Locu
             }
             LocusPredicate::StateAbove { slot, min } => {
                 candidates.retain(|&id| {
-                    world.locus(id)
+                    world
+                        .locus(id)
                         .and_then(|l| l.state.as_slice().get(*slot).copied())
                         .is_some_and(|v| v >= *min)
                 });
             }
             LocusPredicate::StateBelow { slot, max } => {
                 candidates.retain(|&id| {
-                    world.locus(id)
+                    world
+                        .locus(id)
                         .and_then(|l| l.state.as_slice().get(*slot).copied())
                         .is_some_and(|v| v <= *max)
                 });
             }
             LocusPredicate::StrPropertyEq { key, value } => {
                 candidates.retain(|&id| {
-                    world.properties().get(id)
+                    world
+                        .properties()
+                        .get(id)
                         .and_then(|p| p.get_str(key))
                         .is_some_and(|v| v == value.as_str())
                 });
             }
             LocusPredicate::F64PropertyAbove { key, min } => {
                 candidates.retain(|&id| {
-                    world.properties().get(id)
+                    world
+                        .properties()
+                        .get(id)
                         .and_then(|p| p.get_f64(key))
                         .is_some_and(|v| v >= *min)
                 });
@@ -1172,22 +1329,37 @@ fn find_loci_summaries(world: &World, predicates: &[LocusPredicate]) -> Vec<Locu
             // ── Active traversal predicates (priority 85) ─────────────────
             // Prune dormant edges during BFS — smaller reachable set than the
             // full-graph variants below, so applied first.
-            LocusPredicate::ReachableFromActive { start, depth, min_activity } => {
+            LocusPredicate::ReachableFromActive {
+                start,
+                depth,
+                min_activity,
+            } => {
                 let set: FxHashSet<LocusId> =
                     reachable_from_active(world, *start, *depth, *min_activity)
-                        .into_iter().collect();
+                        .into_iter()
+                        .collect();
                 candidates.retain(|id| set.contains(id));
             }
-            LocusPredicate::DownstreamOfActive { start, depth, min_activity } => {
+            LocusPredicate::DownstreamOfActive {
+                start,
+                depth,
+                min_activity,
+            } => {
                 let set: FxHashSet<LocusId> =
                     downstream_of_active(world, *start, *depth, *min_activity)
-                        .into_iter().collect();
+                        .into_iter()
+                        .collect();
                 candidates.retain(|id| set.contains(id));
             }
-            LocusPredicate::UpstreamOfActive { start, depth, min_activity } => {
+            LocusPredicate::UpstreamOfActive {
+                start,
+                depth,
+                min_activity,
+            } => {
                 let set: FxHashSet<LocusId> =
                     upstream_of_active(world, *start, *depth, *min_activity)
-                        .into_iter().collect();
+                        .into_iter()
+                        .collect();
                 candidates.retain(|id| set.contains(id));
             }
             // ── Full-graph traversal predicates (priority 90) ─────────────
@@ -1209,13 +1381,16 @@ fn find_loci_summaries(world: &World, predicates: &[LocusPredicate]) -> Vec<Locu
         }
     }
 
-    candidates.into_iter().filter_map(|id| {
-        world.locus(id).map(|l| LocusSummary {
-            id: l.id,
-            kind: l.kind,
-            state: l.state.as_slice().to_vec(),
+    candidates
+        .into_iter()
+        .filter_map(|id| {
+            world.locus(id).map(|l| LocusSummary {
+                id: l.id,
+                kind: l.kind,
+                state: l.state.as_slice().to_vec(),
+            })
         })
-    }).collect()
+        .collect()
 }
 
 /// Test whether a single relationship passes one predicate.
@@ -1224,20 +1399,26 @@ fn find_loci_summaries(world: &World, predicates: &[LocusPredicate]) -> Vec<Locu
 /// same relationship for each predicate in the sorted list.
 fn rel_pred_matches(r: &graph_core::Relationship, pred: &RelationshipPredicate) -> bool {
     match pred {
-        RelationshipPredicate::OfKind(kind)      => r.kind == *kind,
-        RelationshipPredicate::From(locus)        =>
-            matches!(r.endpoints, Endpoints::Directed { from, .. } if from == *locus),
-        RelationshipPredicate::To(locus)          =>
-            matches!(r.endpoints, Endpoints::Directed { to, .. }   if to   == *locus),
-        RelationshipPredicate::Touching(locus)    => r.endpoints.involves(*locus),
+        RelationshipPredicate::OfKind(kind) => r.kind == *kind,
+        RelationshipPredicate::From(locus) => {
+            matches!(r.endpoints, Endpoints::Directed { from, .. } if from == *locus)
+        }
+        RelationshipPredicate::To(locus) => {
+            matches!(r.endpoints, Endpoints::Directed { to, .. }   if to   == *locus)
+        }
+        RelationshipPredicate::Touching(locus) => r.endpoints.involves(*locus),
         RelationshipPredicate::ActivityAbove(min) => r.activity() > *min,
         RelationshipPredicate::StrengthAbove(min) => r.strength() > *min,
-        RelationshipPredicate::SlotAbove { slot, min } =>
-            r.state.as_slice().get(*slot).is_some_and(|&v| v >= *min),
-        RelationshipPredicate::CreatedInRange { from, to } =>
-            r.created_batch >= *from && r.created_batch <= *to,
-        RelationshipPredicate::OlderThan { current_batch, min_batches } =>
-            r.age_in_batches(*current_batch) >= *min_batches,
+        RelationshipPredicate::SlotAbove { slot, min } => {
+            r.state.as_slice().get(*slot).is_some_and(|&v| v >= *min)
+        }
+        RelationshipPredicate::CreatedInRange { from, to } => {
+            r.created_batch >= *from && r.created_batch <= *to
+        }
+        RelationshipPredicate::OlderThan {
+            current_batch,
+            min_batches,
+        } => r.age_in_batches(*current_batch) >= *min_batches,
         RelationshipPredicate::MinChangeCount(min) => r.lineage.change_count >= *min,
     }
 }
@@ -1262,7 +1443,7 @@ fn find_relationship_summaries(
     sort_by: Option<&RelSort>,
     limit: Option<usize>,
 ) -> Vec<RelationshipSummary> {
-    use crate::planner::{plan_rel_predicates, SeedKind};
+    use crate::planner::{SeedKind, plan_rel_predicates};
 
     let plan = plan_rel_predicates(predicates);
 
@@ -1271,7 +1452,9 @@ fn find_relationship_summaries(
         // O(1) — single hash lookup by (EndpointKey, kind).
         Some(SeedKind::DirectLookup { from, to, kind }) => {
             let key = EndpointKey::Directed(*from, *to);
-            world.relationships().lookup(&key, *kind)
+            world
+                .relationships()
+                .lookup(&key, *kind)
                 .map(|id| vec![id])
                 .unwrap_or_default()
         }
@@ -1279,21 +1462,20 @@ fn find_relationship_summaries(
         Some(SeedKind::Between { a, b }) => {
             world.relationships_between(*a, *b).map(|r| r.id).collect()
         }
-        Some(SeedKind::From(locus)) => {
-            world.relationships_for_locus(*locus)
-                .filter(|r| matches!(r.endpoints, Endpoints::Directed { from, .. } if from == *locus))
-                .map(|r| r.id)
-                .collect()
-        }
-        Some(SeedKind::To(locus)) => {
-            world.relationships_for_locus(*locus)
-                .filter(|r| matches!(r.endpoints, Endpoints::Directed { to, .. } if to == *locus))
-                .map(|r| r.id)
-                .collect()
-        }
-        Some(SeedKind::Touching(locus)) => {
-            world.relationships_for_locus(*locus).map(|r| r.id).collect()
-        }
+        Some(SeedKind::From(locus)) => world
+            .relationships_for_locus(*locus)
+            .filter(|r| matches!(r.endpoints, Endpoints::Directed { from, .. } if from == *locus))
+            .map(|r| r.id)
+            .collect(),
+        Some(SeedKind::To(locus)) => world
+            .relationships_for_locus(*locus)
+            .filter(|r| matches!(r.endpoints, Endpoints::Directed { to, .. } if to == *locus))
+            .map(|r| r.id)
+            .collect(),
+        Some(SeedKind::Touching(locus)) => world
+            .relationships_for_locus(*locus)
+            .map(|r| r.id)
+            .collect(),
         None => world.relationships().iter().map(|r| r.id).collect(),
     };
 
@@ -1301,14 +1483,14 @@ fn find_relationship_summaries(
     // Fetch each relationship once, apply all predicates, then convert to
     // summary in the same closure — one HashMap lookup per candidate total.
     let preds = &plan.predicates_ordered;
-    let filtered = candidates
-        .into_iter()
-        .filter_map(|id| {
-            world.relationships().get(id).and_then(|r| {
-                preds.iter().all(|pred| rel_pred_matches(r, pred))
-                    .then(|| rel_to_summary(r))
-            })
-        });
+    let filtered = candidates.into_iter().filter_map(|id| {
+        world.relationships().get(id).and_then(|r| {
+            preds
+                .iter()
+                .all(|pred| rel_pred_matches(r, pred))
+                .then(|| rel_to_summary(r))
+        })
+    });
 
     // ── Sort + limit ──────────────────────────────────────────────────────────
     match sort_by {
@@ -1316,28 +1498,32 @@ fn find_relationship_summaries(
             // No sort → can short-circuit: stop collecting once we reach `limit`.
             match limit {
                 Some(n) => filtered.take(n).collect(),
-                None    => filtered.collect(),
+                None => filtered.collect(),
             }
         }
         Some(sort) => {
             // Must collect the full filtered set before sorting.
             let mut summaries: Vec<RelationshipSummary> = filtered.collect();
             match sort {
-                RelSort::ActivityDesc =>
-                    summaries.sort_unstable_by(|a, b| b.activity.total_cmp(&a.activity)),
-                RelSort::StrengthDesc =>
-                    summaries.sort_unstable_by(|a, b| {
-                        (b.activity + b.weight).total_cmp(&(a.activity + a.weight))
-                    }),
-                RelSort::WeightDesc =>
-                    summaries.sort_unstable_by(|a, b| b.weight.total_cmp(&a.weight)),
-                RelSort::ChangeCountDesc =>
-                    summaries.sort_unstable_by(|a, b| b.change_count.cmp(&a.change_count)),
+                RelSort::ActivityDesc => {
+                    summaries.sort_unstable_by(|a, b| b.activity.total_cmp(&a.activity))
+                }
+                RelSort::StrengthDesc => summaries.sort_unstable_by(|a, b| {
+                    (b.activity + b.weight).total_cmp(&(a.activity + a.weight))
+                }),
+                RelSort::WeightDesc => {
+                    summaries.sort_unstable_by(|a, b| b.weight.total_cmp(&a.weight))
+                }
+                RelSort::ChangeCountDesc => {
+                    summaries.sort_unstable_by(|a, b| b.change_count.cmp(&a.change_count))
+                }
                 RelSort::CreatedBatchAsc => {
                     summaries.sort_unstable_by_key(|s| s.created_batch.0);
                 }
             }
-            if let Some(n) = limit { summaries.truncate(n); }
+            if let Some(n) = limit {
+                summaries.truncate(n);
+            }
             summaries
         }
     }
@@ -1349,17 +1535,26 @@ fn find_entities_inner(world: &World, predicates: &[EntityPredicate]) -> Vec<Ent
         match pred {
             EntityPredicate::CoherenceAbove(min) => {
                 candidates.retain(|&id| {
-                    world.entities().get(id).is_some_and(|e| e.current.coherence >= *min)
+                    world
+                        .entities()
+                        .get(id)
+                        .is_some_and(|e| e.current.coherence >= *min)
                 });
             }
             EntityPredicate::HasMember(locus) => {
                 candidates.retain(|&id| {
-                    world.entities().get(id).is_some_and(|e| e.current.members.contains(locus))
+                    world
+                        .entities()
+                        .get(id)
+                        .is_some_and(|e| e.current.members.contains(locus))
                 });
             }
             EntityPredicate::MinMembers(min) => {
                 candidates.retain(|&id| {
-                    world.entities().get(id).is_some_and(|e| e.current.members.len() >= *min)
+                    world
+                        .entities()
+                        .get(id)
+                        .is_some_and(|e| e.current.members.len() >= *min)
                 });
             }
         }
@@ -1419,37 +1614,45 @@ impl FindRelationshipsBuilder {
 
     /// Keep only relationships whose activity > `min`.
     pub fn activity_above(mut self, min: f32) -> Self {
-        self.predicates.push(RelationshipPredicate::ActivityAbove(min));
+        self.predicates
+            .push(RelationshipPredicate::ActivityAbove(min));
         self
     }
 
     /// Keep only relationships whose combined strength > `min`.
     pub fn strength_above(mut self, min: f32) -> Self {
-        self.predicates.push(RelationshipPredicate::StrengthAbove(min));
+        self.predicates
+            .push(RelationshipPredicate::StrengthAbove(min));
         self
     }
 
     /// Keep only relationships where `state[slot] >= min`.
     pub fn slot_above(mut self, slot: usize, min: f32) -> Self {
-        self.predicates.push(RelationshipPredicate::SlotAbove { slot, min });
+        self.predicates
+            .push(RelationshipPredicate::SlotAbove { slot, min });
         self
     }
 
     /// Keep only relationships created within `[from, to]` batch range.
     pub fn created_in_range(mut self, from: BatchId, to: BatchId) -> Self {
-        self.predicates.push(RelationshipPredicate::CreatedInRange { from, to });
+        self.predicates
+            .push(RelationshipPredicate::CreatedInRange { from, to });
         self
     }
 
     /// Keep only relationships older than `min_batches`.
     pub fn older_than(mut self, current_batch: BatchId, min_batches: u64) -> Self {
-        self.predicates.push(RelationshipPredicate::OlderThan { current_batch, min_batches });
+        self.predicates.push(RelationshipPredicate::OlderThan {
+            current_batch,
+            min_batches,
+        });
         self
     }
 
     /// Keep only relationships with change count ≥ `min`.
     pub fn min_change_count(mut self, min: u64) -> Self {
-        self.predicates.push(RelationshipPredicate::MinChangeCount(min));
+        self.predicates
+            .push(RelationshipPredicate::MinChangeCount(min));
         self
     }
 
@@ -1511,13 +1714,15 @@ impl FindLociBuilder {
 
     /// Keep only loci where `state[slot] >= min`.
     pub fn state_above(mut self, slot: usize, min: f32) -> Self {
-        self.predicates.push(LocusPredicate::StateAbove { slot, min });
+        self.predicates
+            .push(LocusPredicate::StateAbove { slot, min });
         self
     }
 
     /// Keep only loci where `state[slot] <= max`.
     pub fn state_below(mut self, slot: usize, max: f32) -> Self {
-        self.predicates.push(LocusPredicate::StateBelow { slot, max });
+        self.predicates
+            .push(LocusPredicate::StateBelow { slot, max });
         self
     }
 
@@ -1529,49 +1734,75 @@ impl FindLociBuilder {
 
     /// Keep only loci that have a string property `key` equal to `value`.
     pub fn str_property_eq(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.predicates.push(LocusPredicate::StrPropertyEq { key: key.into(), value: value.into() });
+        self.predicates.push(LocusPredicate::StrPropertyEq {
+            key: key.into(),
+            value: value.into(),
+        });
         self
     }
 
     /// Keep only loci that have a numeric property `key` ≥ `min`.
     pub fn f64_property_above(mut self, key: impl Into<String>, min: f64) -> Self {
-        self.predicates.push(LocusPredicate::F64PropertyAbove { key: key.into(), min });
+        self.predicates.push(LocusPredicate::F64PropertyAbove {
+            key: key.into(),
+            min,
+        });
         self
     }
 
     /// Keep only loci reachable from `start` within `depth` undirected hops.
     pub fn reachable_from(mut self, start: LocusId, depth: usize) -> Self {
-        self.predicates.push(LocusPredicate::ReachableFrom { start, depth });
+        self.predicates
+            .push(LocusPredicate::ReachableFrom { start, depth });
         self
     }
 
     /// Keep only loci downstream of `start` within `depth` directed hops.
     pub fn downstream_of(mut self, start: LocusId, depth: usize) -> Self {
-        self.predicates.push(LocusPredicate::DownstreamOf { start, depth });
+        self.predicates
+            .push(LocusPredicate::DownstreamOf { start, depth });
         self
     }
 
     /// Keep only loci upstream of `start` within `depth` directed hops.
     pub fn upstream_of(mut self, start: LocusId, depth: usize) -> Self {
-        self.predicates.push(LocusPredicate::UpstreamOf { start, depth });
+        self.predicates
+            .push(LocusPredicate::UpstreamOf { start, depth });
         self
     }
 
     /// Like `reachable_from` but only traverses edges with `activity >= min_activity`.
-    pub fn reachable_from_active(mut self, start: LocusId, depth: usize, min_activity: f32) -> Self {
-        self.predicates.push(LocusPredicate::ReachableFromActive { start, depth, min_activity });
+    pub fn reachable_from_active(
+        mut self,
+        start: LocusId,
+        depth: usize,
+        min_activity: f32,
+    ) -> Self {
+        self.predicates.push(LocusPredicate::ReachableFromActive {
+            start,
+            depth,
+            min_activity,
+        });
         self
     }
 
     /// Like `downstream_of` but only traverses forward edges with `activity >= min_activity`.
     pub fn downstream_of_active(mut self, start: LocusId, depth: usize, min_activity: f32) -> Self {
-        self.predicates.push(LocusPredicate::DownstreamOfActive { start, depth, min_activity });
+        self.predicates.push(LocusPredicate::DownstreamOfActive {
+            start,
+            depth,
+            min_activity,
+        });
         self
     }
 
     /// Like `upstream_of` but only traverses backward edges with `activity >= min_activity`.
     pub fn upstream_of_active(mut self, start: LocusId, depth: usize, min_activity: f32) -> Self {
-        self.predicates.push(LocusPredicate::UpstreamOfActive { start, depth, min_activity });
+        self.predicates.push(LocusPredicate::UpstreamOfActive {
+            start,
+            depth,
+            min_activity,
+        });
         self
     }
 
@@ -1698,121 +1929,181 @@ impl QueryResult {
     /// Extract `Vec<LocusId>` from a [`QueryResult::Loci`] variant.
     /// Returns `None` for any other variant.
     pub fn into_loci(self) -> Option<Vec<LocusId>> {
-        match self { QueryResult::Loci(v) => Some(v), _ => None }
+        match self {
+            QueryResult::Loci(v) => Some(v),
+            _ => None,
+        }
     }
 
     /// Extract `Vec<LocusSummary>` from a [`QueryResult::LocusSummaries`] variant.
     /// Returns `None` for any other variant.
     pub fn into_locus_summaries(self) -> Option<Vec<LocusSummary>> {
-        match self { QueryResult::LocusSummaries(v) => Some(v), _ => None }
+        match self {
+            QueryResult::LocusSummaries(v) => Some(v),
+            _ => None,
+        }
     }
 
     /// Extract `Vec<RelationshipSummary>` from a [`QueryResult::RelationshipSummaries`] variant.
     /// Returns `None` for any other variant.
     pub fn into_relationship_summaries(self) -> Option<Vec<RelationshipSummary>> {
-        match self { QueryResult::RelationshipSummaries(v) => Some(v), _ => None }
+        match self {
+            QueryResult::RelationshipSummaries(v) => Some(v),
+            _ => None,
+        }
     }
 
     /// Extract `Vec<RelationshipId>` from a [`QueryResult::Relationships`] variant.
     /// Returns `None` for any other variant.
     pub fn into_relationships(self) -> Option<Vec<RelationshipId>> {
-        match self { QueryResult::Relationships(v) => Some(v), _ => None }
+        match self {
+            QueryResult::Relationships(v) => Some(v),
+            _ => None,
+        }
     }
 
     /// Extract `Vec<EntityId>` from a [`QueryResult::Entities`] variant.
     /// Returns `None` for any other variant.
     pub fn into_entities(self) -> Option<Vec<EntityId>> {
-        match self { QueryResult::Entities(v) => Some(v), _ => None }
+        match self {
+            QueryResult::Entities(v) => Some(v),
+            _ => None,
+        }
     }
 
     /// Extract `Vec<ChangeId>` from a [`QueryResult::Changes`] variant.
     /// Returns `None` for any other variant.
     pub fn into_changes(self) -> Option<Vec<ChangeId>> {
-        match self { QueryResult::Changes(v) => Some(v), _ => None }
+        match self {
+            QueryResult::Changes(v) => Some(v),
+            _ => None,
+        }
     }
 
     /// Extract `Vec<Vec<LocusId>>` from a [`QueryResult::Components`] variant.
     /// Returns `None` for any other variant.
     pub fn into_components(self) -> Option<Vec<Vec<LocusId>>> {
-        match self { QueryResult::Components(v) => Some(v), _ => None }
+        match self {
+            QueryResult::Components(v) => Some(v),
+            _ => None,
+        }
     }
 
     /// Extract `Vec<Vec<LocusId>>` from a [`QueryResult::Communities`] variant.
     /// Returns `None` for any other variant.
     pub fn into_communities(self) -> Option<Vec<Vec<LocusId>>> {
-        match self { QueryResult::Communities(v) => Some(v), _ => None }
+        match self {
+            QueryResult::Communities(v) => Some(v),
+            _ => None,
+        }
     }
 
     /// Extract `Option<Vec<LocusId>>` from a [`QueryResult::Path`] variant.
     /// The inner `Option` is `None` when no path exists.
     /// Returns `None` for any other variant.
     pub fn into_path(self) -> Option<Option<Vec<LocusId>>> {
-        match self { QueryResult::Path(v) => Some(v), _ => None }
+        match self {
+            QueryResult::Path(v) => Some(v),
+            _ => None,
+        }
     }
 
     /// Extract `Vec<(LocusId, f32)>` from a [`QueryResult::LocusScores`] variant.
     /// Returns `None` for any other variant.
     pub fn into_scores(self) -> Option<Vec<(LocusId, f32)>> {
-        match self { QueryResult::LocusScores(v) => Some(v), _ => None }
+        match self {
+            QueryResult::LocusScores(v) => Some(v),
+            _ => None,
+        }
     }
 
     /// Extract `bool` from a [`QueryResult::Bool`] variant.
     /// Returns `None` for any other variant.
     pub fn into_bool(self) -> Option<bool> {
-        match self { QueryResult::Bool(v) => Some(v), _ => None }
+        match self {
+            QueryResult::Bool(v) => Some(v),
+            _ => None,
+        }
     }
 
     /// Extract `usize` from a [`QueryResult::Count`] variant.
     /// Returns `None` for any other variant.
     pub fn into_count(self) -> Option<usize> {
-        match self { QueryResult::Count(v) => Some(v), _ => None }
+        match self {
+            QueryResult::Count(v) => Some(v),
+            _ => None,
+        }
     }
 
     /// Extract `f32` from a [`QueryResult::Score`] variant.
     /// Returns `None` for any other variant.
     pub fn into_score(self) -> Option<f32> {
-        match self { QueryResult::Score(v) => Some(v), _ => None }
+        match self {
+            QueryResult::Score(v) => Some(v),
+            _ => None,
+        }
     }
 
     /// Extract `Option<f32>` from a [`QueryResult::MaybeScore`] variant.
     /// Returns `None` for any other variant.
     pub fn into_maybe_score(self) -> Option<Option<f32>> {
-        match self { QueryResult::MaybeScore(v) => Some(v), _ => None }
+        match self {
+            QueryResult::MaybeScore(v) => Some(v),
+            _ => None,
+        }
     }
 
     /// Extract `TrendResult` from a [`QueryResult::Trend`] variant.
     /// Returns `None` for any other variant.
     pub fn into_trend(self) -> Option<TrendResult> {
-        match self { QueryResult::Trend(v) => Some(v), _ => None }
+        match self {
+            QueryResult::Trend(v) => Some(v),
+            _ => None,
+        }
     }
 
     /// Extract `Vec<EntityDiffSummary>` from a [`QueryResult::EntityDeviations`] variant.
     /// Returns `None` for any other variant.
     pub fn into_entity_deviations(self) -> Option<Vec<EntityDiffSummary>> {
-        match self { QueryResult::EntityDeviations(v) => Some(v), _ => None }
+        match self {
+            QueryResult::EntityDeviations(v) => Some(v),
+            _ => None,
+        }
     }
 
     /// Extract `Vec<CohereResult>` from a [`QueryResult::Coheres`] variant.
     /// Returns `None` for any other variant.
     pub fn into_coheres(self) -> Option<Vec<CohereResult>> {
-        match self { QueryResult::Coheres(v) => Some(v), _ => None }
+        match self {
+            QueryResult::Coheres(v) => Some(v),
+            _ => None,
+        }
     }
 
     /// Extract [`RelationshipProfileResult`] from a [`QueryResult::RelationshipProfile`] variant.
     /// Returns `None` for any other variant.
     pub fn into_relationship_profile(self) -> Option<RelationshipProfileResult> {
-        match self { QueryResult::RelationshipProfile(v) => Some(v), _ => None }
+        match self {
+            QueryResult::RelationshipProfile(v) => Some(v),
+            _ => None,
+        }
     }
 
     /// Extract [`WorldMetricsResult`] from a [`QueryResult::WorldMetrics`] variant.
     /// Returns `None` for any other variant.
     pub fn into_world_metrics(self) -> Option<WorldMetricsResult> {
-        match self { QueryResult::WorldMetrics(v) => Some(v), _ => None }
+        match self {
+            QueryResult::WorldMetrics(v) => Some(v),
+            _ => None,
+        }
     }
 
     /// Extract feedback pairs from a [`QueryResult::FeedbackPairs`] variant.
     pub fn into_feedback_pairs(self) -> Option<Vec<(LocusId, LocusId, f32)>> {
-        match self { QueryResult::FeedbackPairs(v) => Some(v), _ => None }
+        match self {
+            QueryResult::FeedbackPairs(v) => Some(v),
+            _ => None,
+        }
     }
 }
 
@@ -1822,8 +2113,8 @@ impl QueryResult {
 mod tests {
     use super::*;
     use graph_core::{
-        BatchId, Endpoints, InfluenceKindId, KindObservation, Locus, LocusKindId,
-        Relationship, RelationshipLineage, StateVector,
+        BatchId, Endpoints, InfluenceKindId, KindObservation, Locus, LocusKindId, Relationship,
+        RelationshipLineage, StateVector,
     };
     use graph_world::World;
 
@@ -1861,7 +2152,13 @@ mod tests {
     #[test]
     fn path_between_finds_path() {
         let w = simple_world();
-        let result = execute(&w, &Query::PathBetween { from: LocusId(0), to: LocusId(2) });
+        let result = execute(
+            &w,
+            &Query::PathBetween {
+                from: LocusId(0),
+                to: LocusId(2),
+            },
+        );
         match result {
             QueryResult::Path(Some(path)) => {
                 assert!(path.contains(&LocusId(0)));
@@ -1874,7 +2171,13 @@ mod tests {
     #[test]
     fn reachable_from_returns_loci() {
         let w = simple_world();
-        let result = execute(&w, &Query::ReachableFrom { start: LocusId(0), depth: 2 });
+        let result = execute(
+            &w,
+            &Query::ReachableFrom {
+                start: LocusId(0),
+                depth: 2,
+            },
+        );
         match result {
             QueryResult::Loci(ids) => {
                 assert!(ids.contains(&LocusId(1)));
@@ -1902,11 +2205,14 @@ mod tests {
     #[test]
     fn find_loci_returns_summaries_with_state() {
         let w = simple_world();
-        let result = execute(&w, &Query::FindLoci {
-            predicates: vec![LocusPredicate::OfKind(LocusKindId(1))],
-            sort_by: None,
-            limit: None,
-        });
+        let result = execute(
+            &w,
+            &Query::FindLoci {
+                predicates: vec![LocusPredicate::OfKind(LocusKindId(1))],
+                sort_by: None,
+                limit: None,
+            },
+        );
         match result {
             QueryResult::LocusSummaries(rows) => {
                 assert_eq!(rows.len(), 2);
@@ -1922,11 +2228,14 @@ mod tests {
     #[test]
     fn find_loci_sort_state_desc() {
         let w = simple_world();
-        let result = execute(&w, &Query::FindLoci {
-            predicates: vec![],
-            sort_by: Some(LocusSort::StateDesc(0)),
-            limit: Some(2),
-        });
+        let result = execute(
+            &w,
+            &Query::FindLoci {
+                predicates: vec![],
+                sort_by: Some(LocusSort::StateDesc(0)),
+                limit: Some(2),
+            },
+        );
         match result {
             QueryResult::LocusSummaries(rows) => {
                 assert_eq!(rows.len(), 2);
@@ -1943,11 +2252,14 @@ mod tests {
     #[test]
     fn find_relationships_returns_summaries() {
         let w = simple_world();
-        let result = execute(&w, &Query::FindRelationships {
-            predicates: vec![RelationshipPredicate::ActivityAbove(0.5)],
-            sort_by: None,
-            limit: None,
-        });
+        let result = execute(
+            &w,
+            &Query::FindRelationships {
+                predicates: vec![RelationshipPredicate::ActivityAbove(0.5)],
+                sort_by: None,
+                limit: None,
+            },
+        );
         match result {
             QueryResult::RelationshipSummaries(rows) => {
                 assert_eq!(rows.len(), 1);
@@ -1964,11 +2276,14 @@ mod tests {
     #[test]
     fn find_relationships_sort_activity_desc_with_limit() {
         let w = simple_world();
-        let result = execute(&w, &Query::FindRelationships {
-            predicates: vec![],
-            sort_by: Some(RelSort::ActivityDesc),
-            limit: Some(1),
-        });
+        let result = execute(
+            &w,
+            &Query::FindRelationships {
+                predicates: vec![],
+                sort_by: Some(RelSort::ActivityDesc),
+                limit: Some(1),
+            },
+        );
         match result {
             QueryResult::RelationshipSummaries(rows) => {
                 assert_eq!(rows.len(), 1);
@@ -1983,14 +2298,17 @@ mod tests {
     #[test]
     fn find_relationships_compound_predicate() {
         let w = simple_world();
-        let result = execute(&w, &Query::FindRelationships {
-            predicates: vec![
-                RelationshipPredicate::OfKind(InfluenceKindId(1)),
-                RelationshipPredicate::ActivityAbove(0.5),
-            ],
-            sort_by: Some(RelSort::ActivityDesc),
-            limit: None,
-        });
+        let result = execute(
+            &w,
+            &Query::FindRelationships {
+                predicates: vec![
+                    RelationshipPredicate::OfKind(InfluenceKindId(1)),
+                    RelationshipPredicate::ActivityAbove(0.5),
+                ],
+                sort_by: Some(RelSort::ActivityDesc),
+                limit: None,
+            },
+        );
         match result {
             QueryResult::RelationshipSummaries(rows) => {
                 assert_eq!(rows.len(), 1);
@@ -2004,7 +2322,13 @@ mod tests {
     #[test]
     fn locus_state_slot_returns_value() {
         let w = simple_world();
-        let result = execute(&w, &Query::LocusStateSlot { locus: LocusId(0), slot: 0 });
+        let result = execute(
+            &w,
+            &Query::LocusStateSlot {
+                locus: LocusId(0),
+                slot: 0,
+            },
+        );
         match result {
             QueryResult::MaybeScore(Some(v)) => assert!((v - 0.9).abs() < 1e-5),
             _ => panic!("expected MaybeScore(Some)"),
@@ -2014,7 +2338,13 @@ mod tests {
     #[test]
     fn locus_state_slot_missing_returns_none() {
         let w = simple_world();
-        let result = execute(&w, &Query::LocusStateSlot { locus: LocusId(99), slot: 0 });
+        let result = execute(
+            &w,
+            &Query::LocusStateSlot {
+                locus: LocusId(99),
+                slot: 0,
+            },
+        );
         assert_eq!(result, QueryResult::MaybeScore(None));
     }
 
@@ -2023,7 +2353,13 @@ mod tests {
     #[test]
     fn relationship_profile_includes_dominant_kind() {
         let w = simple_world();
-        let result = execute(&w, &Query::RelationshipProfile { from: LocusId(0), to: LocusId(1) });
+        let result = execute(
+            &w,
+            &Query::RelationshipProfile {
+                from: LocusId(0),
+                to: LocusId(1),
+            },
+        );
         match result {
             QueryResult::RelationshipProfile(p) => {
                 assert_eq!(p.relationship_ids.len(), 1);
@@ -2074,12 +2410,15 @@ mod tests {
     #[test]
     fn pagerank_with_limit_returns_top_n() {
         let w = simple_world();
-        let result = execute(&w, &Query::PageRank {
-            damping: 0.85,
-            iterations: 20,
-            tolerance: 1e-4,
-            limit: Some(2),
-        });
+        let result = execute(
+            &w,
+            &Query::PageRank {
+                damping: 0.85,
+                iterations: 20,
+                tolerance: 1e-4,
+                limit: Some(2),
+            },
+        );
         match result {
             QueryResult::LocusScores(scores) => {
                 assert_eq!(scores.len(), 2);
@@ -2195,10 +2534,7 @@ mod tests {
     fn builder_find_entities_run_returns_entities() {
         let w = simple_world();
         // No entities in simple_world — just verify the builder wires through correctly.
-        let ids = Query::find_entities()
-            .run(&w)
-            .into_entities()
-            .unwrap();
+        let ids = Query::find_entities().run(&w).into_entities().unwrap();
         assert!(ids.is_empty());
     }
 
@@ -2207,7 +2543,13 @@ mod tests {
     #[test]
     fn into_loci_extracts_correct_variant() {
         let w = simple_world();
-        let result = execute(&w, &Query::ReachableFrom { start: LocusId(0), depth: 2 });
+        let result = execute(
+            &w,
+            &Query::ReachableFrom {
+                start: LocusId(0),
+                depth: 2,
+            },
+        );
         assert!(result.into_loci().is_some());
     }
 
@@ -2228,7 +2570,13 @@ mod tests {
     #[test]
     fn into_path_extracts_correct_variant() {
         let w = simple_world();
-        let result = execute(&w, &Query::PathBetween { from: LocusId(0), to: LocusId(2) });
+        let result = execute(
+            &w,
+            &Query::PathBetween {
+                from: LocusId(0),
+                to: LocusId(2),
+            },
+        );
         let path = result.into_path().unwrap();
         assert!(path.is_some());
     }
@@ -2251,12 +2599,18 @@ mod tests {
         let mut w = World::new();
         // A→B weight=0.8, B→A weight=0.2 — A strongly causes B
         w.add_relationship(
-            Endpoints::Directed { from: LocusId(0), to: LocusId(1) },
+            Endpoints::Directed {
+                from: LocusId(0),
+                to: LocusId(1),
+            },
             InfluenceKindId(1),
             StateVector::from_slice(&[0.0, 0.8]),
         );
         w.add_relationship(
-            Endpoints::Directed { from: LocusId(1), to: LocusId(0) },
+            Endpoints::Directed {
+                from: LocusId(1),
+                to: LocusId(0),
+            },
             InfluenceKindId(1),
             StateVector::from_slice(&[0.0, 0.2]),
         );
@@ -2266,22 +2620,32 @@ mod tests {
     #[test]
     fn query_causal_direction_forward() {
         let w = world_with_stdp_weights();
-        let score = execute(&w, &Query::CausalDirection {
-            from: LocusId(0),
-            to: LocusId(1),
-            kind: InfluenceKindId(1),
-        }).into_score().unwrap();
+        let score = execute(
+            &w,
+            &Query::CausalDirection {
+                from: LocusId(0),
+                to: LocusId(1),
+                kind: InfluenceKindId(1),
+            },
+        )
+        .into_score()
+        .unwrap();
         assert!(score > 0.5, "expected A→B direction, got {score}");
     }
 
     #[test]
     fn query_dominant_causes_returns_locus_scores() {
         let w = world_with_stdp_weights();
-        let scores = execute(&w, &Query::DominantCauses {
-            target: LocusId(1),
-            kind: InfluenceKindId(1),
-            n: 5,
-        }).into_scores().unwrap();
+        let scores = execute(
+            &w,
+            &Query::DominantCauses {
+                target: LocusId(1),
+                kind: InfluenceKindId(1),
+                n: 5,
+            },
+        )
+        .into_scores()
+        .unwrap();
         assert_eq!(scores.len(), 1);
         assert_eq!(scores[0].0, LocusId(0));
     }
@@ -2289,12 +2653,24 @@ mod tests {
     #[test]
     fn query_causal_in_out_strength() {
         let w = world_with_stdp_weights();
-        let in_s = execute(&w, &Query::CausalInStrength {
-            locus: LocusId(1), kind: InfluenceKindId(1),
-        }).into_score().unwrap();
-        let out_s = execute(&w, &Query::CausalOutStrength {
-            locus: LocusId(0), kind: InfluenceKindId(1),
-        }).into_score().unwrap();
+        let in_s = execute(
+            &w,
+            &Query::CausalInStrength {
+                locus: LocusId(1),
+                kind: InfluenceKindId(1),
+            },
+        )
+        .into_score()
+        .unwrap();
+        let out_s = execute(
+            &w,
+            &Query::CausalOutStrength {
+                locus: LocusId(0),
+                kind: InfluenceKindId(1),
+            },
+        )
+        .into_score()
+        .unwrap();
         assert!((in_s - 0.8).abs() < 1e-5, "in_strength={in_s}");
         assert!((out_s - 0.8).abs() < 1e-5, "out_strength={out_s}");
     }
@@ -2305,20 +2681,31 @@ mod tests {
         let mut w = World::new();
         // A↔B roughly balanced
         w.add_relationship(
-            Endpoints::Directed { from: LocusId(0), to: LocusId(1) },
+            Endpoints::Directed {
+                from: LocusId(0),
+                to: LocusId(1),
+            },
             InfluenceKindId(1),
             StateVector::from_slice(&[0.0, 0.8]),
         );
         w.add_relationship(
-            Endpoints::Directed { from: LocusId(1), to: LocusId(0) },
+            Endpoints::Directed {
+                from: LocusId(1),
+                to: LocusId(0),
+            },
             InfluenceKindId(1),
             StateVector::from_slice(&[0.0, 0.7]),
         );
-        let pairs = execute(&w, &Query::FeedbackPairs {
-            kind: InfluenceKindId(1),
-            min_weight: 0.1,
-            min_balance: 0.5,
-        }).into_feedback_pairs().unwrap();
+        let pairs = execute(
+            &w,
+            &Query::FeedbackPairs {
+                kind: InfluenceKindId(1),
+                min_weight: 0.1,
+                min_balance: 0.5,
+            },
+        )
+        .into_feedback_pairs()
+        .unwrap();
         assert_eq!(pairs.len(), 1);
         let (_, _, balance) = pairs[0];
         assert!(balance >= 0.5 && balance <= 1.0);
@@ -2328,9 +2715,14 @@ mod tests {
     fn explain_causal_direction_is_scan() {
         use crate::api::explain;
         let w = world_with_stdp_weights();
-        let plan = explain(&w, &Query::CausalDirection {
-            from: LocusId(0), to: LocusId(1), kind: InfluenceKindId(1),
-        });
+        let plan = explain(
+            &w,
+            &Query::CausalDirection {
+                from: LocusId(0),
+                to: LocusId(1),
+                kind: InfluenceKindId(1),
+            },
+        );
         use crate::api::CostClass;
         assert!(plan.steps.iter().any(|s| s.cost_class == CostClass::Scan));
     }

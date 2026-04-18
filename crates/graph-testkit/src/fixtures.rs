@@ -18,7 +18,9 @@ use graph_core::{Locus, LocusId, LocusKindId, StateVector};
 use graph_engine::{InfluenceKindConfig, InfluenceKindRegistry, LocusKindRegistry};
 use graph_world::World;
 
-use crate::programs::{BroadcastProgram, ForwardProgram, InertProgram, MultiDimAggregatorProgram, TEST_KIND};
+use crate::programs::{
+    BroadcastProgram, ForwardProgram, InertProgram, MultiDimAggregatorProgram, TEST_KIND,
+};
 
 /// Per-batch decay factor used in all testkit influence configs.
 /// 0.9 lets signal attenuate naturally over multiple batches.
@@ -124,10 +126,7 @@ pub fn star_world(arms: u64, gain: f32) -> (World, LocusKindRegistry, InfluenceK
 
     let downstreams: Vec<LocusId> = (1..=arms).map(LocusId).collect();
     world.insert_locus(Locus::new(LocusId(0), hub_kind, StateVector::zeros(1)));
-    loci_reg.insert(
-        hub_kind,
-        Box::new(BroadcastProgram { downstreams, gain }),
-    );
+    loci_reg.insert(hub_kind, Box::new(BroadcastProgram { downstreams, gain }));
 
     for i in 1..=arms {
         world.insert_locus(Locus::new(LocusId(i), spoke_kind, StateVector::zeros(1)));
@@ -219,7 +218,10 @@ pub fn fan_in_world(
         world.insert_locus(Locus::new(LocusId(i), kind_id, zeros.clone()));
         loci_reg.insert(
             kind_id,
-            Box::new(BroadcastProgram { downstreams: sink_ids.clone(), gain }),
+            Box::new(BroadcastProgram {
+                downstreams: sink_ids.clone(),
+                gain,
+            }),
         );
     }
 

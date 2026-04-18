@@ -9,7 +9,10 @@
 
 use rustc_hash::FxHashMap;
 
-use graph_core::{BatchId, Change, Cohere, Entity, EntityId, Locus, LocusContext, LocusId, Properties, Relationship, RelationshipId, RelationshipKindId, RelationshipSlotDef};
+use graph_core::{
+    BatchId, Change, Cohere, Entity, EntityId, Locus, LocusContext, LocusId, Properties,
+    Relationship, RelationshipId, RelationshipKindId, RelationshipSlotDef,
+};
 
 use crate::store::change_log::ChangeLog;
 use crate::store::property_store::PropertyStore;
@@ -65,10 +68,22 @@ impl<'a> BatchContext<'a> {
                 }
             }
         }
-        let locus_to_entity: FxHashMap<LocusId, EntityId> =
-            winner.into_iter().map(|(lid, (eid, _))| (lid, eid)).collect();
+        let locus_to_entity: FxHashMap<LocusId, EntityId> = winner
+            .into_iter()
+            .map(|(lid, (eid, _))| (lid, eid))
+            .collect();
 
-        Self { loci, relationships, log, entities, coheres, batch, properties, locus_to_entity, slot_defs }
+        Self {
+            loci,
+            relationships,
+            log,
+            entities,
+            coheres,
+            batch,
+            properties,
+            locus_to_entity,
+            slot_defs,
+        }
     }
 }
 
@@ -135,6 +150,9 @@ impl<'a> LocusContext for BatchContext<'a> {
     }
 
     fn extra_slots_for_kind(&self, kind: RelationshipKindId) -> &[RelationshipSlotDef] {
-        self.slot_defs.get(&kind).map(|v| v.as_slice()).unwrap_or(&[])
+        self.slot_defs
+            .get(&kind)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 }

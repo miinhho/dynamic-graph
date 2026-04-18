@@ -33,7 +33,7 @@
 //! delta lists.
 
 use graph_core::{
-    BatchId, CompressionLevel, CompressedTransition, Entity, EntityId, EntityLayer,
+    BatchId, CompressedTransition, CompressionLevel, Entity, EntityId, EntityLayer,
     LayerTransition, LocusId,
 };
 use graph_world::World;
@@ -122,8 +122,15 @@ pub fn entity_deviations_since(world: &World, baseline_batch: BatchId) -> Vec<En
 ///
 /// Always returns an [`EntityDiff`]. Check [`EntityDiff::has_changes`] to
 /// determine whether anything changed.
-pub fn entity_diff(world: &World, entity_id: EntityId, baseline_batch: BatchId) -> Option<EntityDiff> {
-    world.entities().get(entity_id).map(|e| diff_entity(e, baseline_batch))
+pub fn entity_diff(
+    world: &World,
+    entity_id: EntityId,
+    baseline_batch: BatchId,
+) -> Option<EntityDiff> {
+    world
+        .entities()
+        .get(entity_id)
+        .map(|e| diff_entity(e, baseline_batch))
 }
 
 // ─── Internal ─────────────────────────────────────────────────────────────────
@@ -167,8 +174,12 @@ fn diff_entity(entity: &Entity, baseline: BatchId) -> EntityDiff {
                     &mut membership_event_count,
                 );
             }
-            CompressionLevel::Compressed { transition_kind, .. }
-            | CompressionLevel::Skeleton { transition_kind, .. } => {
+            CompressionLevel::Compressed {
+                transition_kind, ..
+            }
+            | CompressionLevel::Skeleton {
+                transition_kind, ..
+            } => {
                 // Member lists not available; count the event only.
                 classify_transition_compressed(
                     *transition_kind,
@@ -213,9 +224,7 @@ fn baseline_coherence(entity: &Entity, baseline: BatchId) -> f32 {
             break;
         }
         let c = match &layer.compression {
-            CompressionLevel::Full => {
-                layer.snapshot.as_ref().map(|s| s.coherence).unwrap_or(last)
-            }
+            CompressionLevel::Full => layer.snapshot.as_ref().map(|s| s.coherence).unwrap_or(last),
             CompressionLevel::Compressed { coherence, .. }
             | CompressionLevel::Skeleton { coherence, .. } => *coherence,
         };
@@ -232,9 +241,11 @@ fn baseline_member_count(entity: &Entity, baseline: BatchId) -> i64 {
             break;
         }
         let n = match &layer.compression {
-            CompressionLevel::Full => {
-                layer.snapshot.as_ref().map(|s| s.members.len() as i64).unwrap_or(last)
-            }
+            CompressionLevel::Full => layer
+                .snapshot
+                .as_ref()
+                .map(|s| s.members.len() as i64)
+                .unwrap_or(last),
             CompressionLevel::Compressed { member_count, .. }
             | CompressionLevel::Skeleton { member_count, .. } => *member_count as i64,
         };
@@ -315,7 +326,11 @@ mod tests {
     }
 
     fn make_entity_born_at(id: u64, batch: u64, coherence: f32) -> Entity {
-        Entity::born(EntityId(id), BatchId(batch), snapshot(vec![1, 2], coherence))
+        Entity::born(
+            EntityId(id),
+            BatchId(batch),
+            snapshot(vec![1, 2], coherence),
+        )
     }
 
     #[test]
@@ -324,7 +339,10 @@ mod tests {
         world.entities_mut().insert(make_entity_born_at(0, 5, 0.8));
         // baseline is after the birth
         let diffs = entity_deviations_since(&world, BatchId(10));
-        assert!(diffs.is_empty(), "entity born before baseline should not appear");
+        assert!(
+            diffs.is_empty(),
+            "entity born before baseline should not appear"
+        );
     }
 
     #[test]
@@ -364,7 +382,11 @@ mod tests {
     fn went_dormant_detected() {
         let mut world = World::new();
         let mut entity = make_entity_born_at(0, 5, 0.8);
-        entity.deposit(BatchId(15), snapshot(vec![1, 2], 0.1), LayerTransition::BecameDormant);
+        entity.deposit(
+            BatchId(15),
+            snapshot(vec![1, 2], 0.1),
+            LayerTransition::BecameDormant,
+        );
         entity.status = EntityStatus::Dormant;
         world.entities_mut().insert(entity);
 
@@ -388,15 +410,25 @@ mod tests {
         let diffs = entity_deviations_since(&world, BatchId(10));
         assert_eq!(diffs.len(), 1);
         let d = &diffs[0];
-        assert!((d.coherence_at_baseline - 0.4).abs() < 1e-5, "baseline={}", d.coherence_at_baseline);
+        assert!(
+            (d.coherence_at_baseline - 0.4).abs() < 1e-5,
+            "baseline={}",
+            d.coherence_at_baseline
+        );
         assert!((d.coherence_now - 0.9).abs() < 1e-5);
-        assert!((d.coherence_delta - 0.5).abs() < 1e-4, "delta={}", d.coherence_delta);
+        assert!(
+            (d.coherence_delta - 0.5).abs() < 1e-4,
+            "delta={}",
+            d.coherence_delta
+        );
     }
 
     #[test]
     fn entity_diff_single_entity() {
         let mut world = World::new();
-        world.entities_mut().insert(make_entity_born_at(42, 15, 0.7));
+        world
+            .entities_mut()
+            .insert(make_entity_born_at(42, 15, 0.7));
         let diff = entity_diff(&world, EntityId(42), BatchId(10)).unwrap();
         assert!(diff.born_after_baseline);
         let none = entity_diff(&world, EntityId(99), BatchId(10));

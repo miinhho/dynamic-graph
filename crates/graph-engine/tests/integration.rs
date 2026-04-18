@@ -7,8 +7,10 @@
 use graph_core::LocusId;
 use graph_engine::Simulation;
 use graph_query::{connected_components, path_between, reachable_from};
+use graph_testkit::assertions::{
+    assert_bounded_activity, assert_changes_form_dag, assert_settling,
+};
 use graph_testkit::fixtures::{chain_world, cyclic_pair_world, ring_world, star_world, stimulus};
-use graph_testkit::assertions::{assert_bounded_activity, assert_changes_form_dag, assert_settling};
 
 // ── relationship emergence ────────────────────────────────────────────────────
 
@@ -106,7 +108,10 @@ fn step_until_fires_predicate_before_max() {
     let (observations, converged) = sim.step_until(
         |obs, _world| {
             use graph_engine::DynamicsRegime;
-            matches!(obs.regime, DynamicsRegime::Quiescent | DynamicsRegime::Settling)
+            matches!(
+                obs.regime,
+                DynamicsRegime::Quiescent | DynamicsRegime::Settling
+            )
         },
         100,
         vec![stimulus(1.0)],
@@ -198,7 +203,9 @@ mod storage {
         }
 
         let (_, loci2, influences2) = chain_world(3, 0.9);
-        let sim2 = Simulation::from_storage(f.path(), loci2, influences2, SimulationConfig::default()).unwrap();
+        let sim2 =
+            Simulation::from_storage(f.path(), loci2, influences2, SimulationConfig::default())
+                .unwrap();
         assert_eq!(rel_count, sim2.world.relationships().len());
     }
 
@@ -214,7 +221,9 @@ mod storage {
         }
 
         let (_, loci2, influences2) = chain_world(2, 0.9);
-        let sim2 = Simulation::from_storage(f.path(), loci2, influences2, SimulationConfig::default()).unwrap();
+        let sim2 =
+            Simulation::from_storage(f.path(), loci2, influences2, SimulationConfig::default())
+                .unwrap();
         assert_eq!(final_batch, sim2.world.current_batch());
     }
 }

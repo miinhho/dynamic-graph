@@ -138,8 +138,7 @@ fn format_entity_diffs(diffs: &[EntityDiff], names: &NameMap) -> String {
                 parts.push("revived from dormancy".to_owned());
             }
             if !d.members_added.is_empty() {
-                let added: Vec<String> =
-                    d.members_added.iter().map(|&id| names.name(id)).collect();
+                let added: Vec<String> = d.members_added.iter().map(|&id| names.name(id)).collect();
                 parts.push(format!("added members: {}", added.join(", ")));
             }
             if !d.members_removed.is_empty() {
@@ -154,10 +153,7 @@ fn format_entity_diffs(diffs: &[EntityDiff], names: &NameMap) -> String {
                 ));
             }
             if d.member_count_delta != 0 {
-                parts.push(format!(
-                    "member count {:+}",
-                    d.member_count_delta
-                ));
+                parts.push(format!("member count {:+}", d.member_count_delta));
             }
 
             let desc = if parts.is_empty() {

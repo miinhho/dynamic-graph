@@ -102,7 +102,10 @@ impl LocusProgram for SensorProgram {
         )];
         // If a prior structural proposal created a bypass link from this
         // sensor directly to the controller, forward the raw reading too.
-        if ctx.relationship_between(locus.id, self.controller).is_some() {
+        if ctx
+            .relationship_between(locus.id, self.controller)
+            .is_some()
+        {
             proposals.push(ProposedChange::new(
                 ChangeSubject::Locus(self.controller),
                 KIND_TEMP,
@@ -121,7 +124,10 @@ impl LocusProgram for SensorProgram {
         let temp = locus.state.as_slice().first().copied().unwrap_or(0.0);
         if temp > self.bypass_threshold {
             return vec![StructuralProposal::CreateRelationship {
-                endpoints: Endpoints::Directed { from: locus.id, to: self.controller },
+                endpoints: Endpoints::Directed {
+                    from: locus.id,
+                    to: self.controller,
+                },
                 kind: KIND_TEMP,
                 initial_activity: None,
                 initial_state: None,
@@ -208,9 +214,8 @@ impl LocusProgram for ControllerProgram {
             .sensor_ids
             .iter()
             .filter_map(|&sid| {
-                ctx.locus(sid).and_then(|l| {
-                    l.state.as_slice().first().copied().map(|v| (sid, v))
-                })
+                ctx.locus(sid)
+                    .and_then(|l| l.state.as_slice().first().copied().map(|v| (sid, v)))
             })
             .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -256,7 +261,10 @@ fn build_world() -> (World, LocusKindRegistry, InfluenceKindRegistry) {
     );
     loci.insert(
         KIND_AGGREGATOR,
-        Box::new(AggregatorProgram { sensor_ids: vec![S1, S2, S3], controller: CTRL }),
+        Box::new(AggregatorProgram {
+            sensor_ids: vec![S1, S2, S3],
+            controller: CTRL,
+        }),
     );
     loci.insert(
         KIND_CONTROLLER,
@@ -275,8 +283,8 @@ fn build_world() -> (World, LocusKindRegistry, InfluenceKindRegistry) {
                 learning_rate: 0.05,
                 weight_decay: 0.99,
                 max_weight: 2.0,
-                stdp: false,
-            ..Default::default()
+
+                ..Default::default()
             }),
     );
     influences.insert(
@@ -335,21 +343,16 @@ fn main() {
         r2.changes_committed,
         world.relationships().len()
     );
-    let has_bypass = world.relationships().iter().any(|r| {
-        matches!(&r.endpoints, Endpoints::Directed { from, to } if *from == S1 && *to == CTRL)
-    });
+    let has_bypass = world.relationships().iter().any(
+        |r| matches!(&r.endpoints, Endpoints::Directed { from, to } if *from == S1 && *to == CTRL),
+    );
     println!("  S1 → CTRL bypass created: {has_bypass}");
     println!();
 
     // ── Tick 3: S1 alone fires — both S1→AGG→CTRL and S1→CTRL paths active ───
 
     println!("--- Tick 3: S1 alone (0.82) — bypass exercises direct path ---");
-    let r3 = engine.tick(
-        &mut world,
-        &loci,
-        &influences,
-        vec![stimulus(S1, 0.82)],
-    );
+    let r3 = engine.tick(&mut world, &loci, &influences, vec![stimulus(S1, 0.82)]);
     println!(
         "  batches={} changes={} relationships={}",
         r3.batches_committed,
@@ -384,10 +387,19 @@ fn main() {
             Endpoints::Directed { from, to } => (from.0, to.0),
             _ => (0, 0),
         };
-        let tag = if f == S1.0 && t == CTRL.0 { " ← bypass" } else { "" };
+        let tag = if f == S1.0 && t == CTRL.0 {
+            " ← bypass"
+        } else {
+            ""
+        };
         println!(
             "  L{}→L{}  activity={:.4}  weight={:.4}  touches={}{}",
-            f, t, r.activity(), r.weight(), r.lineage.change_count, tag
+            f,
+            t,
+            r.activity(),
+            r.weight(),
+            r.lineage.change_count,
+            tag
         );
     }
     println!();
@@ -398,7 +410,11 @@ fn main() {
         Some([_, _]) => println!("Shortest path S1 → CTRL: direct (bypass active, 1 hop)"),
         Some(p) => {
             let hops: Vec<_> = p.iter().map(|l| format!("L{}", l.0)).collect();
-            println!("Shortest path S1 → CTRL: {} ({} hops)", hops.join(" → "), p.len() - 1);
+            println!(
+                "Shortest path S1 → CTRL: {} ({} hops)",
+                hops.join(" → "),
+                p.len() - 1
+            );
         }
         None => println!("Shortest path S1 → CTRL: no path"),
     }
@@ -414,7 +430,7 @@ fn main() {
     // ── Entity recognition ─────────────────────────────────────────────────────
 
     let ep = DefaultEmergencePerspective {
-        min_activity_threshold: 0.01,
+        min_activity_threshold: Some(0.01),
         ..Default::default()
     };
     engine.recognize_entities(&mut world, &influences, &ep);
@@ -427,7 +443,9 @@ fn main() {
         let members: Vec<u64> = e.current.members.iter().map(|l| l.0).collect();
         println!(
             "  entity#{} members={members:?} coherence={:.3} layers={}",
-            e.id.0, e.current.coherence, e.layer_count()
+            e.id.0,
+            e.current.coherence,
+            e.layer_count()
         );
     }
     println!();
@@ -435,7 +453,7 @@ fn main() {
     // ── Cohere extraction ──────────────────────────────────────────────────────
 
     let cp = DefaultCoherePerspective {
-        min_bridge_activity: 0.01,
+        min_bridge_activity: Some(0.01),
         ..Default::default()
     };
     engine.extract_cohere(&mut world, &influences, &cp);
@@ -466,13 +484,23 @@ fn main() {
     println!();
     println!("--- Hebbian weight accumulation (lr=0.05, decay=0.99/batch) ---");
     let mut rels: Vec<_> = world.relationships().iter().collect();
-    rels.sort_by(|a, b| b.weight().partial_cmp(&a.weight()).unwrap_or(std::cmp::Ordering::Equal));
+    rels.sort_by(|a, b| {
+        b.weight()
+            .partial_cmp(&a.weight())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     for r in rels {
         let (f, t) = match &r.endpoints {
             Endpoints::Directed { from, to } => (from.0, to.0),
             _ => (0, 0),
         };
-        println!("  L{}→L{}  weight={:.4}  touches={}", f, t, r.weight(), r.lineage.change_count);
+        println!(
+            "  L{}→L{}  weight={:.4}  touches={}",
+            f,
+            t,
+            r.weight(),
+            r.lineage.change_count
+        );
     }
 
     println!("\nDone.");

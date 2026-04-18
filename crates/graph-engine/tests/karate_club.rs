@@ -26,13 +26,13 @@
 //!      multiple ticks.  Verifies the full tick→recognize pipeline.
 
 use graph_core::{
-    BatchId, Change, ChangeSubject, Endpoints, InfluenceKindId, KindObservation,
-    Locus, LocusContext, LocusId, LocusKindId, LocusProgram, ProposedChange,
-    Relationship, RelationshipLineage, StateVector,
+    BatchId, Change, ChangeSubject, Endpoints, InfluenceKindId, KindObservation, Locus,
+    LocusContext, LocusId, LocusKindId, LocusProgram, ProposedChange, Relationship,
+    RelationshipLineage, StateVector,
 };
 use graph_engine::{
-    DefaultEmergencePerspective, Engine, EngineConfig, InfluenceKindConfig,
-    InfluenceKindRegistry, LocusKindRegistry, PlasticityConfig,
+    DefaultEmergencePerspective, Engine, EngineConfig, InfluenceKindConfig, InfluenceKindRegistry,
+    LocusKindRegistry, PlasticityConfig,
 };
 use graph_world::World;
 
@@ -42,37 +42,90 @@ use graph_world::World;
 const MR_HI: &[u64] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 17, 19, 21];
 
 /// Administrator's faction ("Officer"): 18 members who sided with node 33.
-const OFFICER: &[u64] = &[9, 14, 15, 16, 18, 20, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33];
+const OFFICER: &[u64] = &[
+    9, 14, 15, 16, 18, 20, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
+];
 
 /// The 78 undirected edges, listed as (smaller_id, larger_id).
 const EDGES: &[(u64, u64)] = &[
-    (0,1),(0,2),(0,3),(0,4),(0,5),(0,6),(0,7),(0,8),(0,10),(0,11),
-    (0,12),(0,13),(0,17),(0,19),(0,21),(0,31),
-    (1,2),(1,3),(1,7),(1,13),(1,17),(1,19),(1,21),(1,30),
-    (2,3),(2,7),(2,8),(2,9),(2,13),(2,27),(2,28),(2,32),
-    (3,7),(3,12),(3,13),
-    (4,6),(4,10),
-    (5,6),(5,10),(5,16),
-    (6,16),
-    (8,30),(8,32),(8,33),
-    (9,33),
-    (13,33),
-    (14,32),(14,33),
-    (15,32),(15,33),
-    (18,32),(18,33),
-    (19,33),
-    (20,32),(20,33),
-    (22,32),(22,33),
-    (23,25),(23,27),(23,29),(23,32),(23,33),
-    (24,25),(24,27),(24,31),
-    (25,31),
-    (26,29),(26,33),
-    (27,33),
-    (28,31),(28,33),
-    (29,32),(29,33),
-    (30,32),(30,33),
-    (31,32),(31,33),
-    (32,33),
+    (0, 1),
+    (0, 2),
+    (0, 3),
+    (0, 4),
+    (0, 5),
+    (0, 6),
+    (0, 7),
+    (0, 8),
+    (0, 10),
+    (0, 11),
+    (0, 12),
+    (0, 13),
+    (0, 17),
+    (0, 19),
+    (0, 21),
+    (0, 31),
+    (1, 2),
+    (1, 3),
+    (1, 7),
+    (1, 13),
+    (1, 17),
+    (1, 19),
+    (1, 21),
+    (1, 30),
+    (2, 3),
+    (2, 7),
+    (2, 8),
+    (2, 9),
+    (2, 13),
+    (2, 27),
+    (2, 28),
+    (2, 32),
+    (3, 7),
+    (3, 12),
+    (3, 13),
+    (4, 6),
+    (4, 10),
+    (5, 6),
+    (5, 10),
+    (5, 16),
+    (6, 16),
+    (8, 30),
+    (8, 32),
+    (8, 33),
+    (9, 33),
+    (13, 33),
+    (14, 32),
+    (14, 33),
+    (15, 32),
+    (15, 33),
+    (18, 32),
+    (18, 33),
+    (19, 33),
+    (20, 32),
+    (20, 33),
+    (22, 32),
+    (22, 33),
+    (23, 25),
+    (23, 27),
+    (23, 29),
+    (23, 32),
+    (23, 33),
+    (24, 25),
+    (24, 27),
+    (24, 31),
+    (25, 31),
+    (26, 29),
+    (26, 33),
+    (27, 33),
+    (28, 31),
+    (28, 33),
+    (29, 32),
+    (29, 33),
+    (30, 32),
+    (30, 33),
+    (31, 32),
+    (31, 33),
+    (32, 33),
 ];
 
 const SOCIAL_KIND: InfluenceKindId = InfluenceKindId(42);
@@ -85,9 +138,13 @@ fn neighbors_of(node: u64) -> Vec<u64> {
     EDGES
         .iter()
         .filter_map(|&(a, b)| {
-            if a == node { Some(b) }
-            else if b == node { Some(a) }
-            else { None }
+            if a == node {
+                Some(b)
+            } else if b == node {
+                Some(a)
+            } else {
+                None
+            }
         })
         .collect()
 }
@@ -129,7 +186,10 @@ fn populate_world(world: &mut World) {
         world.relationships_mut().insert(Relationship {
             id,
             kind: SOCIAL_KIND,
-            endpoints: Endpoints::Symmetric { a: LocusId(a), b: LocusId(b) },
+            endpoints: Endpoints::Symmetric {
+                a: LocusId(a),
+                b: LocusId(b),
+            },
             state: StateVector::from_slice(&[activity, 0.0]),
             lineage: RelationshipLineage {
                 created_by: None,
@@ -162,8 +222,16 @@ use std::collections::{BTreeMap, BTreeSet};
 /// sorted member sets.  Two snapshots are equal iff the partitions are
 /// identical regardless of entity-id assignment order.
 fn partition_snapshot(world: &World) -> BTreeSet<BTreeSet<u64>> {
-    world.entities().active()
-        .map(|e| e.current.members.iter().map(|l| l.0).collect::<BTreeSet<u64>>())
+    world
+        .entities()
+        .active()
+        .map(|e| {
+            e.current
+                .members
+                .iter()
+                .map(|l| l.0)
+                .collect::<BTreeSet<u64>>()
+        })
         .collect()
 }
 
@@ -171,20 +239,38 @@ fn partition_snapshot(world: &World) -> BTreeSet<BTreeSet<u64>> {
 /// Returns (hi_correct, hi_total, off_correct, off_total).
 fn faction_accuracy(world: &World) -> (usize, usize, usize, usize) {
     let entities: Vec<_> = world.entities().active().collect();
-    let hi_lookup  = MR_HI_SET();
+    let hi_lookup = MR_HI_SET();
     let off_lookup = OFFICER_SET();
 
-    let hi_entity = entities.iter()
+    let hi_entity = entities
+        .iter()
         .filter(|e| e.current.members.contains(&LocusId(0)))
         .max_by_key(|e| e.current.members.len());
-    let off_entity = entities.iter()
+    let off_entity = entities
+        .iter()
         .filter(|e| e.current.members.contains(&LocusId(33)))
         .max_by_key(|e| e.current.members.len());
 
-    let hi_correct  = hi_entity.map(|e| e.current.members.iter().filter(|l| hi_lookup.contains(&l.0)).count()).unwrap_or(0);
-    let hi_total    = hi_entity.map(|e| e.current.members.len()).unwrap_or(0);
-    let off_correct = off_entity.map(|e| e.current.members.iter().filter(|l| off_lookup.contains(&l.0)).count()).unwrap_or(0);
-    let off_total   = off_entity.map(|e| e.current.members.len()).unwrap_or(0);
+    let hi_correct = hi_entity
+        .map(|e| {
+            e.current
+                .members
+                .iter()
+                .filter(|l| hi_lookup.contains(&l.0))
+                .count()
+        })
+        .unwrap_or(0);
+    let hi_total = hi_entity.map(|e| e.current.members.len()).unwrap_or(0);
+    let off_correct = off_entity
+        .map(|e| {
+            e.current
+                .members
+                .iter()
+                .filter(|l| off_lookup.contains(&l.0))
+                .count()
+        })
+        .unwrap_or(0);
+    let off_total = off_entity.map(|e| e.current.members.len()).unwrap_or(0);
 
     (hi_correct, hi_total, off_correct, off_total)
 }
@@ -209,8 +295,16 @@ fn run_until_convergence(
 
     for tick in 0..max_ticks {
         let stimuli = vec![
-            ProposedChange::new(ChangeSubject::Locus(LocusId(0)),  SOCIAL_KIND, StateVector::from_slice(&[1.0])),
-            ProposedChange::new(ChangeSubject::Locus(LocusId(33)), SOCIAL_KIND, StateVector::from_slice(&[1.0])),
+            ProposedChange::new(
+                ChangeSubject::Locus(LocusId(0)),
+                SOCIAL_KIND,
+                StateVector::from_slice(&[1.0]),
+            ),
+            ProposedChange::new(
+                ChangeSubject::Locus(LocusId(33)),
+                SOCIAL_KIND,
+                StateVector::from_slice(&[1.0]),
+            ),
         ];
         engine.tick(world, loci_reg, inf, stimuli);
         engine.recognize_entities(world, inf, perspective);
@@ -242,10 +336,14 @@ const OFFICER_SET: fn() -> rustc_hash::FxHashSet<u64> = || OFFICER.iter().copied
 fn assert_oracle_strict(world: &World) {
     let entities: Vec<_> = world.entities().active().collect();
     assert_eq!(
-        entities.len(), 2,
+        entities.len(),
+        2,
         "expected exactly 2 factions, got {}:\n{:?}",
         entities.len(),
-        entities.iter().map(|e| &e.current.members).collect::<Vec<_>>()
+        entities
+            .iter()
+            .map(|e| &e.current.members)
+            .collect::<Vec<_>>()
     );
 
     let hi_idx = entities
@@ -257,30 +355,55 @@ fn assert_oracle_strict(world: &World) {
         .position(|e| e.current.members.contains(&LocusId(33)))
         .expect("node 33 (Officer) not in any entity");
 
-    assert_ne!(hi_idx, off_idx,
-        "node 0 and node 33 must be in DIFFERENT factions");
+    assert_ne!(
+        hi_idx, off_idx,
+        "node 0 and node 33 must be in DIFFERENT factions"
+    );
 
-    let hi_set: rustc_hash::FxHashSet<u64> =
-        entities[hi_idx].current.members.iter().map(|l| l.0).collect();
-    let off_set: rustc_hash::FxHashSet<u64> =
-        entities[off_idx].current.members.iter().map(|l| l.0).collect();
+    let hi_set: rustc_hash::FxHashSet<u64> = entities[hi_idx]
+        .current
+        .members
+        .iter()
+        .map(|l| l.0)
+        .collect();
+    let off_set: rustc_hash::FxHashSet<u64> = entities[off_idx]
+        .current
+        .members
+        .iter()
+        .map(|l| l.0)
+        .collect();
 
     assert_eq!(hi_set.len() + off_set.len(), 34, "must cover all 34 nodes");
     assert!(hi_set.is_disjoint(&off_set), "entities must be disjoint");
 
-    let hi_correct  = MR_HI.iter().filter(|&&n|  hi_set.contains(&n)).count();
+    let hi_correct = MR_HI.iter().filter(|&&n| hi_set.contains(&n)).count();
     let off_correct = OFFICER.iter().filter(|&&n| off_set.contains(&n)).count();
     const TOLERANCE: usize = 2;
 
-    assert!(hi_correct >= MR_HI.len() - TOLERANCE,
+    assert!(
+        hi_correct >= MR_HI.len() - TOLERANCE,
         "Mr. Hi {hi_correct}/{} correct  (misassigned: {:?})",
-        MR_HI.len(), MR_HI.iter().filter(|&&n| !hi_set.contains(&n)).collect::<Vec<_>>());
-    assert!(off_correct >= OFFICER.len() - TOLERANCE,
+        MR_HI.len(),
+        MR_HI
+            .iter()
+            .filter(|&&n| !hi_set.contains(&n))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        off_correct >= OFFICER.len() - TOLERANCE,
         "Officer {off_correct}/{} correct  (misassigned: {:?})",
-        OFFICER.len(), OFFICER.iter().filter(|&&n| !off_set.contains(&n)).collect::<Vec<_>>());
+        OFFICER.len(),
+        OFFICER
+            .iter()
+            .filter(|&&n| !off_set.contains(&n))
+            .collect::<Vec<_>>()
+    );
 
-    println!("Oracle ✓  Mr. Hi {hi_correct}/{} • Officer {off_correct}/{}",
-        MR_HI.len(), OFFICER.len());
+    println!(
+        "Oracle ✓  Mr. Hi {hi_correct}/{} • Officer {off_correct}/{}",
+        MR_HI.len(),
+        OFFICER.len()
+    );
 }
 
 /// Relaxed oracle: any number of entities, dominant clusters ≥85% faction-pure.
@@ -306,7 +429,10 @@ fn assert_oracle_relaxed(world: &World) {
         (2..=4).contains(&entities.len()),
         "expected 2–4 entities, got {}: {:?}",
         entities.len(),
-        entities.iter().map(|e| &e.current.members).collect::<Vec<_>>()
+        entities
+            .iter()
+            .map(|e| &e.current.members)
+            .collect::<Vec<_>>()
     );
 
     let hi_idx = entities
@@ -317,23 +443,40 @@ fn assert_oracle_relaxed(world: &World) {
         .iter()
         .position(|e| e.current.members.contains(&LocusId(33)))
         .expect("node 33 not in any entity");
-    assert_ne!(hi_idx, off_idx,
-        "node 0 and node 33 must be in DIFFERENT factions");
+    assert_ne!(
+        hi_idx, off_idx,
+        "node 0 and node 33 must be in DIFFERENT factions"
+    );
 
-    let covered: rustc_hash::FxHashSet<u64> = entities.iter()
+    let covered: rustc_hash::FxHashSet<u64> = entities
+        .iter()
         .flat_map(|e| e.current.members.iter().map(|l| l.0))
         .collect();
     assert_eq!(covered.len(), 34, "all 34 nodes must be covered");
 
-    let hi_lookup  = MR_HI_SET();
+    let hi_lookup = MR_HI_SET();
     let off_lookup = OFFICER_SET();
 
     for (i, entity) in entities.iter().enumerate() {
-        let hi_count  = entity.current.members.iter().filter(|l| hi_lookup.contains(&l.0)).count();
-        let off_count = entity.current.members.iter().filter(|l| off_lookup.contains(&l.0)).count();
-        let total     = entity.current.members.len();
-        let purity    = hi_count.max(off_count) as f32 / total as f32;
-        let dominant  = if hi_count >= off_count { "Mr. Hi" } else { "Officer" };
+        let hi_count = entity
+            .current
+            .members
+            .iter()
+            .filter(|l| hi_lookup.contains(&l.0))
+            .count();
+        let off_count = entity
+            .current
+            .members
+            .iter()
+            .filter(|l| off_lookup.contains(&l.0))
+            .count();
+        let total = entity.current.members.len();
+        let purity = hi_count.max(off_count) as f32 / total as f32;
+        let dominant = if hi_count >= off_count {
+            "Mr. Hi"
+        } else {
+            "Officer"
+        };
         // Small peripheral clusters (< 4 members) reflect structural ambiguity
         // near community boundaries and are exempt from the purity gate.
         if total >= 4 {
@@ -345,10 +488,15 @@ fn assert_oracle_relaxed(world: &World) {
                 entity.current.members
             );
         }
-        println!("Entity {i}: {total} nodes, {:.0}% {dominant} ({hi_count} Hi / {off_count} Officer)",
-            purity * 100.0);
+        println!(
+            "Entity {i}: {total} nodes, {:.0}% {dominant} ({hi_count} Hi / {off_count} Officer)",
+            purity * 100.0
+        );
     }
-    println!("Oracle ✓  relaxed purity check passed ({} entities)", entities.len());
+    println!(
+        "Oracle ✓  relaxed purity check passed ({} entities)",
+        entities.len()
+    );
 }
 
 // ── Test 1: static community detection ───────────────────────────────────────
@@ -391,8 +539,12 @@ fn dynamic_faction_convergence() {
     // Hebbian plasticity reinforces co-activated edges.
     let inf = make_inf_reg(
         0.98,
-        Some(PlasticityConfig { learning_rate: 0.1, max_weight: 10.0, weight_decay: 0.99, stdp: false,
-            ..Default::default() }),
+        Some(PlasticityConfig {
+            learning_rate: 0.1,
+            max_weight: 10.0,
+            weight_decay: 0.99,
+            ..Default::default()
+        }),
     );
     populate_world(&mut world);
 
@@ -402,7 +554,9 @@ fn dynamic_faction_convergence() {
 
     // Cap at 3 batches per tick: stimulus (batch 0) → 1-hop (batch 1) → 2-hop
     // (batch 2, signal ≤ 0.0025 < 0.001 noise floor → quiescent).
-    let engine = Engine::new(EngineConfig { max_batches_per_tick: 3 });
+    let engine = Engine::new(EngineConfig {
+        max_batches_per_tick: 3,
+    });
 
     for _ in 0..8 {
         let stimuli = vec![
@@ -441,15 +595,21 @@ fn convergence_based_detection() {
     let mut world = World::new();
     let inf = make_inf_reg(
         0.98,
-        Some(PlasticityConfig { learning_rate: 0.1, max_weight: 10.0, weight_decay: 0.99, stdp: false,
-            ..Default::default() }),
+        Some(PlasticityConfig {
+            learning_rate: 0.1,
+            max_weight: 10.0,
+            weight_decay: 0.99,
+            ..Default::default()
+        }),
     );
     populate_world(&mut world);
 
     let mut loci_reg = LocusKindRegistry::new();
     loci_reg.insert(MEMBER_KIND, Box::new(SpreadProgram));
 
-    let engine      = Engine::new(EngineConfig { max_batches_per_tick: 3 });
+    let engine = Engine::new(EngineConfig {
+        max_batches_per_tick: 3,
+    });
     let perspective = DefaultEmergencePerspective::default();
 
     let (ticks_run, converged_at) =
@@ -459,7 +619,8 @@ fn convergence_based_detection() {
     println!(
         "Convergence: ticks={ticks_run}  stable_since={converged_at:?}  \
          Mr.Hi {hi_c}/{} · Officer {off_c}/{}",
-        MR_HI.len(), OFFICER.len()
+        MR_HI.len(),
+        OFFICER.len()
     );
 
     if let Some(at) = converged_at {
@@ -509,10 +670,18 @@ impl LocusProgram for SpreadProgram {
             .filter_map(|rel| {
                 let neighbor = match rel.endpoints {
                     Endpoints::Symmetric { a, b } => {
-                        if a == locus.id { b } else { a }
+                        if a == locus.id {
+                            b
+                        } else {
+                            a
+                        }
                     }
                     Endpoints::Directed { from, to } => {
-                        if from == locus.id { to } else { return None; }
+                        if from == locus.id {
+                            to
+                        } else {
+                            return None;
+                        }
                     }
                 };
                 Some(ProposedChange::new(
@@ -533,102 +702,176 @@ mod analysis {
 
     /// Classify one edge endpoint pair by faction membership.
     #[derive(Debug, PartialEq, Eq)]
-    pub enum EdgeClass { IntraHi, IntraOfficer, Cross }
+    pub enum EdgeClass {
+        IntraHi,
+        IntraOfficer,
+        Cross,
+    }
 
     pub fn classify_edge(a: u64, b: u64) -> EdgeClass {
-        let hi  = MR_HI_SET();
+        let hi = MR_HI_SET();
         let off = OFFICER_SET();
-        match (hi.contains(&a), off.contains(&a), hi.contains(&b), off.contains(&b)) {
-            (true,  _, true,  _) => EdgeClass::IntraHi,
-            (_,  true, _,  true) => EdgeClass::IntraOfficer,
-            _                    => EdgeClass::Cross,
+        match (
+            hi.contains(&a),
+            off.contains(&a),
+            hi.contains(&b),
+            off.contains(&b),
+        ) {
+            (true, _, true, _) => EdgeClass::IntraHi,
+            (_, true, _, true) => EdgeClass::IntraOfficer,
+            _ => EdgeClass::Cross,
         }
     }
 
     pub fn endpoints(rel: &graph_core::Relationship) -> (u64, u64) {
         match rel.endpoints {
             Endpoints::Symmetric { a, b } => (a.0, b.0),
-            Endpoints::Directed  { from, to } => (from.0, to.0),
+            Endpoints::Directed { from, to } => (from.0, to.0),
         }
     }
 
     /// Print a table of relationship activities grouped by edge class.
     pub fn print_edge_activity_report(world: &World, header: &str) {
-        let mut intra_hi:  Vec<(u64, u64, f32, f32)> = Vec::new();
+        let mut intra_hi: Vec<(u64, u64, f32, f32)> = Vec::new();
         let mut intra_off: Vec<(u64, u64, f32, f32)> = Vec::new();
-        let mut cross:     Vec<(u64, u64, f32, f32)> = Vec::new();
+        let mut cross: Vec<(u64, u64, f32, f32)> = Vec::new();
 
         for rel in world.relationships().iter() {
-            let (a, b)  = endpoints(rel);
-            let act     = rel.activity();
-            let wt      = rel.weight();
-            let row     = (a, b, act, wt);
+            let (a, b) = endpoints(rel);
+            let act = rel.activity();
+            let wt = rel.weight();
+            let row = (a, b, act, wt);
             match classify_edge(a, b) {
-                EdgeClass::IntraHi      => intra_hi.push(row),
+                EdgeClass::IntraHi => intra_hi.push(row),
                 EdgeClass::IntraOfficer => intra_off.push(row),
-                EdgeClass::Cross        => cross.push(row),
+                EdgeClass::Cross => cross.push(row),
             }
         }
 
         let stats = |v: &[(u64, u64, f32, f32)]| -> (f32, f32, f32) {
-            if v.is_empty() { return (0.0, 0.0, 0.0); }
+            if v.is_empty() {
+                return (0.0, 0.0, 0.0);
+            }
             let acts: Vec<f32> = v.iter().map(|r| r.2).collect();
             let mean = acts.iter().sum::<f32>() / acts.len() as f32;
-            let min  = acts.iter().cloned().fold(f32::INFINITY, f32::min);
-            let max  = acts.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let min = acts.iter().cloned().fold(f32::INFINITY, f32::min);
+            let max = acts.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             (mean, min, max)
         };
         let wt_mean = |v: &[(u64, u64, f32, f32)]| -> f32 {
-            if v.is_empty() { return 0.0; }
+            if v.is_empty() {
+                return 0.0;
+            }
             v.iter().map(|r| r.3).sum::<f32>() / v.len() as f32
         };
 
-        let (hi_mean,  hi_min,  hi_max)  = stats(&intra_hi);
+        let (hi_mean, hi_min, hi_max) = stats(&intra_hi);
         let (off_mean, off_min, off_max) = stats(&intra_off);
-        let (cx_mean,  cx_min,  cx_max)  = stats(&cross);
+        let (cx_mean, cx_min, cx_max) = stats(&cross);
 
         println!("\n{header}");
         println!("  Edge class        n    act_mean  act_min  act_max  wt_mean");
         println!("  ─────────────────────────────────────────────────────────");
-        println!("  intra-Mr.Hi      {:2}    {:6.3}   {:6.3}   {:6.3}   {:6.3}",
-            intra_hi.len(),  hi_mean,  hi_min,  hi_max,  wt_mean(&intra_hi));
-        println!("  intra-Officer    {:2}    {:6.3}   {:6.3}   {:6.3}   {:6.3}",
-            intra_off.len(), off_mean, off_min, off_max, wt_mean(&intra_off));
-        println!("  cross-faction    {:2}    {:6.3}   {:6.3}   {:6.3}   {:6.3}",
-            cross.len(), cx_mean, cx_min, cx_max, wt_mean(&cross));
-        println!("  separability ratio  intra/cross = {:.2}x",
-            if cx_mean > 0.0 { (hi_mean + off_mean) / 2.0 / cx_mean } else { f32::INFINITY });
+        println!(
+            "  intra-Mr.Hi      {:2}    {:6.3}   {:6.3}   {:6.3}   {:6.3}",
+            intra_hi.len(),
+            hi_mean,
+            hi_min,
+            hi_max,
+            wt_mean(&intra_hi)
+        );
+        println!(
+            "  intra-Officer    {:2}    {:6.3}   {:6.3}   {:6.3}   {:6.3}",
+            intra_off.len(),
+            off_mean,
+            off_min,
+            off_max,
+            wt_mean(&intra_off)
+        );
+        println!(
+            "  cross-faction    {:2}    {:6.3}   {:6.3}   {:6.3}   {:6.3}",
+            cross.len(),
+            cx_mean,
+            cx_min,
+            cx_max,
+            wt_mean(&cross)
+        );
+        println!(
+            "  separability ratio  intra/cross = {:.2}x",
+            if cx_mean > 0.0 {
+                (hi_mean + off_mean) / 2.0 / cx_mean
+            } else {
+                f32::INFINITY
+            }
+        );
     }
 
     /// Print per-entity composition for all active entities.
     pub fn print_entity_report(world: &World) {
-        let hi_lookup  = MR_HI_SET();
+        let hi_lookup = MR_HI_SET();
         let off_lookup = OFFICER_SET();
         let entities: Vec<_> = world.entities().active().collect();
 
         println!("\n  Entities discovered: {}", entities.len());
         for (i, e) in entities.iter().enumerate() {
-            let hi_cnt  = e.current.members.iter().filter(|l| hi_lookup.contains(&l.0)).count();
-            let off_cnt = e.current.members.iter().filter(|l| off_lookup.contains(&l.0)).count();
-            let n       = e.current.members.len();
-            let purity  = hi_cnt.max(off_cnt) as f32 / n as f32;
-            let label   = if hi_cnt >= off_cnt { "Mr.Hi " } else { "Officer" };
+            let hi_cnt = e
+                .current
+                .members
+                .iter()
+                .filter(|l| hi_lookup.contains(&l.0))
+                .count();
+            let off_cnt = e
+                .current
+                .members
+                .iter()
+                .filter(|l| off_lookup.contains(&l.0))
+                .count();
+            let n = e.current.members.len();
+            let purity = hi_cnt.max(off_cnt) as f32 / n as f32;
+            let label = if hi_cnt >= off_cnt {
+                "Mr.Hi "
+            } else {
+                "Officer"
+            };
             let mut members: Vec<u64> = e.current.members.iter().map(|l| l.0).collect();
             members.sort();
-            println!("  Entity {i} [{label} {}/{} pure={:.0}%]  coh={:.3}  nodes={:?}",
-                hi_cnt.max(off_cnt), n, purity * 100.0,
-                e.current.coherence, members);
+            println!(
+                "  Entity {i} [{label} {}/{} pure={:.0}%]  coh={:.3}  nodes={:?}",
+                hi_cnt.max(off_cnt),
+                n,
+                purity * 100.0,
+                e.current.coherence,
+                members
+            );
         }
     }
 
     /// Analyse border nodes: nodes that connect directly to BOTH faction leaders.
     pub fn print_border_node_analysis(world: &World) {
         // Nodes directly connected to node 0 AND node 33.
-        let hi_neighbors: rustc_hash::FxHashSet<u64> = EDGES.iter()
-            .filter_map(|&(a, b)| if a == 0 { Some(b) } else if b == 0 { Some(a) } else { None })
+        let hi_neighbors: rustc_hash::FxHashSet<u64> = EDGES
+            .iter()
+            .filter_map(|&(a, b)| {
+                if a == 0 {
+                    Some(b)
+                } else if b == 0 {
+                    Some(a)
+                } else {
+                    None
+                }
+            })
             .collect();
-        let off_neighbors: rustc_hash::FxHashSet<u64> = EDGES.iter()
-            .filter_map(|&(a, b)| if a == 33 { Some(b) } else if b == 33 { Some(a) } else { None })
+        let off_neighbors: rustc_hash::FxHashSet<u64> = EDGES
+            .iter()
+            .filter_map(|&(a, b)| {
+                if a == 33 {
+                    Some(b)
+                } else if b == 33 {
+                    Some(a)
+                } else {
+                    None
+                }
+            })
             .collect();
         let border: Vec<u64> = {
             let mut v: Vec<u64> = hi_neighbors.intersection(&off_neighbors).copied().collect();
@@ -636,52 +879,96 @@ mod analysis {
             v
         };
 
-        println!("\n  Border nodes (directly connected to BOTH leaders): {:?}", border);
+        println!(
+            "\n  Border nodes (directly connected to BOTH leaders): {:?}",
+            border
+        );
         println!("  (These are the hardest to classify correctly)");
 
         for &node in &border {
-            let gt = if MR_HI_SET().contains(&node) { "Mr.Hi" } else { "Officer" };
+            let gt = if MR_HI_SET().contains(&node) {
+                "Mr.Hi"
+            } else {
+                "Officer"
+            };
             // Find which entity this node ended up in.
-            let entity_label = world.entities().active()
+            let entity_label = world
+                .entities()
+                .active()
                 .find(|e| e.current.members.contains(&LocusId(node)))
                 .map(|e| {
                     let hi = MR_HI_SET();
-                    let hi_cnt = e.current.members.iter().filter(|l| hi.contains(&l.0)).count();
+                    let hi_cnt = e
+                        .current
+                        .members
+                        .iter()
+                        .filter(|l| hi.contains(&l.0))
+                        .count();
                     let off_cnt = e.current.members.len() - hi_cnt;
-                    if hi_cnt >= off_cnt { "Mr.Hi entity" } else { "Officer entity" }
+                    if hi_cnt >= off_cnt {
+                        "Mr.Hi entity"
+                    } else {
+                        "Officer entity"
+                    }
                 })
                 .unwrap_or("(none)");
 
             // Collect edge activities to each faction.
-            let hi_edge_sum: f32 = world.relationships().iter()
+            let hi_edge_sum: f32 = world
+                .relationships()
+                .iter()
                 .filter_map(|rel| {
                     let (a, b) = endpoints(rel);
-                    if !(a == node || b == node) { return None; }
+                    if !(a == node || b == node) {
+                        return None;
+                    }
                     let other = if a == node { b } else { a };
-                    if MR_HI_SET().contains(&other) { Some(rel.activity()) } else { None }
+                    if MR_HI_SET().contains(&other) {
+                        Some(rel.activity())
+                    } else {
+                        None
+                    }
                 })
                 .sum();
-            let off_edge_sum: f32 = world.relationships().iter()
+            let off_edge_sum: f32 = world
+                .relationships()
+                .iter()
                 .filter_map(|rel| {
                     let (a, b) = endpoints(rel);
-                    if !(a == node || b == node) { return None; }
+                    if !(a == node || b == node) {
+                        return None;
+                    }
                     let other = if a == node { b } else { a };
-                    if OFFICER_SET().contains(&other) { Some(rel.activity()) } else { None }
+                    if OFFICER_SET().contains(&other) {
+                        Some(rel.activity())
+                    } else {
+                        None
+                    }
                 })
                 .sum();
 
-            let verdict = if hi_edge_sum >= off_edge_sum { "→ Mr.Hi" } else { "→ Officer" };
+            let verdict = if hi_edge_sum >= off_edge_sum {
+                "→ Mr.Hi"
+            } else {
+                "→ Officer"
+            };
             let correct = (verdict.contains("Mr.Hi") && gt == "Mr.Hi")
-                       || (verdict.contains("Officer") && gt == "Officer");
-            println!("  Node {:2}  GT={gt:7}  Hi-pull={:.2}  Off-pull={:.2}  {verdict}  placed in [{entity_label}]  {}",
-                node, hi_edge_sum, off_edge_sum,
-                if correct { "✓" } else { "✗ MISCLASSIFIED" });
+                || (verdict.contains("Officer") && gt == "Officer");
+            println!(
+                "  Node {:2}  GT={gt:7}  Hi-pull={:.2}  Off-pull={:.2}  {verdict}  placed in [{entity_label}]  {}",
+                node,
+                hi_edge_sum,
+                off_edge_sum,
+                if correct { "✓" } else { "✗ MISCLASSIFIED" }
+            );
         }
     }
 
     /// Print the top-N edges by Hebbian weight gain.
     pub fn print_hebbian_top(world: &World, n: usize) {
-        let mut weighted: Vec<((u64, u64), f32, f32)> = world.relationships().iter()
+        let mut weighted: Vec<((u64, u64), f32, f32)> = world
+            .relationships()
+            .iter()
             .map(|rel| (endpoints(rel), rel.activity(), rel.weight()))
             .collect();
         weighted.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
@@ -691,11 +978,14 @@ mod analysis {
         println!("  ─────────────────────────────────────────────────");
         for ((a, b), act, wt) in weighted.iter().take(n) {
             let cls = match classify_edge(*a, *b) {
-                EdgeClass::IntraHi      => "intra-Mr.Hi",
+                EdgeClass::IntraHi => "intra-Mr.Hi",
                 EdgeClass::IntraOfficer => "intra-Officer",
-                EdgeClass::Cross        => "CROSS",
+                EdgeClass::Cross => "CROSS",
             };
-            println!("  ({:2},{:2})       {:7.3}    {:6.3}   {cls}", a, b, act, wt);
+            println!(
+                "  ({:2},{:2})       {:7.3}    {:6.3}   {cls}",
+                a, b, act, wt
+            );
         }
     }
 }
@@ -717,33 +1007,76 @@ fn oracle_analysis() {
     // ── DATASET STATS ────────────────────────────────────────────────────────
     println!("\n── Dataset ──────────────────────────────────────────────────");
     {
-        let intra_hi  = EDGES.iter().filter(|&&(a,b)| MR_HI_SET().contains(&a) && MR_HI_SET().contains(&b)).count();
-        let intra_off = EDGES.iter().filter(|&&(a,b)| OFFICER_SET().contains(&a) && OFFICER_SET().contains(&b)).count();
-        let cross     = EDGES.len() - intra_hi - intra_off;
-        println!("  Edges:  total={} · intra-Mr.Hi={} · intra-Officer={} · cross={}",
-            EDGES.len(), intra_hi, intra_off, cross);
-        println!("  Faction sizes:  Mr.Hi={} · Officer={}", MR_HI.len(), OFFICER.len());
+        let intra_hi = EDGES
+            .iter()
+            .filter(|&&(a, b)| MR_HI_SET().contains(&a) && MR_HI_SET().contains(&b))
+            .count();
+        let intra_off = EDGES
+            .iter()
+            .filter(|&&(a, b)| OFFICER_SET().contains(&a) && OFFICER_SET().contains(&b))
+            .count();
+        let cross = EDGES.len() - intra_hi - intra_off;
+        println!(
+            "  Edges:  total={} · intra-Mr.Hi={} · intra-Officer={} · cross={}",
+            EDGES.len(),
+            intra_hi,
+            intra_off,
+            cross
+        );
+        println!(
+            "  Faction sizes:  Mr.Hi={} · Officer={}",
+            MR_HI.len(),
+            OFFICER.len()
+        );
 
         // Compute structural edge weight stats (common-neighbor formula).
-        let act_intra_hi: Vec<f32>  = EDGES.iter()
-            .filter(|&&(a,b)| MR_HI_SET().contains(&a) && MR_HI_SET().contains(&b))
-            .map(|&(a,b)| edge_activity(a,b)).collect();
-        let act_intra_off: Vec<f32> = EDGES.iter()
-            .filter(|&&(a,b)| OFFICER_SET().contains(&a) && OFFICER_SET().contains(&b))
-            .map(|&(a,b)| edge_activity(a,b)).collect();
-        let act_cross: Vec<f32>     = EDGES.iter()
-            .filter(|&&(a,b)| !(MR_HI_SET().contains(&a) && MR_HI_SET().contains(&b))
-                           && !(OFFICER_SET().contains(&a) && OFFICER_SET().contains(&b)))
-            .map(|&(a,b)| edge_activity(a,b)).collect();
+        let act_intra_hi: Vec<f32> = EDGES
+            .iter()
+            .filter(|&&(a, b)| MR_HI_SET().contains(&a) && MR_HI_SET().contains(&b))
+            .map(|&(a, b)| edge_activity(a, b))
+            .collect();
+        let act_intra_off: Vec<f32> = EDGES
+            .iter()
+            .filter(|&&(a, b)| OFFICER_SET().contains(&a) && OFFICER_SET().contains(&b))
+            .map(|&(a, b)| edge_activity(a, b))
+            .collect();
+        let act_cross: Vec<f32> = EDGES
+            .iter()
+            .filter(|&&(a, b)| {
+                !(MR_HI_SET().contains(&a) && MR_HI_SET().contains(&b))
+                    && !(OFFICER_SET().contains(&a) && OFFICER_SET().contains(&b))
+            })
+            .map(|&(a, b)| edge_activity(a, b))
+            .collect();
 
-        let mean = |v: &[f32]| if v.is_empty() { 0.0 } else { v.iter().sum::<f32>() / v.len() as f32 };
-        let max  = |v: &[f32]| v.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let mean = |v: &[f32]| {
+            if v.is_empty() {
+                0.0
+            } else {
+                v.iter().sum::<f32>() / v.len() as f32
+            }
+        };
+        let max = |v: &[f32]| v.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         println!("  Structural activity (common-neighbor formula 1 + 0.5×common):");
-        println!("    intra-Mr.Hi   mean={:.2}  max={:.2}", mean(&act_intra_hi),  max(&act_intra_hi));
-        println!("    intra-Officer mean={:.2}  max={:.2}", mean(&act_intra_off), max(&act_intra_off));
-        println!("    cross-faction mean={:.2}  max={:.2}", mean(&act_cross),     max(&act_cross));
-        println!("  → Structural separability: intra/cross ratio = {:.1}x",
-            (mean(&act_intra_hi) + mean(&act_intra_off)) / 2.0 / mean(&act_cross).max(0.001));
+        println!(
+            "    intra-Mr.Hi   mean={:.2}  max={:.2}",
+            mean(&act_intra_hi),
+            max(&act_intra_hi)
+        );
+        println!(
+            "    intra-Officer mean={:.2}  max={:.2}",
+            mean(&act_intra_off),
+            max(&act_intra_off)
+        );
+        println!(
+            "    cross-faction mean={:.2}  max={:.2}",
+            mean(&act_cross),
+            max(&act_cross)
+        );
+        println!(
+            "  → Structural separability: intra/cross ratio = {:.1}x",
+            (mean(&act_intra_hi) + mean(&act_intra_off)) / 2.0 / mean(&act_cross).max(0.001)
+        );
     }
 
     // ── SCENARIO A: STATIC ───────────────────────────────────────────────────
@@ -757,7 +1090,10 @@ fn oracle_analysis() {
         let perspective = DefaultEmergencePerspective::default();
         engine.recognize_entities(&mut world, &inf, &perspective);
 
-        print_edge_activity_report(&world, "  Relationship activities (structural weights, no decay):");
+        print_edge_activity_report(
+            &world,
+            "  Relationship activities (structural weights, no decay):",
+        );
         print_entity_report(&world);
         print_border_node_analysis(&world);
 
@@ -774,37 +1110,64 @@ fn oracle_analysis() {
         let mut world = World::new();
         let inf = make_inf_reg(
             0.98,
-            Some(PlasticityConfig { learning_rate: 0.1, max_weight: 10.0, weight_decay: 0.99, stdp: false,
-            ..Default::default() }),
+            Some(PlasticityConfig {
+                learning_rate: 0.1,
+                max_weight: 10.0,
+                weight_decay: 0.99,
+                ..Default::default()
+            }),
         );
         populate_world(&mut world);
 
         let mut loci_reg = LocusKindRegistry::new();
         loci_reg.insert(MEMBER_KIND, Box::new(SpreadProgram));
-        let engine = Engine::new(EngineConfig { max_batches_per_tick: 3 });
+        let engine = Engine::new(EngineConfig {
+            max_batches_per_tick: 3,
+        });
 
         for tick in 0..8 {
             let result = engine.tick(
-                &mut world, &loci_reg, &inf,
+                &mut world,
+                &loci_reg,
+                &inf,
                 vec![
-                    ProposedChange::new(ChangeSubject::Locus(LocusId(0)),  SOCIAL_KIND, StateVector::from_slice(&[1.0])),
-                    ProposedChange::new(ChangeSubject::Locus(LocusId(33)), SOCIAL_KIND, StateVector::from_slice(&[1.0])),
+                    ProposedChange::new(
+                        ChangeSubject::Locus(LocusId(0)),
+                        SOCIAL_KIND,
+                        StateVector::from_slice(&[1.0]),
+                    ),
+                    ProposedChange::new(
+                        ChangeSubject::Locus(LocusId(33)),
+                        SOCIAL_KIND,
+                        StateVector::from_slice(&[1.0]),
+                    ),
                 ],
             );
             if tick == 0 || tick == 7 {
-                println!("  Tick {:1}: {} batches committed, {} changes, {} rel-emerged events",
+                println!(
+                    "  Tick {:1}: {} batches committed, {} changes, {} rel-emerged events",
                     tick,
                     result.batches_committed,
                     result.changes_committed,
-                    result.events.iter().filter(|e| matches!(e, graph_engine::WorldEvent::RelationshipEmerged { .. })).count());
+                    result
+                        .events
+                        .iter()
+                        .filter(|e| matches!(
+                            e,
+                            graph_engine::WorldEvent::RelationshipEmerged { .. }
+                        ))
+                        .count()
+                );
             }
         }
 
         let perspective = DefaultEmergencePerspective::default();
         engine.recognize_entities(&mut world, &inf, &perspective);
 
-        print_edge_activity_report(&world,
-            "  Relationship activities (after 8 ticks of gossip propagation):");
+        print_edge_activity_report(
+            &world,
+            "  Relationship activities (after 8 ticks of gossip propagation):",
+        );
         print_hebbian_top(&world, 10);
         print_entity_report(&world);
         print_border_node_analysis(&world);
@@ -816,14 +1179,20 @@ fn oracle_analysis() {
         let mut world = World::new();
         let inf = make_inf_reg(
             0.98,
-            Some(PlasticityConfig { learning_rate: 0.1, max_weight: 10.0, weight_decay: 0.99, stdp: false,
-            ..Default::default() }),
+            Some(PlasticityConfig {
+                learning_rate: 0.1,
+                max_weight: 10.0,
+                weight_decay: 0.99,
+                ..Default::default()
+            }),
         );
         populate_world(&mut world);
 
         let mut loci_reg = LocusKindRegistry::new();
         loci_reg.insert(MEMBER_KIND, Box::new(SpreadProgram));
-        let engine      = Engine::new(EngineConfig { max_batches_per_tick: 3 });
+        let engine = Engine::new(EngineConfig {
+            max_batches_per_tick: 3,
+        });
         let perspective = DefaultEmergencePerspective::default();
 
         // Track accuracy vs tick to show convergence curve.
@@ -836,8 +1205,16 @@ fn oracle_analysis() {
 
         for tick in 0..50 {
             let stimuli = vec![
-                ProposedChange::new(ChangeSubject::Locus(LocusId(0)),  SOCIAL_KIND, StateVector::from_slice(&[1.0])),
-                ProposedChange::new(ChangeSubject::Locus(LocusId(33)), SOCIAL_KIND, StateVector::from_slice(&[1.0])),
+                ProposedChange::new(
+                    ChangeSubject::Locus(LocusId(0)),
+                    SOCIAL_KIND,
+                    StateVector::from_slice(&[1.0]),
+                ),
+                ProposedChange::new(
+                    ChangeSubject::Locus(LocusId(33)),
+                    SOCIAL_KIND,
+                    StateVector::from_slice(&[1.0]),
+                ),
             ];
             engine.tick(&mut world, &loci_reg, &inf, stimuli);
             engine.recognize_entities(&mut world, &inf, &perspective);
@@ -847,19 +1224,33 @@ fn oracle_analysis() {
             let (hi_c, _, off_c, _) = faction_accuracy(&world);
             let n_entities = world.entities().active().count();
 
-            if changed { stable_streak = 0; } else { stable_streak += 1; }
+            if changed {
+                stable_streak = 0;
+            } else {
+                stable_streak += 1;
+            }
 
             let converging = if changed { "changed" } else { "stable " };
-            println!("  {:3}   {:3}       {:2}/{}   {:2}/{}    {:2}/34          {}",
-                tick + 1, n_entities,
-                hi_c, MR_HI.len(), off_c, OFFICER.len(),
-                hi_c + off_c, converging);
+            println!(
+                "  {:3}   {:3}       {:2}/{}   {:2}/{}    {:2}/34          {}",
+                tick + 1,
+                n_entities,
+                hi_c,
+                MR_HI.len(),
+                off_c,
+                OFFICER.len(),
+                hi_c + off_c,
+                converging
+            );
 
             prev_snap = Some(snap);
 
             if stable_streak >= 3 && converged_at.is_none() {
                 converged_at = Some(tick + 1 - 2);
-                println!("  ── partition stable for 3 ticks, converged at tick {} ──", tick - 1);
+                println!(
+                    "  ── partition stable for 3 ticks, converged at tick {} ──",
+                    tick - 1
+                );
                 break;
             }
         }
@@ -872,8 +1263,11 @@ fn oracle_analysis() {
         }
 
         let (hi_c, hi_t, off_c, off_t) = faction_accuracy(&world);
-        println!("  Final: Mr.Hi {hi_c}/{} ({hi_t} in entity) · Officer {off_c}/{} ({off_t} in entity)",
-            MR_HI.len(), OFFICER.len());
+        println!(
+            "  Final: Mr.Hi {hi_c}/{} ({hi_t} in entity) · Officer {off_c}/{} ({off_t} in entity)",
+            MR_HI.len(),
+            OFFICER.len()
+        );
         println!("  Total correctly classified: {}/{}", hi_c + off_c, 34);
 
         print_entity_report(&world);
@@ -917,254 +1311,17 @@ fn oracle_analysis() {
 /// If accuracy stays the same, BCM is a weight-analysis tool, not a detection
 /// enhancer; keep it opt-in.  If accuracy improves (one of the two ambiguous
 /// nodes — 8 or 16 — gets correctly assigned), BCM earns a broader role.
-#[test]
-fn bcm_enhanced_faction_detection() {
-    let mut world = World::new();
-    populate_world(&mut world);
-
-    let mut inf_reg = InfluenceKindRegistry::new();
-    inf_reg.insert(
-        SOCIAL_KIND,
-        InfluenceKindConfig::new("social_tie")
-            .with_symmetric(true)
-            .with_decay(0.99)
-            .with_plasticity(
-                PlasticityConfig {
-                    learning_rate: 0.5,
-                    max_weight:    10.0,
-                    weight_decay:  0.995,
-                    ..Default::default()
-                }
-                .with_bcm(3.0),
-            ),
-    );
-
-    let mut loci_reg = LocusKindRegistry::new();
-    loci_reg.insert(MEMBER_KIND, Box::new(SpreadProgram));
-    let engine      = Engine::new(EngineConfig { max_batches_per_tick: 3 });
-    let perspective = DefaultEmergencePerspective::default();
-
-    // Even ticks → Hi leader, odd ticks → Officer leader.
-    // Anti-correlated activation lets BCM suppress cross-faction edge weights.
-    for tick in 0..200u64 {
-        let leader = if tick % 2 == 0 { LocusId(0) } else { LocusId(33) };
-        engine.tick(
-            &mut world, &loci_reg, &inf_reg,
-            vec![ProposedChange::new(
-                ChangeSubject::Locus(leader),
-                SOCIAL_KIND,
-                StateVector::from_slice(&[1.0]),
-            )],
-        );
-    }
-
-    engine.recognize_entities(&mut world, &inf_reg, &perspective);
-
-    let (hi_correct, hi_total, off_correct, off_total) = faction_accuracy(&world);
-    println!(
-        "\nBCM enhanced detection (200 ticks alternating):\n  \
-         Mr.Hi  {hi_correct}/{} correctly placed  ({hi_total} in entity)\n  \
-         Officer {off_correct}/{} correctly placed  ({off_total} in entity)\n  \
-         Total: {}/{}\n  \
-         (baseline: dynamic_faction_convergence uses 8-tick Hebbian, same oracle)",
-        MR_HI.len(), OFFICER.len(), hi_correct + off_correct, 34,
-    );
-
-    assert_oracle_strict(&world);
-}
-
-// ── Test 4b: BCM cross-faction suppression ────────────────────────────────────
-
-/// Verify that BCM plasticity with alternating leader stimulation creates
-/// measurable differentiation between intra-faction and cross-faction edges.
-///
-/// Protocol:
-///   - Even ticks → stimulate locus 0 (Mr. Hi leader).
-///   - Odd  ticks → stimulate locus 33 (Officer leader).
-///
-/// The anti-correlated activation pattern gives BCM's sliding threshold (θ_M)
-/// an opportunity to suppress cross-faction connections:
-///   - Intra-faction: both endpoints are active in the *same* ticks
-///     → high pre × post → LTP dominates → Rising weight trend.
-///   - Cross-faction: endpoints peak in *different* ticks
-///     → when pre is large, post is small → θ_M rises above post → LTD fires
-///     → cross-faction edges accumulate less weight than intra-faction edges.
-///
-/// Oracle: `Rising%` for intra-faction > `Rising%` for cross-faction (both Hi and Officer).
-#[test]
-fn bcm_cross_faction_suppression() {
-    use graph_query::{relationship_weight_trend_delta, Trend};
-    use std::collections::HashMap;
-
-    let mut world = World::new();
-    populate_world(&mut world);
-
-    // BCM plasticity: η=0.5, bcm_tau=3.  Symmetric → both endpoints observe the update.
-    let mut inf_reg = InfluenceKindRegistry::new();
-    inf_reg.insert(
-        SOCIAL_KIND,
-        InfluenceKindConfig::new("social_tie")
-            .with_symmetric(true)
-            .with_decay(0.99)
-            .with_plasticity(
-                PlasticityConfig {
-                    learning_rate: 0.5,
-                    max_weight:    10.0,
-                    weight_decay:  0.995,
-                    ..Default::default()
-                }
-                .with_bcm(3.0),
-            ),
-    );
-
-    let mut loci_reg = LocusKindRegistry::new();
-    loci_reg.insert(MEMBER_KIND, Box::new(SpreadProgram));
-
-    let engine = Engine::new(EngineConfig { max_batches_per_tick: 3 });
-
-    // Build edge → RelationshipId index (edges are stored with smaller id first).
-    let edge_to_rel: HashMap<(u64, u64), graph_core::RelationshipId> = world
-        .relationships()
-        .iter()
-        .map(|rel| {
-            let (a, b) = match rel.endpoints {
-                Endpoints::Symmetric { a, b } => (a.0.min(b.0), a.0.max(b.0)),
-                Endpoints::Directed { from, to } => (from.0, to.0),
-            };
-            ((a, b), rel.id)
-        })
-        .collect();
-
-    let start_batch = world.current_batch();
-
-    // Alternate: even ticks → Hi leader, odd ticks → Officer leader.
-    for tick in 0..200u64 {
-        let leader = if tick % 2 == 0 { LocusId(0) } else { LocusId(33) };
-        engine.tick(
-            &mut world, &loci_reg, &inf_reg,
-            vec![ProposedChange::new(
-                ChangeSubject::Locus(leader),
-                SOCIAL_KIND,
-                StateVector::from_slice(&[1.0]),
-            )],
-        );
-    }
-
-    let end_batch = world.current_batch();
-
-    // Classify edge trends using ChangeLog first-vs-last weight delta.
-    let hi_set  = MR_HI_SET();
-    let off_set = OFFICER_SET();
-
-    // [Rising, Stable, Falling]
-    let mut intra_hi  = [0usize; 3];
-    let mut intra_off = [0usize; 3];
-    let mut cross     = [0usize; 3];
-
-    let trend_idx = |t: Trend| match t {
-        Trend::Rising { .. }  => 0,
-        Trend::Stable         => 1,
-        Trend::Falling { .. } => 2,
-    };
-
-    for &(a, b) in EDGES {
-        let Some(&rel_id) = edge_to_rel.get(&(a, b)) else { continue };
-        let trend = relationship_weight_trend_delta(
-                &world, rel_id, start_batch, end_batch, 0.003)
-            .unwrap_or(Trend::Stable);
-        let ti = trend_idx(trend);
-        match (hi_set.contains(&a) || hi_set.contains(&b),
-               off_set.contains(&a) || off_set.contains(&b)) {
-            (true,  false) => intra_hi[ti]  += 1,
-            (false, true)  => intra_off[ti] += 1,
-            _              => cross[ti]     += 1,
-        }
-    }
-
-    let pct = |counts: &[usize; 3]| -> f32 {
-        let total: usize = counts.iter().sum();
-        if total == 0 { return 0.0; }
-        100.0 * counts[0] as f32 / total as f32
-    };
-
-    let hi_rising    = pct(&intra_hi);
-    let off_rising   = pct(&intra_off);
-    let cross_rising = pct(&cross);
-
-    println!(
-        "\nBCM cross-faction suppression:\n  \
-         intra-Hi={:.0}%  intra-Off={:.0}%  cross={:.0}% Rising",
-        hi_rising, off_rising, cross_rising
-    );
-
-    // BCM must produce *some* strengthening within each faction.
-    assert!(hi_rising  > 0.0,
-        "Mr. Hi intra edges must have Rising trend (got {hi_rising:.0}%)");
-    assert!(off_rising > 0.0,
-        "Officer intra edges must have Rising trend (got {off_rising:.0}%)");
-
-    // Intra-faction edges must rise more than cross-faction edges.
-    let intra_avg = (hi_rising + off_rising) / 2.0;
-    assert!(
-        intra_avg > cross_rising,
-        "BCM should produce intra avg Rising ({intra_avg:.0}%) > cross Rising ({cross_rising:.0}%)"
-    );
-}
-
-// ── Test 5: boundary analysis ─────────────────────────────────────────────────
-
-/// Compare the static (declared) social graph with the dynamic (emergent)
-/// behavioral graph, then interpret the confirmed/ghost/shadow split.
-///
-/// ## Setup
-///
-/// Static layer:
-///   - All 78 Zachary friendship edges declared as `"is_friends_with"` facts.
-///   - Ground-truth faction membership declared as `"is_allied"` facts
-///     (intra-faction pairs) and `"is_opposed"` facts (cross-faction leader pair).
-///
-/// Dynamic layer:
-///   - Adamic-Adar weighted relationships, 8 tick Hebbian run.
-///   - Threshold: relationships active above `0.5` count as behaviorally alive.
-///
-/// ## What the boundary tells us
-///
-/// - **Confirmed** (`is_friends_with` + active dynamic rel):
-///     Strong ties: the friendship was formally observed AND the loci
-///     mutually reinforce each other behaviourally (triadic closure, Hebbian
-///     co-activation).  These are the load-bearing edges of the social fabric.
-///
-/// - **Ghost** (`is_friends_with` declared, no active dynamic rel):
-///     Weak ties: formally recorded, but behaviourally dormant.  In social
-///     network theory, these are Granovetter's "weak ties" — structurally
-///     present but not actively leveraged.  They tend to connect across
-///     community boundaries (less triadic closure → lower Adamic-Adar
-///     weight → faster decay).
-///
-/// - **Shadow** (active dynamic rel, no `is_friends_with` declaration):
-///     Emergent structural coupling: two nodes influence each other despite
-///     no direct declared friendship.  These arise from indirect signal
-///     propagation through common neighbours (the engine creates relationships
-///     when it observes cross-locus causal flow, including 2-hop chains).
-///
-/// ## Boundary as a diagnostic
-///
-/// - High ghost rate on cross-faction edges → confirms the faction split is
-///   a real behavioural discontinuity, not just a post-hoc labelling.
-/// - Shadow edges within a faction → reveal strong indirect cohesion that
-///   the original edge list doesn't capture.
-/// - Tension score → single number for "how much does declared structure
 ///   diverge from behavioural structure?"
 #[test]
 fn boundary_analysis() {
-    use graph_boundary::{analyze_boundary_with_mode, SignalMode};
+    use graph_boundary::{SignalMode, analyze_boundary_with_mode};
     use graph_schema::{DeclaredRelKind, SchemaWorld};
 
     // ── 1. Build schema (static layer) ──────────────────────────────────────
 
     let mut schema = SchemaWorld::new();
     let friends = DeclaredRelKind::new("is_friends_with");
-    let allied  = DeclaredRelKind::new("is_allied");
+    let allied = DeclaredRelKind::new("is_allied");
     let opposed = DeclaredRelKind::new("is_opposed");
 
     // Declare all 78 friendship edges.
@@ -1175,8 +1332,8 @@ fn boundary_analysis() {
     // Declare intra-faction alliance bonds for Mr. Hi's faction.
     // (Only key intra-faction edges — same-faction pairs from EDGES.)
     for &(a, b) in EDGES {
-        let a_hi  = MR_HI_SET().contains(&a);
-        let b_hi  = MR_HI_SET().contains(&b);
+        let a_hi = MR_HI_SET().contains(&a);
+        let b_hi = MR_HI_SET().contains(&b);
         let a_off = OFFICER_SET().contains(&a);
         let b_off = OFFICER_SET().contains(&b);
         if (a_hi && b_hi) || (a_off && b_off) {
@@ -1188,8 +1345,14 @@ fn boundary_analysis() {
     schema.assert_fact(LocusId(0), opposed.clone(), LocusId(33));
 
     // Declare the two faction entities.
-    let mr_hi_entity  = schema.declare_entity("Mr. Hi's faction",  MR_HI.iter().map(|&n| LocusId(n)).collect());
-    let officer_entity = schema.declare_entity("Officer's faction", OFFICER.iter().map(|&n| LocusId(n)).collect());
+    let mr_hi_entity = schema.declare_entity(
+        "Mr. Hi's faction",
+        MR_HI.iter().map(|&n| LocusId(n)).collect(),
+    );
+    let officer_entity = schema.declare_entity(
+        "Officer's faction",
+        OFFICER.iter().map(|&n| LocusId(n)).collect(),
+    );
 
     // ── 2. Build dynamic world (8-tick Hebbian run) ───────────────────────
 
@@ -1198,8 +1361,15 @@ fn boundary_analysis() {
         r.insert(MEMBER_KIND, Box::new(SpreadProgram));
         r
     };
-    let inf = make_inf_reg(0.05, Some(PlasticityConfig { learning_rate: 0.02, max_weight: 2.0, weight_decay: 1.0, stdp: false,
-            ..Default::default() }));
+    let inf = make_inf_reg(
+        0.05,
+        Some(PlasticityConfig {
+            learning_rate: 0.02,
+            max_weight: 2.0,
+            weight_decay: 1.0,
+            ..Default::default()
+        }),
+    );
     let perspective = DefaultEmergencePerspective::default();
     let engine = Engine::new(EngineConfig::default());
 
@@ -1208,8 +1378,16 @@ fn boundary_analysis() {
 
     for _ in 0..8 {
         let stimuli = vec![
-            ProposedChange::new(ChangeSubject::Locus(LocusId(0)),  SOCIAL_KIND, StateVector::from_slice(&[1.0])),
-            ProposedChange::new(ChangeSubject::Locus(LocusId(33)), SOCIAL_KIND, StateVector::from_slice(&[1.0])),
+            ProposedChange::new(
+                ChangeSubject::Locus(LocusId(0)),
+                SOCIAL_KIND,
+                StateVector::from_slice(&[1.0]),
+            ),
+            ProposedChange::new(
+                ChangeSubject::Locus(LocusId(33)),
+                SOCIAL_KIND,
+                StateVector::from_slice(&[1.0]),
+            ),
         ];
         engine.tick(&mut world, &loci_reg, &inf, stimuli);
         engine.recognize_entities(&mut world, &inf, &perspective);
@@ -1227,63 +1405,105 @@ fn boundary_analysis() {
     // ── 4. Print results ─────────────────────────────────────────────────────
 
     println!("\n══ Boundary Analysis: Zachary Karate Club ══════════════════════");
-    println!("  Static layer : {} declared facts ({} friendships, {} alliances, 1 opposition)",
+    println!(
+        "  Static layer : {} declared facts ({} friendships, {} alliances, 1 opposition)",
         schema.facts.active_facts().count(),
         EDGES.len(),
-        schema.facts.active_facts()
+        schema
+            .facts
+            .active_facts()
             .filter(|f| f.predicate == allied)
             .count(),
     );
-    println!("  Dynamic layer: {} relationships with Hebbian weight > 0.005",
-        world.relationships().iter().filter(|r| r.weight() > 0.005).count());
+    println!(
+        "  Dynamic layer: {} relationships with Hebbian weight > 0.005",
+        world
+            .relationships()
+            .iter()
+            .filter(|r| r.weight() > 0.005)
+            .count()
+    );
     println!();
     println!("  ┌─────────────────────────────┬───────┐");
     println!("  │ Quadrant                    │ Count │");
     println!("  ├─────────────────────────────┼───────┤");
-    println!("  │ Confirmed (declared + active) │  {:>3}  │", report.confirmed.len());
-    println!("  │ Ghost  (declared, dormant)    │  {:>3}  │", report.ghost.len());
-    println!("  │ Shadow (active, undeclared)   │  {:>3}  │", report.shadow.len());
+    println!(
+        "  │ Confirmed (declared + active) │  {:>3}  │",
+        report.confirmed.len()
+    );
+    println!(
+        "  │ Ghost  (declared, dormant)    │  {:>3}  │",
+        report.ghost.len()
+    );
+    println!(
+        "  │ Shadow (active, undeclared)   │  {:>3}  │",
+        report.shadow.len()
+    );
     println!("  ├─────────────────────────────┼───────┤");
-    println!("  │ Total                         │  {:>3}  │", report.total());
+    println!(
+        "  │ Total                         │  {:>3}  │",
+        report.total()
+    );
     println!("  └─────────────────────────────┴───────┘");
-    println!("  Tension score: {:.3}  (0=perfect alignment, 1=total divergence)", report.tension);
+    println!(
+        "  Tension score: {:.3}  (0=perfect alignment, 1=total divergence)",
+        report.tension
+    );
     println!();
 
     // ── 5. Characterise ghosts ────────────────────────────────────────────────
     // ── 5. Friendship ghost breakdown ────────────────────────────────────────
     // Compare ghost rate for cross-faction vs intra-faction friendship edges.
-    let hi_set  = MR_HI_SET();
+    let hi_set = MR_HI_SET();
     let off_set = OFFICER_SET();
 
-    let n_cross_total: usize = EDGES.iter().filter(|&&(a, b)| {
-        (hi_set.contains(&a) && off_set.contains(&b))
-        || (off_set.contains(&a) && hi_set.contains(&b))
-    }).count();
+    let n_cross_total: usize = EDGES
+        .iter()
+        .filter(|&&(a, b)| {
+            (hi_set.contains(&a) && off_set.contains(&b))
+                || (off_set.contains(&a) && hi_set.contains(&b))
+        })
+        .count();
     let n_intra_total = EDGES.len() - n_cross_total;
 
-    let (ghost_cross, ghost_intra) = report.ghost.iter()
-        .filter(|e| e.predicate == friends)
-        .fold((0usize, 0usize), |(cross, intra), e| {
+    let (ghost_cross, ghost_intra) = report.ghost.iter().filter(|e| e.predicate == friends).fold(
+        (0usize, 0usize),
+        |(cross, intra), e| {
             let a_hi = hi_set.contains(&e.subject.0);
             let b_hi = hi_set.contains(&e.object.0);
-            if a_hi == b_hi { (cross, intra + 1) } else { (cross + 1, intra) }
-        });
+            if a_hi == b_hi {
+                (cross, intra + 1)
+            } else {
+                (cross + 1, intra)
+            }
+        },
+    );
     let ghost_friend_total = ghost_cross + ghost_intra;
 
     let cross_ghost_pct = if n_cross_total > 0 {
         100.0 * ghost_cross as f32 / n_cross_total as f32
-    } else { 0.0 };
+    } else {
+        0.0
+    };
     let intra_ghost_pct = if n_intra_total > 0 {
         100.0 * ghost_intra as f32 / n_intra_total as f32
-    } else { 0.0 };
+    } else {
+        0.0
+    };
 
     println!("  Friendship ghost rates by faction boundary:");
-    println!("    Cross-faction edges: {}/{} ghost = {:.0}%",
-        ghost_cross, n_cross_total, cross_ghost_pct);
-    println!("    Intra-faction edges: {}/{} ghost = {:.0}%",
-        ghost_intra, n_intra_total, intra_ghost_pct);
-    println!("    → Cross-faction edges are {:.1}× more likely to be ghost",
-        cross_ghost_pct / intra_ghost_pct.max(0.01));
+    println!(
+        "    Cross-faction edges: {}/{} ghost = {:.0}%",
+        ghost_cross, n_cross_total, cross_ghost_pct
+    );
+    println!(
+        "    Intra-faction edges: {}/{} ghost = {:.0}%",
+        ghost_intra, n_intra_total, intra_ghost_pct
+    );
+    println!(
+        "    → Cross-faction edges are {:.1}× more likely to be ghost",
+        cross_ghost_pct / intra_ghost_pct.max(0.01)
+    );
     println!();
 
     // ── 6. Shadow analysis (none expected here) ───────────────────────────────
@@ -1292,7 +1512,9 @@ fn boundary_analysis() {
     // SpreadProgram only fires at direct neighbours, so no new structural
     // connections emerge here. Shadow = 0 confirms the declared edge list is
     // structurally complete at the level of direct causal flow.
-    let (shadow_intra, shadow_cross) = report.shadow.iter()
+    let (shadow_intra, shadow_cross) = report
+        .shadow
+        .iter()
         .filter_map(|&rid| world.relationships().get(rid))
         .fold((0usize, 0usize), |(intra, cross), rel| {
             let (a, b) = match rel.endpoints {
@@ -1301,51 +1523,89 @@ fn boundary_analysis() {
             };
             let a_hi = hi_set.contains(&a.0);
             let b_hi = hi_set.contains(&b.0);
-            if a_hi == b_hi { (intra + 1, cross) } else { (intra, cross + 1) }
+            if a_hi == b_hi {
+                (intra + 1, cross)
+            } else {
+                (intra, cross + 1)
+            }
         });
 
     println!("  Shadow dynamic relationships ({}):", report.shadow.len());
-    println!("    Intra-faction: {}  Cross-faction: {}", shadow_intra, shadow_cross);
+    println!(
+        "    Intra-faction: {}  Cross-faction: {}",
+        shadow_intra, shadow_cross
+    );
     println!("    (Zero expected: all 78 declared edges cover the dynamic graph)");
     println!();
 
     // ── 7. Alliance reinforcement ──────────────────────────────────────────────
-    let allied_confirmed = report.confirmed.iter().filter(|e| e.predicate == allied).count();
-    let allied_ghost = report.ghost.iter().filter(|e| e.predicate == allied).count();
+    let allied_confirmed = report
+        .confirmed
+        .iter()
+        .filter(|e| e.predicate == allied)
+        .count();
+    let allied_ghost = report
+        .ghost
+        .iter()
+        .filter(|e| e.predicate == allied)
+        .count();
     let allied_total = allied_confirmed + allied_ghost;
 
     // Break down by faction to see which community has stronger internal cohesion.
-    let hi_edges_total: usize  = EDGES.iter().filter(|&&(a,b)| hi_set.contains(&a) && hi_set.contains(&b)).count();
-    let off_edges_total: usize = EDGES.iter().filter(|&&(a,b)| off_set.contains(&a) && off_set.contains(&b)).count();
+    let hi_edges_total: usize = EDGES
+        .iter()
+        .filter(|&&(a, b)| hi_set.contains(&a) && hi_set.contains(&b))
+        .count();
+    let off_edges_total: usize = EDGES
+        .iter()
+        .filter(|&&(a, b)| off_set.contains(&a) && off_set.contains(&b))
+        .count();
 
-    let hi_confirmed: usize = report.confirmed.iter().filter(|e| {
-        e.predicate == allied && hi_set.contains(&e.subject.0)
-    }).count();
-    let off_confirmed: usize = report.confirmed.iter().filter(|e| {
-        e.predicate == allied && off_set.contains(&e.subject.0)
-    }).count();
+    let hi_confirmed: usize = report
+        .confirmed
+        .iter()
+        .filter(|e| e.predicate == allied && hi_set.contains(&e.subject.0))
+        .count();
+    let off_confirmed: usize = report
+        .confirmed
+        .iter()
+        .filter(|e| e.predicate == allied && off_set.contains(&e.subject.0))
+        .count();
 
     println!("  Alliance reinforcement (Hebbian co-activation of intra-faction bonds):");
     println!("    Total alliance edges: {}", allied_total);
-    println!("    Confirmed (reinforced): {}/{} = {:.0}%",
-        allied_confirmed, allied_total,
-        100.0 * allied_confirmed as f32 / allied_total.max(1) as f32);
-    println!("    Mr. Hi  faction:  {}/{} bonds reinforced = {:.0}%",
-        hi_confirmed, hi_edges_total,
-        100.0 * hi_confirmed as f32 / hi_edges_total.max(1) as f32);
-    println!("    Officer faction:  {}/{} bonds reinforced = {:.0}%",
-        off_confirmed, off_edges_total,
-        100.0 * off_confirmed as f32 / off_edges_total.max(1) as f32);
+    println!(
+        "    Confirmed (reinforced): {}/{} = {:.0}%",
+        allied_confirmed,
+        allied_total,
+        100.0 * allied_confirmed as f32 / allied_total.max(1) as f32
+    );
+    println!(
+        "    Mr. Hi  faction:  {}/{} bonds reinforced = {:.0}%",
+        hi_confirmed,
+        hi_edges_total,
+        100.0 * hi_confirmed as f32 / hi_edges_total.max(1) as f32
+    );
+    println!(
+        "    Officer faction:  {}/{} bonds reinforced = {:.0}%",
+        off_confirmed,
+        off_edges_total,
+        100.0 * off_confirmed as f32 / off_edges_total.max(1) as f32
+    );
     println!();
 
     // ── 8. Interpretation ────────────────────────────────────────────────────
     println!("  ── Interpretation ───────────────────────────────────────────");
     println!("  GRANOVETTER WEAK-TIE PATTERN:");
-    println!("  Cross-faction friendship ghost rate ({:.0}%) is {:.1}× higher than",
+    println!(
+        "  Cross-faction friendship ghost rate ({:.0}%) is {:.1}× higher than",
         cross_ghost_pct,
-        cross_ghost_pct / intra_ghost_pct.max(0.01));
-    println!("  intra-faction ghost rate ({:.0}%). Cross-community bridges carry",
-        intra_ghost_pct);
+        cross_ghost_pct / intra_ghost_pct.max(0.01)
+    );
+    println!(
+        "  intra-faction ghost rate ({:.0}%). Cross-community bridges carry",
+        intra_ghost_pct
+    );
     println!("  less triadic closure (lower Adamic-Adar weight) and are therefore");
     println!("  less likely to sustain Hebbian co-activation over 8 ticks.");
     println!();
@@ -1355,9 +1615,11 @@ fn boundary_analysis() {
     println!("  beyond what Zachary's fieldwork recorded.");
     println!();
     println!("  FACTION COHESION ASYMMETRY:");
-    println!("  Mr. Hi ({:.0}%) vs Officer ({:.0}%) Hebbian reinforcement rate.",
+    println!(
+        "  Mr. Hi ({:.0}%) vs Officer ({:.0}%) Hebbian reinforcement rate.",
         100.0 * hi_confirmed as f32 / hi_edges_total.max(1) as f32,
-        100.0 * off_confirmed as f32 / off_edges_total.max(1) as f32);
+        100.0 * off_confirmed as f32 / off_edges_total.max(1) as f32
+    );
     println!("  The faction with higher activation rate has tighter internal coupling");
     println!("  as measured by behavioural co-activation, independent of community size.");
     println!();
@@ -1374,10 +1636,13 @@ fn boundary_analysis() {
         // Cross-faction edges are 24/78 = 31% of all edges, so if ghosts are
         // random we'd expect ~31% cross-faction. The engine should skew higher.
         let cross_edge_fraction = {
-            let n_cross: usize = EDGES.iter().filter(|&&(a, b)| {
-                (hi_set.contains(&a) && off_set.contains(&b))
-                || (off_set.contains(&a) && hi_set.contains(&b))
-            }).count();
+            let n_cross: usize = EDGES
+                .iter()
+                .filter(|&&(a, b)| {
+                    (hi_set.contains(&a) && off_set.contains(&b))
+                        || (off_set.contains(&a) && hi_set.contains(&b))
+                })
+                .count();
             n_cross as f32 / EDGES.len() as f32
         };
         assert!(
@@ -1389,7 +1654,10 @@ fn boundary_analysis() {
     }
 
     // Tension must be strictly positive (the two worlds are never identical).
-    assert!(report.tension > 0.0, "tension must be > 0 for any real dataset");
+    assert!(
+        report.tension > 0.0,
+        "tension must be > 0 for any real dataset"
+    );
     assert!(report.tension < 1.0, "some edges should be confirmed");
 
     println!("\n  ✓ Boundary assertions passed");
@@ -1418,7 +1686,7 @@ fn coherence_autocorrelation_spike() {
             learning_rate: 0.1,
             max_weight: 10.0,
             weight_decay: 0.99,
-            stdp: false,
+
             ..Default::default()
         }),
     );
@@ -1427,14 +1695,24 @@ fn coherence_autocorrelation_spike() {
     let mut loci_reg = LocusKindRegistry::new();
     loci_reg.insert(MEMBER_KIND, Box::new(SpreadProgram));
 
-    let engine      = Engine::new(EngineConfig { max_batches_per_tick: 3 });
+    let engine = Engine::new(EngineConfig {
+        max_batches_per_tick: 3,
+    });
     let perspective = DefaultEmergencePerspective::default();
 
     // Run 30 ticks with recognize_entities every tick so entities accumulate layers.
     for _ in 0..30 {
         let stimuli = vec![
-            ProposedChange::new(ChangeSubject::Locus(LocusId(0)),  SOCIAL_KIND, StateVector::from_slice(&[1.0])),
-            ProposedChange::new(ChangeSubject::Locus(LocusId(33)), SOCIAL_KIND, StateVector::from_slice(&[1.0])),
+            ProposedChange::new(
+                ChangeSubject::Locus(LocusId(0)),
+                SOCIAL_KIND,
+                StateVector::from_slice(&[1.0]),
+            ),
+            ProposedChange::new(
+                ChangeSubject::Locus(LocusId(33)),
+                SOCIAL_KIND,
+                StateVector::from_slice(&[1.0]),
+            ),
         ];
         engine.tick(&mut world, &loci_reg, &inf, stimuli);
         engine.recognize_entities(&mut world, &inf, &perspective);
@@ -1465,8 +1743,10 @@ fn coherence_autocorrelation_spike() {
             entity.id,
             entity.current.members.len(),
             entity.current.coherence,
-            acf1.map(|v| format!("{v:+.3}")).unwrap_or("  None".to_string()),
-            acf2.map(|v| format!("{v:+.3}")).unwrap_or("  None".to_string()),
+            acf1.map(|v| format!("{v:+.3}"))
+                .unwrap_or("  None".to_string()),
+            acf2.map(|v| format!("{v:+.3}"))
+                .unwrap_or("  None".to_string()),
         );
 
         if acf1.map(|v| v > 0.5).unwrap_or(false) {
@@ -1476,8 +1756,11 @@ fn coherence_autocorrelation_spike() {
 
     println!(
         "\n  Ψ spike warranted: {}",
-        if any_sufficient { "YES — at least one entity has acf(1) > 0.5" }
-        else              { "NO  — coherence series lacks persistence" }
+        if any_sufficient {
+            "YES — at least one entity has acf(1) > 0.5"
+        } else {
+            "NO  — coherence series lacks persistence"
+        }
     );
 
     println!("\n=== Ψ (Emergence Capacity) ===");
@@ -1486,9 +1769,13 @@ fn coherence_autocorrelation_spike() {
     println!("  Ψ ≤ 0 → no detectable synergistic emergence at this grain\n");
 
     for entity in &entities {
-        let dominant = if entity.current.members.contains(&LocusId(0)) { "Mr.Hi  " }
-                       else if entity.current.members.contains(&LocusId(33)) { "Officer" }
-                       else { "other  " };
+        let dominant = if entity.current.members.contains(&LocusId(0)) {
+            "Mr.Hi  "
+        } else if entity.current.members.contains(&LocusId(33)) {
+            "Officer"
+        } else {
+            "other  "
+        };
 
         match psi_scalar(&world, entity.id) {
             Some(r) => println!(
@@ -1496,11 +1783,21 @@ fn coherence_autocorrelation_spike() {
                  i_self={:.4}  i_components={:.4}  \
                  n_samples={}  n_loci={}  → {}",
                 entity.id,
-                r.psi, r.i_self, r.i_sum_components,
-                r.n_samples, r.n_components,
-                if r.psi > 0.0 { "EMERGENT" } else { "not emergent" },
+                r.psi,
+                r.i_self,
+                r.i_sum_components,
+                r.n_samples,
+                r.n_components,
+                if r.psi > 0.0 {
+                    "EMERGENT"
+                } else {
+                    "not emergent"
+                },
             ),
-            None => println!("  [{dominant}] id={:?}  Ψ=None (insufficient data)", entity.id),
+            None => println!(
+                "  [{dominant}] id={:?}  Ψ=None (insufficient data)",
+                entity.id
+            ),
         }
     }
 }

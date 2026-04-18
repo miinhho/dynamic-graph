@@ -21,7 +21,9 @@
 //! let sim = profile_ab.state_similarity(&profile_ac);
 //! ```
 
-use graph_core::{BatchId, InfluenceKindId, InteractionEffect, LocusId, RelationshipId, Relationship};
+use graph_core::{
+    BatchId, InfluenceKindId, InteractionEffect, LocusId, Relationship, RelationshipId,
+};
 use graph_world::World;
 
 use crate::causality::changes_to_relationship_in_range;
@@ -69,7 +71,11 @@ impl<'w> RelationshipBundle<'w> {
         self.relationships
             .iter()
             .filter_map(|r| {
-                if seen.insert(r.kind) { Some(r.kind) } else { None }
+                if seen.insert(r.kind) {
+                    Some(r.kind)
+                } else {
+                    None
+                }
             })
             .collect()
     }
@@ -79,8 +85,7 @@ impl<'w> RelationshipBundle<'w> {
     /// When the same kind appears in both directions (A→B and B→A), their
     /// activities are summed.
     pub fn activity_by_kind(&self) -> Vec<(InfluenceKindId, f32)> {
-        let mut map: rustc_hash::FxHashMap<InfluenceKindId, f32> =
-            rustc_hash::FxHashMap::default();
+        let mut map: rustc_hash::FxHashMap<InfluenceKindId, f32> = rustc_hash::FxHashMap::default();
         for rel in &self.relationships {
             *map.entry(rel.kind).or_insert(0.0) += rel.activity();
         }
@@ -107,7 +112,11 @@ impl<'w> RelationshipBundle<'w> {
 
     /// All relationships in the bundle of a specific influence kind.
     pub fn of_kind(&self, kind: InfluenceKindId) -> Vec<&Relationship> {
-        self.relationships.iter().copied().filter(|r| r.kind == kind).collect()
+        self.relationships
+            .iter()
+            .copied()
+            .filter(|r| r.kind == kind)
+            .collect()
     }
 
     /// Net activity after applying declared cross-kind interaction effects.
@@ -181,26 +190,30 @@ impl<'w> RelationshipBundle<'w> {
     pub fn profile_similarity(&self, other: &RelationshipBundle<'_>) -> f32 {
         let all_kinds: Vec<InfluenceKindId> = {
             let mut set = rustc_hash::FxHashSet::default();
-            for r in &self.relationships { set.insert(r.kind); }
-            for r in &other.relationships { set.insert(r.kind); }
+            for r in &self.relationships {
+                set.insert(r.kind);
+            }
+            for r in &other.relationships {
+                set.insert(r.kind);
+            }
             let mut v: Vec<_> = set.into_iter().collect();
             v.sort();
             v
         };
 
         let vec_a: Vec<f32> = {
-            let map: rustc_hash::FxHashMap<_, _> = self
-                .activity_by_kind()
-                .into_iter()
-                .collect();
-            all_kinds.iter().map(|k| *map.get(k).unwrap_or(&0.0)).collect()
+            let map: rustc_hash::FxHashMap<_, _> = self.activity_by_kind().into_iter().collect();
+            all_kinds
+                .iter()
+                .map(|k| *map.get(k).unwrap_or(&0.0))
+                .collect()
         };
         let vec_b: Vec<f32> = {
-            let map: rustc_hash::FxHashMap<_, _> = other
-                .activity_by_kind()
-                .into_iter()
-                .collect();
-            all_kinds.iter().map(|k| *map.get(k).unwrap_or(&0.0)).collect()
+            let map: rustc_hash::FxHashMap<_, _> = other.activity_by_kind().into_iter().collect();
+            all_kinds
+                .iter()
+                .map(|k| *map.get(k).unwrap_or(&0.0))
+                .collect()
         };
 
         let sv_a = graph_core::StateVector::from_slice(&vec_a);
@@ -251,8 +264,14 @@ impl<'w> RelationshipBundle<'w> {
         }
 
         let all_kinds = union_sorted_map_keys(&map_a, &map_b);
-        let vec_a: Vec<f32> = all_kinds.iter().map(|k| *map_a.get(k).unwrap_or(&0.0)).collect();
-        let vec_b: Vec<f32> = all_kinds.iter().map(|k| *map_b.get(k).unwrap_or(&0.0)).collect();
+        let vec_a: Vec<f32> = all_kinds
+            .iter()
+            .map(|k| *map_a.get(k).unwrap_or(&0.0))
+            .collect();
+        let vec_b: Vec<f32> = all_kinds
+            .iter()
+            .map(|k| *map_b.get(k).unwrap_or(&0.0))
+            .collect();
 
         let sv_a = graph_core::StateVector::from_slice(&vec_a);
         let sv_b = graph_core::StateVector::from_slice(&vec_b);
@@ -267,8 +286,7 @@ fn slope_map(
     from_batch: BatchId,
     to_batch: BatchId,
 ) -> rustc_hash::FxHashMap<InfluenceKindId, f32> {
-    let mut by_kind: rustc_hash::FxHashMap<InfluenceKindId, f32> =
-        rustc_hash::FxHashMap::default();
+    let mut by_kind: rustc_hash::FxHashMap<InfluenceKindId, f32> = rustc_hash::FxHashMap::default();
     for rel in &bundle.relationships {
         if let Some(s) = ols_slope_for_rel(world, rel.id, from_batch, to_batch) {
             *by_kind.entry(rel.kind).or_insert(0.0) += s;
@@ -283,8 +301,12 @@ fn union_sorted_map_keys(
     b: &rustc_hash::FxHashMap<InfluenceKindId, f32>,
 ) -> Vec<InfluenceKindId> {
     let mut set = rustc_hash::FxHashSet::default();
-    for &k in a.keys() { set.insert(k); }
-    for &k in b.keys() { set.insert(k); }
+    for &k in a.keys() {
+        set.insert(k);
+    }
+    for &k in b.keys() {
+        set.insert(k);
+    }
     let mut v: Vec<_> = set.into_iter().collect();
     v.sort();
     v
@@ -311,9 +333,17 @@ fn ols_slope_for_rel(
 ///     println!("net coupling: {:.2}", bundle.net_activity());
 /// }
 /// ```
-pub fn relationship_profile<'w>(world: &'w World, a: LocusId, b: LocusId) -> RelationshipBundle<'w> {
+pub fn relationship_profile<'w>(
+    world: &'w World,
+    a: LocusId,
+    b: LocusId,
+) -> RelationshipBundle<'w> {
     let relationships = world.relationships_between(a, b).collect();
-    RelationshipBundle { a, b, relationships }
+    RelationshipBundle {
+        a,
+        b,
+        relationships,
+    }
 }
 
 #[cfg(test)]
@@ -328,10 +358,22 @@ mod tests {
         let k1 = InfluenceKindId(1);
         let k2 = InfluenceKindId(2);
         // A→B: k1 activity=2.0, k2 activity=-1.0
-        w.add_relationship(Endpoints::directed(a, b), k1, StateVector::from_slice(&[2.0, 0.0]));
-        w.add_relationship(Endpoints::directed(a, b), k2, StateVector::from_slice(&[-1.0, 0.0]));
+        w.add_relationship(
+            Endpoints::directed(a, b),
+            k1,
+            StateVector::from_slice(&[2.0, 0.0]),
+        );
+        w.add_relationship(
+            Endpoints::directed(a, b),
+            k2,
+            StateVector::from_slice(&[-1.0, 0.0]),
+        );
         // B→A: k1 activity=0.5
-        w.add_relationship(Endpoints::directed(b, a), k1, StateVector::from_slice(&[0.5, 0.0]));
+        w.add_relationship(
+            Endpoints::directed(b, a),
+            k1,
+            StateVector::from_slice(&[0.5, 0.0]),
+        );
         // Unrelated edge A→C
         w.add_relationship(
             Endpoints::directed(a, LocusId(2)),
@@ -366,7 +408,10 @@ mod tests {
     fn activity_by_kind_merges_both_directions() {
         let (w, a, b) = make_world_ab();
         let pairs = relationship_profile(&w, a, b).activity_by_kind();
-        let k1_sum = pairs.iter().find(|(k, _)| *k == InfluenceKindId(1)).map(|(_, v)| *v);
+        let k1_sum = pairs
+            .iter()
+            .find(|(k, _)| *k == InfluenceKindId(1))
+            .map(|(_, v)| *v);
         // k1: 2.0 (A→B) + 0.5 (B→A) = 2.5
         assert!((k1_sum.unwrap() - 2.5).abs() < 1e-5);
     }
@@ -374,7 +419,10 @@ mod tests {
     #[test]
     fn dominant_kind_is_highest_activity() {
         let (w, a, b) = make_world_ab();
-        assert_eq!(relationship_profile(&w, a, b).dominant_kind(), Some(InfluenceKindId(1)));
+        assert_eq!(
+            relationship_profile(&w, a, b).dominant_kind(),
+            Some(InfluenceKindId(1))
+        );
     }
 
     #[test]

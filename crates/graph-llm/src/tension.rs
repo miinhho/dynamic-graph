@@ -135,17 +135,14 @@ mod tests {
 
     #[test]
     fn assert_fact_action_formats_correctly() {
-        use graph_core::LocusId;
         use graph_boundary::BoundaryAction;
+        use graph_core::LocusId;
         use graph_core::RelationshipId;
         use graph_schema::DeclaredRelKind;
 
         let client = MockLlmClient::new("schema advice here");
         let schema = SchemaWorld::new();
-        let names = NameMap::from_pairs([
-            (LocusId(1), "Alice"),
-            (LocusId(2), "Bob"),
-        ]);
+        let names = NameMap::from_pairs([(LocusId(1), "Alice"), (LocusId(2), "Bob")]);
 
         let actions = vec![BoundaryAction::AssertFact {
             subject: LocusId(1),

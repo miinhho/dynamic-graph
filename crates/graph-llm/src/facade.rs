@@ -27,10 +27,10 @@
 //! let nodes = g.ingest("Marie Curie worked at...", &["PERSON", "ORG"])?;
 //! ```
 
-use graph_boundary::{analyze_boundary, prescribe_updates, PrescriptionConfig};
+use graph_boundary::{PrescriptionConfig, analyze_boundary, prescribe_updates};
 use graph_core::{BatchId, ChangeId, Endpoints};
 use graph_engine::{DefaultCoherePerspective, DefaultEmergencePerspective, InfluenceKindConfig};
-use graph_query::{entity_deviations_since, relationships_absent_without, NameMap};
+use graph_query::{NameMap, entity_deviations_since, relationships_absent_without};
 use graph_schema::SchemaWorld;
 use graph_world::World;
 
@@ -51,9 +51,9 @@ use crate::ingest::{ExtractedNode, TextIngestor};
 /// into Q&A prompts (default: 5).
 pub struct GraphLlm<'a> {
     client: &'a dyn LlmClient,
-    world:  &'a World,
-    names:  NameMap,
-    top_k:  usize,
+    world: &'a World,
+    names: NameMap,
+    top_k: usize,
 }
 
 impl<'a> GraphLlm<'a> {
@@ -121,8 +121,9 @@ impl<'a> GraphLlm<'a> {
     /// Runs [`analyze_boundary`] and [`prescribe_updates`] internally — you
     /// only need to supply the [`SchemaWorld`].
     pub fn narrate_schema_tension(&self, schema: &SchemaWorld) -> Result<String, LlmError> {
-        let report  = analyze_boundary(self.world, schema, None);
-        let actions = prescribe_updates(&report, schema, self.world, &PrescriptionConfig::default());
+        let report = analyze_boundary(self.world, schema, None);
+        let actions =
+            prescribe_updates(&report, schema, self.world, &PrescriptionConfig::default());
         crate::tension::narrate_prescriptions(self.client, &actions, schema, &self.names)
     }
 
@@ -204,26 +205,26 @@ mod tests {
     #[test]
     fn ask_on_empty_world_returns_llm_response() {
         let client = MockLlmClient::new("No one.");
-        let world  = World::new();
-        let g      = GraphLlm::new(&client, &world);
+        let world = World::new();
+        let g = GraphLlm::new(&client, &world);
         assert_eq!(g.ask("Who is Alice?").unwrap(), "No one.");
     }
 
     #[test]
     fn narrate_entity_deviations_empty_returns_canned() {
         let client = MockLlmClient::new("should not be called");
-        let world  = World::new();
-        let g      = GraphLlm::new(&client, &world);
-        let prose  = g.narrate_entity_deviations(BatchId(0)).unwrap();
+        let world = World::new();
+        let g = GraphLlm::new(&client, &world);
+        let prose = g.narrate_entity_deviations(BatchId(0)).unwrap();
         assert!(prose.contains("No entity"), "{prose}");
     }
 
     #[test]
     fn narrate_counterfactual_empty_returns_canned() {
         let client = MockLlmClient::new("should not be called");
-        let world  = World::new();
-        let g      = GraphLlm::new(&client, &world);
-        let prose  = g.narrate_counterfactual(&[]).unwrap();
+        let world = World::new();
+        let g = GraphLlm::new(&client, &world);
+        let prose = g.narrate_counterfactual(&[]).unwrap();
         assert!(prose.contains("No relationships"), "{prose}");
     }
 }

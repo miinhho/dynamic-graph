@@ -93,19 +93,28 @@ pub struct QueryPlan {
 /// ```
 pub fn explain(world: &World, query: &Query) -> QueryPlan {
     match query {
-        Query::FindRelationships { predicates, sort_by, limit } => {
-            explain_find_relationships(world, predicates, sort_by.is_some(), *limit)
-        }
-        Query::FindLoci { predicates, sort_by, limit } => {
-            explain_find_loci(world, predicates, sort_by.is_some(), *limit)
-        }
-        Query::FindEntities { predicates, sort_by, limit } => {
-            explain_find_entities(world, predicates.len(), sort_by.is_some(), *limit)
-        }
+        Query::FindRelationships {
+            predicates,
+            sort_by,
+            limit,
+        } => explain_find_relationships(world, predicates, sort_by.is_some(), *limit),
+        Query::FindLoci {
+            predicates,
+            sort_by,
+            limit,
+        } => explain_find_loci(world, predicates, sort_by.is_some(), *limit),
+        Query::FindEntities {
+            predicates,
+            sort_by,
+            limit,
+        } => explain_find_entities(world, predicates.len(), sort_by.is_some(), *limit),
         // Causal-strength queries: O(R) scan over all directed relationships of the kind.
         Query::CausalDirection { kind, .. } => single_scan_plan(
             world.relationships().len(),
-            &format!("causal_direction scan over relationships of kind {:?}", kind),
+            &format!(
+                "causal_direction scan over relationships of kind {:?}",
+                kind
+            ),
             Some(1),
         ),
         Query::DominantCauses { kind, n, .. } => single_scan_plan(
@@ -118,11 +127,13 @@ pub fn explain(world: &World, query: &Query) -> QueryPlan {
             &format!("dominant_effects scan for kind {:?}, top {}", kind, n),
             Some(*n),
         ),
-        Query::CausalInStrength { kind, .. } | Query::CausalOutStrength { kind, .. } => single_scan_plan(
-            world.relationships().len(),
-            &format!("causal strength scan over relationships of kind {:?}", kind),
-            Some(1),
-        ),
+        Query::CausalInStrength { kind, .. } | Query::CausalOutStrength { kind, .. } => {
+            single_scan_plan(
+                world.relationships().len(),
+                &format!("causal strength scan over relationships of kind {:?}", kind),
+                Some(1),
+            )
+        }
         Query::FeedbackPairs { kind, .. } => single_scan_plan(
             world.relationships().len(),
             &format!("feedback_pairs scan for kind {:?} (two passes)", kind),
@@ -137,12 +148,18 @@ pub fn explain(world: &World, query: &Query) -> QueryPlan {
         ),
         Query::GrangerDominantCauses { kind, n, .. } => single_scan_plan(
             world.log().len(),
-            &format!("granger_dominant_causes ChangeLog scan for kind {:?}, top {}", kind, n),
+            &format!(
+                "granger_dominant_causes ChangeLog scan for kind {:?}, top {}",
+                kind, n
+            ),
             Some(*n),
         ),
         Query::GrangerDominantEffects { kind, n, .. } => single_scan_plan(
             world.log().len(),
-            &format!("granger_dominant_effects ChangeLog scan for kind {:?}, top {}", kind, n),
+            &format!(
+                "granger_dominant_effects ChangeLog scan for kind {:?}, top {}",
+                kind, n
+            ),
             Some(*n),
         ),
 
@@ -156,7 +173,11 @@ pub fn explain(world: &World, query: &Query) -> QueryPlan {
         // D3: Structural counterfactual replay — O(D×descendants + R).
         Query::CounterfactualReplay { remove_changes } => single_scan_plan(
             world.log().len() + world.relationships().len(),
-            &format!("counterfactual_replay: O(descendants of {} roots + R={})", remove_changes.len(), world.relationships().len()),
+            &format!(
+                "counterfactual_replay: O(descendants of {} roots + R={})",
+                remove_changes.len(),
+                world.relationships().len()
+            ),
             None,
         ),
 
@@ -172,7 +193,10 @@ pub fn explain(world: &World, query: &Query) -> QueryPlan {
             None,
         ),
         Query::EntityLayersInRange { entity_id, .. } => single_scan_plan(
-            world.entities().get(*entity_id).map_or(0, |e| e.layers.len()),
+            world
+                .entities()
+                .get(*entity_id)
+                .map_or(0, |e| e.layers.len()),
             "entity_layers_in_range: O(entity layer count)",
             None,
         ),
@@ -192,11 +216,9 @@ pub fn explain(world: &World, query: &Query) -> QueryPlan {
             "Burt structural constraint over all loci",
             *limit,
         ),
-        Query::PageRank { limit, .. } => single_traversal_plan(
-            world.loci().len(),
-            "PageRank over all loci",
-            *limit,
-        ),
+        Query::PageRank { limit, .. } => {
+            single_traversal_plan(world.loci().len(), "PageRank over all loci", *limit)
+        }
         Query::Louvain | Query::LouvainWithResolution(_) => single_traversal_plan(
             world.relationships().len(),
             "Louvain community detection",
@@ -237,10 +259,17 @@ pub(crate) enum SeedKind {
     Touching(LocusId),
     /// O(1) — `From(a) + To(b) + OfKind(k)` combined into a single
     /// `(EndpointKey, kind)` hash lookup via the `by_key` index.
-    DirectLookup { from: LocusId, to: LocusId, kind: RelationshipKindId },
+    DirectLookup {
+        from: LocusId,
+        to: LocusId,
+        kind: RelationshipKindId,
+    },
     /// O(min_degree) — `From(a) + To(b)` without an `OfKind` constraint.
     /// Uses `relationships_between(a, b)` which scans the shorter adjacency list.
-    Between { a: LocusId, b: LocusId },
+    Between {
+        a: LocusId,
+        b: LocusId,
+    },
 }
 
 /// Plan predicate execution order for `FindRelationships`.
@@ -258,17 +287,25 @@ pub(crate) enum SeedKind {
 /// cheapest-first for efficient sequential filtering.
 pub(crate) fn plan_rel_predicates(predicates: &[RelationshipPredicate]) -> RelPlan<'_> {
     // Pass 1: find the first occurrence index of each seed-eligible predicate.
-    let mut first_from:     Option<(usize, LocusId)>            = None;
-    let mut first_to:       Option<(usize, LocusId)>            = None;
-    let mut first_touching: Option<(usize, LocusId)>            = None;
-    let mut first_of_kind:  Option<(usize, RelationshipKindId)> = None;
+    let mut first_from: Option<(usize, LocusId)> = None;
+    let mut first_to: Option<(usize, LocusId)> = None;
+    let mut first_touching: Option<(usize, LocusId)> = None;
+    let mut first_of_kind: Option<(usize, RelationshipKindId)> = None;
 
     for (i, pred) in predicates.iter().enumerate() {
         match pred {
-            RelationshipPredicate::From(id)     if first_from.is_none()     => { first_from     = Some((i, *id)); }
-            RelationshipPredicate::To(id)       if first_to.is_none()       => { first_to       = Some((i, *id)); }
-            RelationshipPredicate::Touching(id) if first_touching.is_none() => { first_touching = Some((i, *id)); }
-            RelationshipPredicate::OfKind(k)    if first_of_kind.is_none()  => { first_of_kind  = Some((i, *k)); }
+            RelationshipPredicate::From(id) if first_from.is_none() => {
+                first_from = Some((i, *id));
+            }
+            RelationshipPredicate::To(id) if first_to.is_none() => {
+                first_to = Some((i, *id));
+            }
+            RelationshipPredicate::Touching(id) if first_touching.is_none() => {
+                first_touching = Some((i, *id));
+            }
+            RelationshipPredicate::OfKind(k) if first_of_kind.is_none() => {
+                first_of_kind = Some((i, *k));
+            }
             _ => {}
         }
     }
@@ -288,12 +325,21 @@ pub(crate) fn plan_rel_predicates(predicates: &[RelationshipPredicate]) -> RelPl
             Some(SeedKind::Between { a, b })
         }
         // Standard adjacency seeds: first qualifying predicate wins.
-        (Some((fi, id)), _, _) => { consumed.push(fi); Some(SeedKind::From(id)) }
-        (_, Some((ti, id)), _) => { consumed.push(ti); Some(SeedKind::To(id)) }
-        _ => match first_touching {
-            Some((ti, id)) => { consumed.push(ti); Some(SeedKind::Touching(id)) }
-            None => None,
+        (Some((fi, id)), _, _) => {
+            consumed.push(fi);
+            Some(SeedKind::From(id))
         }
+        (_, Some((ti, id)), _) => {
+            consumed.push(ti);
+            Some(SeedKind::To(id))
+        }
+        _ => match first_touching {
+            Some((ti, id)) => {
+                consumed.push(ti);
+                Some(SeedKind::Touching(id))
+            }
+            None => None,
+        },
     };
 
     // Pass 3: remaining predicates (not consumed by seed), sorted cheapest-first.
@@ -315,8 +361,9 @@ pub(crate) fn plan_rel_predicates(predicates: &[RelationshipPredicate]) -> RelPl
 fn rel_pred_priority(pred: &RelationshipPredicate) -> u8 {
     match pred {
         // Already-used index predicates that appear as secondary filters:
-        RelationshipPredicate::From(_) | RelationshipPredicate::To(_) | RelationshipPredicate::Touching(_)
-            => 5,
+        RelationshipPredicate::From(_)
+        | RelationshipPredicate::To(_)
+        | RelationshipPredicate::Touching(_) => 5,
         // Cheap kind filter — hash lookup
         RelationshipPredicate::OfKind(_) => 10,
         // Numeric filters — arithmetic comparison
@@ -325,8 +372,9 @@ fn rel_pred_priority(pred: &RelationshipPredicate) -> u8 {
         | RelationshipPredicate::SlotAbove { .. }
         | RelationshipPredicate::MinChangeCount(_) => 20,
         // Range / age filters — two comparisons
-        RelationshipPredicate::CreatedInRange { .. }
-        | RelationshipPredicate::OlderThan { .. } => 30,
+        RelationshipPredicate::CreatedInRange { .. } | RelationshipPredicate::OlderThan { .. } => {
+            30
+        }
     }
 }
 
@@ -334,20 +382,20 @@ fn rel_pred_priority(pred: &RelationshipPredicate) -> u8 {
 
 /// Sorted locus predicates — cheapest first.
 pub(crate) fn plan_loci_predicates(predicates: &[LocusPredicate]) -> Vec<&LocusPredicate> {
-    let mut ranked: Vec<(&LocusPredicate, u8)> =
-        predicates.iter().map(|p| (p, locus_pred_priority(p))).collect();
+    let mut ranked: Vec<(&LocusPredicate, u8)> = predicates
+        .iter()
+        .map(|p| (p, locus_pred_priority(p)))
+        .collect();
     ranked.sort_unstable_by_key(|(_, p)| *p);
     ranked.into_iter().map(|(p, _)| p).collect()
 }
 
 fn locus_pred_priority(pred: &LocusPredicate) -> u8 {
     match pred {
-        LocusPredicate::OfKind(_)               => 10,
-        LocusPredicate::StateAbove { .. }
-        | LocusPredicate::StateBelow { .. }     => 20,
-        LocusPredicate::F64PropertyAbove { .. }
-        | LocusPredicate::StrPropertyEq { .. }  => 30,
-        LocusPredicate::MinDegree(_)             => 40, // degree() call
+        LocusPredicate::OfKind(_) => 10,
+        LocusPredicate::StateAbove { .. } | LocusPredicate::StateBelow { .. } => 20,
+        LocusPredicate::F64PropertyAbove { .. } | LocusPredicate::StrPropertyEq { .. } => 30,
+        LocusPredicate::MinDegree(_) => 40, // degree() call
         // Active BFS — cheaper than full BFS because dormant edges are pruned.
         LocusPredicate::ReachableFromActive { .. }
         | LocusPredicate::DownstreamOfActive { .. }
@@ -355,7 +403,7 @@ fn locus_pred_priority(pred: &LocusPredicate) -> u8 {
         // BFS over full graph — most expensive.
         LocusPredicate::ReachableFrom { .. }
         | LocusPredicate::DownstreamOf { .. }
-        | LocusPredicate::UpstreamOf { .. }     => 90,
+        | LocusPredicate::UpstreamOf { .. } => 90,
     }
 }
 
@@ -440,7 +488,11 @@ fn explain_find_relationships(
     for pred in &plan.predicates_ordered {
         let (desc, cost, selectivity) = rel_pred_desc(pred);
         est = ((est as f32 * selectivity) as usize).max(0);
-        steps.push(PlanStep { description: desc, cost_class: cost, estimated_output: est });
+        steps.push(PlanStep {
+            description: desc,
+            cost_class: cost,
+            estimated_output: est,
+        });
     }
     if has_sort {
         steps.push(PlanStep {
@@ -457,7 +509,11 @@ fn explain_find_relationships(
             estimated_output: est,
         });
     }
-    QueryPlan { steps, estimated_candidates_initial: initial, estimated_output: est }
+    QueryPlan {
+        steps,
+        estimated_candidates_initial: initial,
+        estimated_output: est,
+    }
 }
 
 fn explain_find_loci(
@@ -477,16 +533,32 @@ fn explain_find_loci(
     for pred in ordered {
         let (desc, cost, selectivity) = locus_pred_desc(pred);
         est = ((est as f32 * selectivity) as usize).max(0);
-        steps.push(PlanStep { description: desc, cost_class: cost, estimated_output: est });
+        steps.push(PlanStep {
+            description: desc,
+            cost_class: cost,
+            estimated_output: est,
+        });
     }
     if has_sort {
-        steps.push(PlanStep { description: "sort".to_string(), cost_class: CostClass::Scan, estimated_output: est });
+        steps.push(PlanStep {
+            description: "sort".to_string(),
+            cost_class: CostClass::Scan,
+            estimated_output: est,
+        });
     }
     if let Some(n) = limit {
         est = est.min(n);
-        steps.push(PlanStep { description: format!("limit {}", n), cost_class: CostClass::Scan, estimated_output: est });
+        steps.push(PlanStep {
+            description: format!("limit {}", n),
+            cost_class: CostClass::Scan,
+            estimated_output: est,
+        });
     }
-    QueryPlan { steps, estimated_candidates_initial: total, estimated_output: est }
+    QueryPlan {
+        steps,
+        estimated_candidates_initial: total,
+        estimated_output: est,
+    }
 }
 
 fn explain_find_entities(
@@ -511,13 +583,25 @@ fn explain_find_entities(
         });
     }
     if has_sort {
-        steps.push(PlanStep { description: "sort".to_string(), cost_class: CostClass::Scan, estimated_output: est });
+        steps.push(PlanStep {
+            description: "sort".to_string(),
+            cost_class: CostClass::Scan,
+            estimated_output: est,
+        });
     }
     if let Some(n) = limit {
         est = est.min(n);
-        steps.push(PlanStep { description: format!("limit {}", n), cost_class: CostClass::Scan, estimated_output: est });
+        steps.push(PlanStep {
+            description: format!("limit {}", n),
+            cost_class: CostClass::Scan,
+            estimated_output: est,
+        });
     }
-    QueryPlan { steps, estimated_candidates_initial: total, estimated_output: est }
+    QueryPlan {
+        steps,
+        estimated_candidates_initial: total,
+        estimated_output: est,
+    }
 }
 
 fn single_scan_plan(initial: usize, desc: &str, limit: Option<usize>) -> QueryPlan {
@@ -535,15 +619,18 @@ fn single_scan_plan(initial: usize, desc: &str, limit: Option<usize>) -> QueryPl
 
 fn single_traversal_plan(initial: usize, desc: &str, limit: Option<usize>) -> QueryPlan {
     let est = limit.unwrap_or(initial);
-    let mut steps = vec![PlanStep {
-        description: desc.to_string(),
-        cost_class: CostClass::Traversal,
-        estimated_output: initial,
-    }, PlanStep {
-        description: "sort descending".to_string(),
-        cost_class: CostClass::Scan,
-        estimated_output: initial,
-    }];
+    let mut steps = vec![
+        PlanStep {
+            description: desc.to_string(),
+            cost_class: CostClass::Traversal,
+            estimated_output: initial,
+        },
+        PlanStep {
+            description: "sort descending".to_string(),
+            cost_class: CostClass::Scan,
+            estimated_output: initial,
+        },
+    ];
     if let Some(n) = limit {
         steps.push(PlanStep {
             description: format!("limit {}", n),
@@ -551,48 +638,124 @@ fn single_traversal_plan(initial: usize, desc: &str, limit: Option<usize>) -> Qu
             estimated_output: n.min(initial),
         });
     }
-    QueryPlan { steps, estimated_candidates_initial: initial, estimated_output: est }
+    QueryPlan {
+        steps,
+        estimated_candidates_initial: initial,
+        estimated_output: est,
+    }
 }
 
 // ─── Predicate descriptions for explain ──────────────────────────────────────
 
 fn rel_pred_desc(pred: &RelationshipPredicate) -> (String, CostClass, f32) {
     match pred {
-        RelationshipPredicate::From(id)     => (format!("filter From({})", id.0),     CostClass::Scan, 0.3),
-        RelationshipPredicate::To(id)       => (format!("filter To({})", id.0),       CostClass::Scan, 0.3),
-        RelationshipPredicate::Touching(id) => (format!("filter Touching({})", id.0), CostClass::Scan, 0.5),
-        RelationshipPredicate::OfKind(k)    => (format!("filter OfKind({})", k.0),    CostClass::Scan, 0.4),
-        RelationshipPredicate::ActivityAbove(v)  => (format!("filter activity > {:.3}", v), CostClass::Scan, 0.5),
-        RelationshipPredicate::StrengthAbove(v)  => (format!("filter strength > {:.3}", v), CostClass::Scan, 0.5),
-        RelationshipPredicate::SlotAbove { slot, min } => (format!("filter slot[{}] >= {:.3}", slot, min), CostClass::Scan, 0.5),
-        RelationshipPredicate::MinChangeCount(n) => (format!("filter change_count >= {}", n), CostClass::Scan, 0.4),
-        RelationshipPredicate::CreatedInRange { .. } => ("filter created_batch in range".to_string(), CostClass::Scan, 0.3),
-        RelationshipPredicate::OlderThan { .. }      => ("filter older_than".to_string(),             CostClass::Scan, 0.4),
+        RelationshipPredicate::From(id) => (format!("filter From({})", id.0), CostClass::Scan, 0.3),
+        RelationshipPredicate::To(id) => (format!("filter To({})", id.0), CostClass::Scan, 0.3),
+        RelationshipPredicate::Touching(id) => {
+            (format!("filter Touching({})", id.0), CostClass::Scan, 0.5)
+        }
+        RelationshipPredicate::OfKind(k) => {
+            (format!("filter OfKind({})", k.0), CostClass::Scan, 0.4)
+        }
+        RelationshipPredicate::ActivityAbove(v) => {
+            (format!("filter activity > {:.3}", v), CostClass::Scan, 0.5)
+        }
+        RelationshipPredicate::StrengthAbove(v) => {
+            (format!("filter strength > {:.3}", v), CostClass::Scan, 0.5)
+        }
+        RelationshipPredicate::SlotAbove { slot, min } => (
+            format!("filter slot[{}] >= {:.3}", slot, min),
+            CostClass::Scan,
+            0.5,
+        ),
+        RelationshipPredicate::MinChangeCount(n) => (
+            format!("filter change_count >= {}", n),
+            CostClass::Scan,
+            0.4,
+        ),
+        RelationshipPredicate::CreatedInRange { .. } => (
+            "filter created_batch in range".to_string(),
+            CostClass::Scan,
+            0.3,
+        ),
+        RelationshipPredicate::OlderThan { .. } => {
+            ("filter older_than".to_string(), CostClass::Scan, 0.4)
+        }
     }
 }
 
 fn locus_pred_desc(pred: &LocusPredicate) -> (String, CostClass, f32) {
     match pred {
-        LocusPredicate::OfKind(k)            => (format!("filter OfKind({})", k.0), CostClass::Scan, 0.4),
-        LocusPredicate::StateAbove { slot, min } => (format!("filter state[{}] >= {:.3}", slot, min), CostClass::Scan, 0.5),
-        LocusPredicate::StateBelow { slot, max } => (format!("filter state[{}] <= {:.3}", slot, max), CostClass::Scan, 0.5),
-        LocusPredicate::F64PropertyAbove { key, min } => (format!("filter {}(f64) > {:.3}", key, min), CostClass::Scan, 0.4),
-        LocusPredicate::StrPropertyEq { key, value }  => (format!("filter {}=={}", key, value), CostClass::Scan, 0.3),
-        LocusPredicate::MinDegree(n)         => (format!("filter degree >= {}", n), CostClass::Scan, 0.4),
-        LocusPredicate::ReachableFrom { start, depth } => (format!("BFS reachable_from({}, depth={})", start.0, depth), CostClass::Traversal, 0.3),
-        LocusPredicate::DownstreamOf { start, depth }  => (format!("BFS downstream_of({}, depth={})", start.0, depth), CostClass::Traversal, 0.3),
-        LocusPredicate::UpstreamOf { start, depth }    => (format!("BFS upstream_of({}, depth={})", start.0, depth), CostClass::Traversal, 0.3),
-        LocusPredicate::ReachableFromActive { start, depth, min_activity } => (
-            format!("active BFS reachable_from({}, depth={}, min_act={:.3})", start.0, depth, min_activity),
-            CostClass::Traversal, 0.25,
+        LocusPredicate::OfKind(k) => (format!("filter OfKind({})", k.0), CostClass::Scan, 0.4),
+        LocusPredicate::StateAbove { slot, min } => (
+            format!("filter state[{}] >= {:.3}", slot, min),
+            CostClass::Scan,
+            0.5,
         ),
-        LocusPredicate::DownstreamOfActive { start, depth, min_activity } => (
-            format!("active BFS downstream_of({}, depth={}, min_act={:.3})", start.0, depth, min_activity),
-            CostClass::Traversal, 0.25,
+        LocusPredicate::StateBelow { slot, max } => (
+            format!("filter state[{}] <= {:.3}", slot, max),
+            CostClass::Scan,
+            0.5,
         ),
-        LocusPredicate::UpstreamOfActive { start, depth, min_activity } => (
-            format!("active BFS upstream_of({}, depth={}, min_act={:.3})", start.0, depth, min_activity),
-            CostClass::Traversal, 0.25,
+        LocusPredicate::F64PropertyAbove { key, min } => (
+            format!("filter {}(f64) > {:.3}", key, min),
+            CostClass::Scan,
+            0.4,
+        ),
+        LocusPredicate::StrPropertyEq { key, value } => {
+            (format!("filter {}=={}", key, value), CostClass::Scan, 0.3)
+        }
+        LocusPredicate::MinDegree(n) => (format!("filter degree >= {}", n), CostClass::Scan, 0.4),
+        LocusPredicate::ReachableFrom { start, depth } => (
+            format!("BFS reachable_from({}, depth={})", start.0, depth),
+            CostClass::Traversal,
+            0.3,
+        ),
+        LocusPredicate::DownstreamOf { start, depth } => (
+            format!("BFS downstream_of({}, depth={})", start.0, depth),
+            CostClass::Traversal,
+            0.3,
+        ),
+        LocusPredicate::UpstreamOf { start, depth } => (
+            format!("BFS upstream_of({}, depth={})", start.0, depth),
+            CostClass::Traversal,
+            0.3,
+        ),
+        LocusPredicate::ReachableFromActive {
+            start,
+            depth,
+            min_activity,
+        } => (
+            format!(
+                "active BFS reachable_from({}, depth={}, min_act={:.3})",
+                start.0, depth, min_activity
+            ),
+            CostClass::Traversal,
+            0.25,
+        ),
+        LocusPredicate::DownstreamOfActive {
+            start,
+            depth,
+            min_activity,
+        } => (
+            format!(
+                "active BFS downstream_of({}, depth={}, min_act={:.3})",
+                start.0, depth, min_activity
+            ),
+            CostClass::Traversal,
+            0.25,
+        ),
+        LocusPredicate::UpstreamOfActive {
+            start,
+            depth,
+            min_activity,
+        } => (
+            format!(
+                "active BFS upstream_of({}, depth={}, min_act={:.3})",
+                start.0, depth, min_activity
+            ),
+            CostClass::Traversal,
+            0.25,
         ),
     }
 }
@@ -604,8 +767,8 @@ mod tests {
     use super::*;
     use crate::query_api::{LocusSort, Query, RelSort};
     use graph_core::{
-        BatchId, Endpoints, InfluenceKindId, KindObservation, Locus, LocusKindId,
-        Relationship, RelationshipId, RelationshipLineage, StateVector,
+        BatchId, Endpoints, InfluenceKindId, KindObservation, Locus, LocusKindId, Relationship,
+        RelationshipId, RelationshipLineage, StateVector,
     };
     use graph_world::World;
 
@@ -652,11 +815,15 @@ mod tests {
         assert!(
             matches!(plan.seed_locus, Some(SeedKind::DirectLookup { from, to, kind })
                 if from.0 == 1 && to.0 == 2 && kind.0 == 7),
-            "expected DirectLookup, got {:?}", plan.seed_locus.as_ref().map(|_| "other")
+            "expected DirectLookup, got {:?}",
+            plan.seed_locus.as_ref().map(|_| "other")
         );
         // Only ActivityAbove remains
         assert_eq!(plan.predicates_ordered.len(), 1);
-        assert!(matches!(plan.predicates_ordered[0], RelationshipPredicate::ActivityAbove(_)));
+        assert!(matches!(
+            plan.predicates_ordered[0],
+            RelationshipPredicate::ActivityAbove(_)
+        ));
     }
 
     #[test]
@@ -674,7 +841,10 @@ mod tests {
         );
         // ActivityAbove remains; no OfKind was present
         assert_eq!(plan.predicates_ordered.len(), 1);
-        assert!(matches!(plan.predicates_ordered[0], RelationshipPredicate::ActivityAbove(_)));
+        assert!(matches!(
+            plan.predicates_ordered[0],
+            RelationshipPredicate::ActivityAbove(_)
+        ));
     }
 
     #[test]
@@ -758,15 +928,24 @@ mod tests {
         assert!(matches!(plan.seed_locus, Some(SeedKind::From(id)) if id.0 == 1));
         // remaining predicates: OfKind before ActivityAbove
         assert_eq!(plan.predicates_ordered.len(), 2);
-        assert!(matches!(plan.predicates_ordered[0], RelationshipPredicate::OfKind(_)));
-        assert!(matches!(plan.predicates_ordered[1], RelationshipPredicate::ActivityAbove(_)));
+        assert!(matches!(
+            plan.predicates_ordered[0],
+            RelationshipPredicate::OfKind(_)
+        ));
+        assert!(matches!(
+            plan.predicates_ordered[1],
+            RelationshipPredicate::ActivityAbove(_)
+        ));
     }
 
     #[test]
     fn plan_loci_predicates_traversal_last() {
         use graph_core::LocusId;
         let preds = vec![
-            LocusPredicate::ReachableFrom { start: LocusId(0), depth: 2 },
+            LocusPredicate::ReachableFrom {
+                start: LocusId(0),
+                depth: 2,
+            },
             LocusPredicate::OfKind(LocusKindId(1)),
             LocusPredicate::StateAbove { slot: 0, min: 0.3 },
         ];

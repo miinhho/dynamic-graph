@@ -18,7 +18,10 @@ mod snapshot;
 pub use partition::{PartitionFn, PartitionIndex};
 pub use snapshot::{WorldMeta, WorldSnapshot};
 
-use graph_core::{BatchId, Change, ChangeId, Endpoints, KindObservation, Locus, LocusId, Relationship, RelationshipId, RelationshipKindId, RelationshipLineage, StateVector};
+use graph_core::{
+    BatchId, Change, ChangeId, Endpoints, KindObservation, Locus, LocusId, Relationship,
+    RelationshipId, RelationshipKindId, RelationshipLineage, StateVector,
+};
 use rustc_hash::FxHashMap;
 
 use crate::store::change_log::ChangeLog;
@@ -343,7 +346,9 @@ impl World {
     /// insertion. Pass `None` to revert to single-partition mode.
     pub fn set_partition_fn(&mut self, f: Option<PartitionFn>) {
         match f {
-            None => { self.partition_index = None; }
+            None => {
+                self.partition_index = None;
+            }
             Some(fn_) => {
                 let mut idx = PartitionIndex::new(fn_);
                 for locus in self.loci.iter() {
@@ -371,7 +376,6 @@ impl World {
     pub fn partition_index(&self) -> Option<&PartitionIndex> {
         self.partition_index.as_ref()
     }
-
 
     /// Return the partition bucket for `locus_id`, or `None` if no partition
     /// fn is active or the locus was not yet assigned.
@@ -429,7 +433,10 @@ mod tests {
             w.relationships_mut().insert(Relationship {
                 id,
                 kind: rel_kind,
-                endpoints: Endpoints::Directed { from: LocusId(i), to: LocusId(i + 1) },
+                endpoints: Endpoints::Directed {
+                    from: LocusId(i),
+                    to: LocusId(i + 1),
+                },
                 state: SV::from_slice(&[1.0, 0.0]),
                 lineage: RelationshipLineage {
                     created_by: None,
@@ -461,7 +468,10 @@ mod tests {
             w.relationships_mut().insert(Relationship {
                 id,
                 kind: rk,
-                endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(i) },
+                endpoints: Endpoints::Directed {
+                    from: LocusId(0),
+                    to: LocusId(i),
+                },
                 state: SV::from_slice(&[activity, 0.0]),
                 lineage: RelationshipLineage {
                     created_by: None,
@@ -484,8 +494,20 @@ mod tests {
         assert_eq!(sub.len(), 2);
         let endpoints: Vec<_> = sub.iter().map(|r| &r.endpoints).collect();
         use graph_core::Endpoints;
-        assert!(endpoints.iter().any(|e| matches!(e, Endpoints::Directed { from: LocusId(0), to: LocusId(1) })));
-        assert!(endpoints.iter().any(|e| matches!(e, Endpoints::Directed { from: LocusId(1), to: LocusId(2) })));
+        assert!(endpoints.iter().any(|e| matches!(
+            e,
+            Endpoints::Directed {
+                from: LocusId(0),
+                to: LocusId(1)
+            }
+        )));
+        assert!(endpoints.iter().any(|e| matches!(
+            e,
+            Endpoints::Directed {
+                from: LocusId(1),
+                to: LocusId(2)
+            }
+        )));
     }
 
     #[test]
@@ -514,7 +536,10 @@ mod tests {
         w.relationships_mut().insert(Relationship {
             id,
             kind: rk,
-            endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(10) },
+            endpoints: Endpoints::Directed {
+                from: LocusId(0),
+                to: LocusId(10),
+            },
             state: SV::from_slice(&[0.05, 0.0]),
             lineage: RelationshipLineage {
                 created_by: None,
@@ -559,7 +584,10 @@ mod tests {
         w.relationships_mut().insert(Relationship {
             id,
             kind: rk,
-            endpoints: Endpoints::Directed { from: LocusId(0), to: LocusId(10) },
+            endpoints: Endpoints::Directed {
+                from: LocusId(0),
+                to: LocusId(10),
+            },
             state: SV::from_slice(&[0.01, 0.0]),
             lineage: RelationshipLineage {
                 created_by: None,
