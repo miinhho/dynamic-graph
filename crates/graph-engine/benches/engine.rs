@@ -867,6 +867,161 @@ fn bench_neural_scaling(c: &mut Criterion) {
     group.finish();
 }
 
+/// E4 criterion group — docs/e4-design.md §10 step 6.
+///
+/// Compares `ring_world` N=1024 with P=4 range-based partition fn against
+/// the no-partition baseline over 10 simulation steps.  The E4 parallel Apply
+/// and Dispatch paths are only engaged when `set_partition_fn` is called with
+/// bucket_count > 1, so the two variants exercise different code paths.
+///
+/// Expected E4 gain: ~17% on emerge-heavy workloads (emerge ≈5 ms of ~24 ms
+/// per tick at this scale; dispatch was already `par_iter`).
+fn bench_ring_scaling_e4(c: &mut Criterion) {
+    use std::sync::Arc;
+
+    const P: u64 = 4;
+    const STEPS: usize = 10;
+
+    let mut group = c.benchmark_group("e4_ring_scaling");
+    group.sample_size(20);
+
+    for &n in &[1024u64, 4096, 16384, 65536] {
+        group.bench_with_input(BenchmarkId::new("no_partition", n), &n, |b, &n| {
+            b.iter_batched(
+                || {
+                    let (world, loci, influences) = ring_world(n, 0.9);
+                    Simulation::new(world, loci, influences)
+                },
+                |mut sim| {
+                    sim.step(vec![stimulus(1.0)]);
+                    for _ in 1..STEPS {
+                        sim.step(vec![]);
+                    }
+                },
+                BatchSize::SmallInput,
+            );
+        });
+
+        group.bench_with_input(BenchmarkId::new("p4", n), &n, |b, &n| {
+            b.iter_batched(
+                || {
+                    let (mut world, loci, influences) = ring_world(n, 0.9);
+                    world.set_partition_fn(Some(Arc::new(move |locus: &graph_core::Locus| {
+                        locus.id.0 * P / n
+                    })));
+                    Simulation::new(world, loci, influences)
+                },
+                |mut sim| {
+                    sim.step(vec![stimulus(1.0)]);
+                    for _ in 1..STEPS {
+                        sim.step(vec![]);
+                    }
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_dispatch_expensive_e4(c: &mut Criterion) {
+    use std::sync::Arc;
+
+    // Isolated Dispatch benchmark: N loci fired simultaneously via direct stimuli.
+    // No cross-locus preds → Apply emergence is trivial (zero relationships to
+    // extract/reinsert). Measures only whether parallel Dispatch wins when
+    // per-locus work is expensive (WorkloadProgram does WORK_UNITS sqrt ops).
+    const N: u64 = 1024;
+    const P: u64 = 4;
+    const WORK_UNITS: usize = 2000;
+    // Null sink: locus N does not exist → ProposedChange is silently dropped,
+    // preventing cascade into a second batch.
+    const NULL_SINK: LocusId = LocusId(N);
+
+    struct WorkloadProgram {
+        work: usize,
+    }
+    impl LocusProgram for WorkloadProgram {
+        fn process(
+            &self,
+            locus: &graph_core::Locus,
+            incoming: &[&graph_core::Change],
+            _: &dyn graph_core::LocusContext,
+        ) -> Vec<ProposedChange> {
+            if incoming.is_empty() { return vec![]; }
+            let mut x = locus.state.as_slice()[0]
+                + incoming.iter().map(|c| c.after.as_slice()[0]).sum::<f32>();
+            for _ in 0..self.work {
+                x = (x * 1.001f32 + 0.001f32).sqrt();
+            }
+            vec![ProposedChange::new(
+                graph_core::ChangeSubject::Locus(NULL_SINK),
+                graph_testkit::programs::TEST_KIND,
+                StateVector::from_slice(&[x]),
+            )]
+        }
+    }
+
+    let build_world = || {
+        let mut world = World::new();
+        let mut loci_reg = LocusKindRegistry::new();
+        let mut inf_reg = InfluenceKindRegistry::new();
+        inf_reg.insert(
+            graph_testkit::programs::TEST_KIND,
+            InfluenceKindConfig::new("workload").with_decay(0.9),
+        );
+        for i in 0..N {
+            let kind = LocusKindId(i);
+            world.insert_locus(graph_core::Locus::new(
+                LocusId(i), kind, StateVector::zeros(1),
+            ));
+            loci_reg.insert(kind, Box::new(WorkloadProgram { work: WORK_UNITS }));
+        }
+        (world, loci_reg, inf_reg)
+    };
+
+    let make_stimuli = || -> Vec<ProposedChange> {
+        (0..N)
+            .map(|i| ProposedChange::new(
+                graph_core::ChangeSubject::Locus(LocusId(i)),
+                graph_testkit::programs::TEST_KIND,
+                StateVector::from_slice(&[1.0]),
+            ))
+            .collect()
+    };
+
+    let mut group = c.benchmark_group("e4_dispatch_expensive");
+    group.sample_size(20);
+
+    group.bench_function("no_partition", |b| {
+        b.iter_batched(
+            || {
+                let (world, loci, influences) = build_world();
+                (Simulation::new(world, loci, influences), make_stimuli())
+            },
+            |(mut sim, stims)| sim.step(stims),
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("p4", |b| {
+        b.iter_batched(
+            || {
+                let (mut world, loci, influences) = build_world();
+                world.set_partition_fn(Some(Arc::new(
+                    move |locus: &graph_core::Locus| locus.id.0 * P / N,
+                )));
+                (Simulation::new(world, loci, influences), make_stimuli())
+            },
+            |(mut sim, stims)| sim.step(stims),
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_chain,
@@ -893,5 +1048,7 @@ criterion_group!(
     bench_extra_slot_decay_flush,
     bench_ring_scaling,
     bench_neural_scaling,
+    bench_ring_scaling_e4,
+    bench_dispatch_expensive_e4,
 );
 criterion_main!(benches);

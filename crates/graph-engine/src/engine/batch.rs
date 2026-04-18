@@ -165,6 +165,7 @@ pub(crate) struct CrossLocusPred {
     /// The ChangeId of the predecessor change.
     /// Used by engine-native STDP to walk the causal DAG and detect
     /// feedback loops (PostFirst classification).
+    #[allow(dead_code)]
     pub(crate) pred_change_id: ChangeId,
     /// True when the causal DAG reveals this is a feedback edge:
     /// the post-locus appears within `STDP_MAX_FEEDBACK_HOPS` in the
@@ -827,31 +828,6 @@ impl PartitionAccumulator {
         self.events.clear();
     }
 
-    /// Merge `other` into `self` in deterministic order. Called sequentially
-    /// after a parallel phase; buckets must be drained in ascending bucket ID
-    /// order so the overall sequence is reproducible.
-    pub fn merge_from(&mut self, other: PartitionAccumulator) {
-        self.batch_changes.extend(other.batch_changes);
-        self.new_emerged_rels.extend(other.new_emerged_rels);
-        for (locus, ids) in other.committed_ids_by_locus {
-            self.committed_ids_by_locus.entry(locus).or_default().extend(ids);
-        }
-        // Maintain insertion order for affected_loci; set guards duplicates.
-        for locus in other.affected_loci {
-            if self.affected_loci_set.insert(locus) {
-                self.affected_loci.push(locus);
-            }
-        }
-        self.plasticity_obs.extend(other.plasticity_obs);
-        self.structural_proposals.extend(other.structural_proposals);
-        for (key, (kinds, rels)) in other.batch_kind_touches {
-            let entry = self.batch_kind_touches.entry(key).or_default();
-            entry.0.extend(kinds);
-            entry.1.extend(rels);
-        }
-        self.pending_rel_notifications.extend(other.pending_rel_notifications);
-        self.events.extend(other.events);
-    }
 }
 
 #[cfg(test)]

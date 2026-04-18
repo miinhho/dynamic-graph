@@ -372,10 +372,6 @@ impl World {
         self.partition_index.as_ref()
     }
 
-    /// Mutable access to the partition index.
-    pub(crate) fn partition_index_mut(&mut self) -> Option<&mut PartitionIndex> {
-        self.partition_index.as_mut()
-    }
 
     /// Return the partition bucket for `locus_id`, or `None` if no partition
     /// fn is active or the locus was not yet assigned.

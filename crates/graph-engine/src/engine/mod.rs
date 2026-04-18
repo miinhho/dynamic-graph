@@ -114,9 +114,6 @@ impl Engine {
         // dispatched — preventing cascade amplification.
         let mut last_fired: FxHashMap<LocusId, u64> = FxHashMap::default();
 
-        // Per-batch accumulators — reused each iteration via clear().
-        // Wrapped in PartitionAccumulator so the parallel-Apply step can
-        // create one instance per partition and merge them deterministically.
         let mut acc = PartitionAccumulator::new();
 
         // Phase timing: set GRAPH_ENGINE_PROFILE=1 to print per-phase μs to stderr.
@@ -131,12 +128,6 @@ impl Engine {
         let mut t_dispatch = std::time::Duration::ZERO;
         let mut t_hebbian = std::time::Duration::ZERO;
         let mut t_other   = std::time::Duration::ZERO;
-        // Operation-level partition counter (only active when profiling).
-        // Partition = locus_id.0 % EMERGE_PART_P; counts whether the
-        // apply_emergence call is within-partition or cross-partition.
-        const EMERGE_PART_P: u64 = 10;
-        let mut emerge_ops_within: u64 = 0;
-        let mut emerge_ops_cross:  u64 = 0;
 
         while !pending.is_empty() {
             if result.batches_committed >= self.config.max_batches_per_tick {
@@ -247,6 +238,7 @@ impl Engine {
                 acc.batch_changes.reserve(n);
 
                 let t_ae0 = if profile { Some(std::time::Instant::now()) } else { None };
+
                 for bc in built {
                     match bc {
                         BuiltChange::Locus(c) => {
@@ -261,23 +253,10 @@ impl Engine {
                             }
                             let kind_cfg = influence_registry.get(c.kind);
                             for pred in c.cross_locus_preds {
-                                if profile {
-                                    if pred.from_locus.0 % EMERGE_PART_P == c.locus_id.0 % EMERGE_PART_P {
-                                        emerge_ops_within += 1;
-                                    } else {
-                                        emerge_ops_cross += 1;
-                                    }
-                                }
-                                // Apply phase: execute the pre-resolved emergence decision.
-                                // The endpoint-key lookup was pre-resolved in the parallel
-                                // compute phase; the apply phase uses the direct rel_id.
                                 let Some((rel_id, is_new, emerged_state)) = apply_emergence(
                                     world.relationships_mut(), pred.emergence, id, batch, c.kind,
                                     pred.pre_signal, kind_cfg, &c.resolved_slots,
-                                ) else {
-                                    // Blocked by min_emerge_activity.
-                                    continue;
-                                };
+                                ) else { continue };
                                 if let Some((fk, tk)) = pred.schema_violation {
                                     acc.events.push(WorldEvent::SchemaViolation {
                                         relationship: rel_id,
@@ -296,14 +275,10 @@ impl Engine {
                                     });
                                     acc.new_emerged_rels.push((
                                         rel_id, id, c.kind,
-                                        // emerged_state is Some only when is_new == true.
                                         emerged_state.expect("new relationship must have initial state"),
                                     ));
                                 }
                                 if c.plasticity_active {
-                                    // is_feedback was precomputed in the parallel compute phase
-                                    // via bounded multi-hop DAG traversal (STDP_MAX_FEEDBACK_HOPS).
-                                    // The apply phase just reads the precomputed flag — no extra work.
                                     let timing = if pred.pred_batch < batch {
                                         if pred.is_feedback { TimingOrder::PostFirst } else { TimingOrder::PreFirst }
                                     } else {
@@ -319,8 +294,6 @@ impl Engine {
                                     });
                                 }
                                 {
-                                    // Build EndpointKey from known endpoints + kind config —
-                                    // avoids a second relationship store lookup.
                                     let ep_key = if kind_cfg.map(|k| k.symmetric).unwrap_or(false) {
                                         graph_core::Endpoints::symmetric(pred.from_locus, c.locus_id).key()
                                     } else {
@@ -461,20 +434,21 @@ impl Engine {
                 .par_iter()
                 .map(|inp| {
                     let state = inp.program.process(inp.locus, &inp.inbox, &batch_ctx);
-                    let structural = inp.program.structural_proposals(inp.locus, &inp.inbox, &batch_ctx);
+                    let structural =
+                        inp.program.structural_proposals(inp.locus, &inp.inbox, &batch_ctx);
                     (state, structural, inp.derived.clone())
                 })
                 .collect();
 
-            for (idx, (mut state_proposals, structural, derived)) in dispatch_results.into_iter().enumerate() {
-                // Truncate proposals to the per-kind budget if configured.
+            for (idx, (mut state_proposals, structural, derived)) in
+                dispatch_results.into_iter().enumerate()
+            {
                 if let Some(cfg) = loci_registry.get_config(dispatch_inputs[idx].locus.kind)
                     && let Some(max) = cfg.max_proposals_per_dispatch
                 {
                     state_proposals.truncate(max);
                 }
                 if !state_proposals.is_empty() {
-                    // Record that this locus fired for refractory tracking.
                     last_fired.insert(dispatch_inputs[idx].locus.id, batch_num);
                 }
                 pending.extend(state_proposals.into_iter().map(|p| PendingChange {
@@ -573,10 +547,8 @@ impl Engine {
         }
 
         if profile {
-            let emerge_ops_total = emerge_ops_within + emerge_ops_cross;
-            let emerge_within_pct = if emerge_ops_total > 0 { emerge_ops_within * 100 / emerge_ops_total } else { 0 };
             eprintln!(
-                "[engine profile] batches={} compute={:.1}ms build={:.1}ms apply={:.1}ms(locus={:.1} emerge={:.1} changelog={:.1} b3={:.1}) dispatch={:.1}ms hebbian={:.1}ms other={:.1}ms emerge_ops={} within%={}%",
+                "[engine profile] batches={} compute={:.1}ms build={:.1}ms apply={:.1}ms(locus={:.1} emerge={:.1} changelog={:.1} b3={:.1}) dispatch={:.1}ms hebbian={:.1}ms other={:.1}ms",
                 result.batches_committed,
                 t_compute.as_secs_f64() * 1000.0,
                 t_build.as_secs_f64() * 1000.0,
@@ -588,8 +560,6 @@ impl Engine {
                 t_dispatch.as_secs_f64() * 1000.0,
                 t_hebbian.as_secs_f64() * 1000.0,
                 t_other.as_secs_f64() * 1000.0,
-                emerge_ops_total,
-                emerge_within_pct,
             );
         }
         result
@@ -700,6 +670,7 @@ impl Engine {
         }
     }
 }
+
 
 // ── Apply-phase helper ────────────────────────────────────────────────────────
 

@@ -1,6 +1,8 @@
 # E4 Design — Logical Partition Parallelism
 
-**Status:** Pending implementation. Locality measurement done 2026-04-17.
+**Status:** **REJECTED — negative result (2026-04-18).** See §12.
+
+Original status: Pending implementation. Locality measurement done 2026-04-17.
 
 ## 1. Motivation
 
@@ -279,3 +281,62 @@ is bounded by the current batch — no unbounded futures.
 - Distribution across machines (explicitly excluded from E4).
 - Dynamic repartitioning within a tick (deferred; requires quiescent point).
 - Partition-aware `path_between` / BFS queries (graph-query is read-only; no change needed).
+
+---
+
+## 12. Conclusion — Negative Result (2026-04-18)
+
+Parallel Apply (§10 step 3) and Parallel Dispatch (§10 step 4) were prototyped
+and reverted. Measured overhead exceeded projected gain on every workload.
+
+### 12.1 Benchmark evidence
+
+`cargo bench -p graph-engine --bench engine -- "^e4_"`, partition infrastructure
+active but `engine/tick()` still single-loop (PartitionIndex assign cost only):
+
+| Workload | no_partition | p4 | Δ |
+|---|---|---|---|
+| `e4_ring_scaling` N=1,024 | 157.7 µs | 158.2 µs | **+0.3%** |
+| `e4_ring_scaling` N=4,096 | 255.3 µs | 260.6 µs | **+2.0%** |
+| `e4_ring_scaling` N=16,384 | 724.1 µs | 732.2 µs | **+1.1%** |
+| `e4_ring_scaling` N=65,536 | 3.484 ms | 3.568 ms | **+2.4%** |
+| `e4_dispatch_expensive` N=1,024, WORK=2000 | 2.149 ms | 2.199 ms | **+2.3%** |
+
+Earlier in-branch prototype of the full parallel Apply/Dispatch path (user-run,
+not preserved here) showed the same direction at larger magnitude — rayon task
+floor (~20 µs) × bucket count exceeded per-bucket work on every measured
+topology.
+
+### 12.2 Why it cannot win (root cause)
+
+- **Per-relationship update ≈ 6 ns.** Rayon task floor ≈ 20 µs. Breakeven N
+  per bucket ≫ what a single batch generates.
+- **Existing Dispatch was already flat `par_iter()`** — finer-grained than
+  partition-level. Coarse partition grouping (4 buckets) regresses parallelism.
+- **Apply shard extract/reinsert** (§10 step 2 helpers) is O(PR) per batch —
+  always dominated by the O(N) sequential path even at 99% locality.
+
+### 12.3 What survives
+
+**Kept** (useful beyond parallelism):
+- `PartitionIndex` + `set_partition_fn()` — inspection / diagnostics. Rebuild is cheap.
+- `PartitionAccumulator` (ea839d9) — Apply-phase state cohesion (readability).
+- `apply_emergence` independent helper + `u64::MAX` sentinel removal
+  (ccfa535, a9ecb5d) — refactors with standalone value.
+- `tests/partition_determinism.rs` — trivially passes (no parallel path), kept
+  as a PartitionIndex data-model regression test.
+- `bench_ring_scaling_e4` / `bench_dispatch_expensive_e4` — **regression guard**
+  against re-proposing partition parallelism (the benches will reproduce the
+  negative result if anyone tries again).
+
+**Removed**:
+- `RelationshipStore::extract_by_source_bucket` / `reinsert_many` /
+  `canonical_source` — shard split helpers (useless without parallel Apply).
+- `partition_index_mut` — only parallel paths needed mutable access.
+
+### 12.4 Binding decision
+
+**Do not re-attempt partition-level parallelism on the engine batch loop.**
+Future throughput work targets algorithmic / data-structure reduction (shrink R,
+amortize per-batch O(R) sweeps) or per-program cost — not coarse-grained
+concurrency. See memory `feedback_parallelization.md`.

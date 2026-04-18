@@ -75,6 +75,13 @@ impl PartitionIndex {
     pub fn bucket_count(&self) -> usize {
         self.members.len()
     }
+
+    /// Read-only view of the locus → bucket assignment map.
+    /// Used by the engine's parallel Apply phase to extract per-partition
+    /// relationship shards without cloning via the `PartitionIndex` borrow.
+    pub fn assignment(&self) -> &rustc_hash::FxHashMap<LocusId, u64> {
+        &self.assignment
+    }
 }
 
 impl std::fmt::Debug for PartitionIndex {
