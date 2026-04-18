@@ -17,8 +17,13 @@
 //! perspective's `all_matches` to avoid scanning every entity when
 //! looking for overlap candidates.
 
-use graph_core::{BatchId, Entity, EntityId, EntityLayer, EntitySnapshot, EntityStatus, LocusId};
-use rustc_hash::{FxHashMap, FxHashSet};
+mod indexing;
+mod queries;
+
+use graph_core::{Entity, EntityId, EntitySnapshot, EntityStatus, LocusId};
+use rustc_hash::FxHashMap;
+
+use indexing::{deindex_members, index_members};
 
 #[derive(Debug, Default, Clone)]
 pub struct EntityStore {
@@ -54,9 +59,7 @@ impl EntityStore {
     /// Insert a freshly born entity. Panics on duplicate id.
     pub fn insert(&mut self, entity: Entity) {
         let id = entity.id;
-        for &locus in &entity.current.members {
-            self.by_member.entry(locus).or_default().push(id);
-        }
+        index_members(&mut self.by_member, id, &entity.current.members);
         if self.by_id.insert(id, entity).is_some() {
             panic!("EntityStore: duplicate id {id:?}");
         }
@@ -83,32 +86,12 @@ impl EntityStore {
             return;
         }
         let old_members = std::mem::take(&mut entity.current.members);
-        for locus in &old_members {
-            if let Some(ids) = self.by_member.get_mut(locus) {
-                ids.retain(|&eid| eid != id);
-            }
-        }
+        let new_members = snapshot.members.clone();
         entity.current = snapshot;
-        for &locus in &entity.current.members {
-            self.by_member.entry(locus).or_default().push(id);
-        }
+        let _ = entity;
+        deindex_members(&mut self.by_member, id, &old_members);
+        index_members(&mut self.by_member, id, &new_members);
         self.generation += 1;
-    }
-
-    /// Return the set of entity IDs whose `current.members` contains at least
-    /// one locus from `loci`.
-    ///
-    /// This is an O(|loci| + hits) pre-filter for overlap matching — it
-    /// returns *candidates*, not confirmed matches.  The caller must still
-    /// compute the Jaccard overlap score.
-    pub fn candidates_for_members(&self, loci: &FxHashSet<LocusId>) -> FxHashSet<EntityId> {
-        let mut out = FxHashSet::default();
-        for locus in loci {
-            if let Some(ids) = self.by_member.get(locus) {
-                out.extend(ids);
-            }
-        }
-        out
     }
 
     pub fn get(&self, id: EntityId) -> Option<&Entity> {
@@ -160,17 +143,6 @@ impl EntityStore {
             .values()
             .filter(|e| e.status == EntityStatus::Active)
             .count()
-    }
-
-    /// Return the most recent layer deposited at or before `batch`, or `None`
-    /// if the entity does not exist or had no layers by that point.
-    pub fn layer_at_batch(&self, id: EntityId, batch: BatchId) -> Option<&EntityLayer> {
-        let entity = self.get(id)?;
-        // Layers are stored oldest-first (monotonically increasing batch).
-        // partition_point gives the index of the first layer with batch > target,
-        // so the layer immediately before that is the most recent one at or before target.
-        let pos = entity.layers.partition_point(|l| l.batch <= batch);
-        entity.layers.get(pos.wrapping_sub(1))
     }
 }
 

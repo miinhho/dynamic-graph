@@ -168,28 +168,28 @@ mod tests {
 
     #[test]
     fn default_policy_recent_is_preserved() {
-        let policy = DefaultEntityWeathering::default();
+        let policy = DefaultEntityWeathering;
         let layer = full_layer(90);
         assert_eq!(policy.effect(&layer, 10), WeatheringEffect::Preserved);
     }
 
     #[test]
     fn default_policy_mid_age_is_compress() {
-        let policy = DefaultEntityWeathering::default();
+        let policy = DefaultEntityWeathering;
         let layer = full_layer(0);
         assert_eq!(policy.effect(&layer, 100), WeatheringEffect::Compress);
     }
 
     #[test]
     fn default_policy_old_is_skeleton() {
-        let policy = DefaultEntityWeathering::default();
+        let policy = DefaultEntityWeathering;
         let layer = full_layer(0);
         assert_eq!(policy.effect(&layer, 500), WeatheringEffect::Skeleton);
     }
 
     #[test]
     fn default_policy_ancient_is_remove() {
-        let policy = DefaultEntityWeathering::default();
+        let policy = DefaultEntityWeathering;
         let layer = full_layer(0);
         assert_eq!(policy.effect(&layer, 2000), WeatheringEffect::Remove);
     }

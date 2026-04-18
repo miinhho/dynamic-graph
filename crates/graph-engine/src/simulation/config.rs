@@ -35,6 +35,8 @@ pub struct StepObservation {
     pub active_entities: usize,
     /// Current guard-rail scale per registered influence kind.
     pub scales: FxHashMap<InfluenceKindId, f32>,
+    /// Current plasticity learning-rate scale per registered influence kind.
+    pub plasticity_scales: FxHashMap<InfluenceKindId, f32>,
     /// Events emitted during this step.
     pub events: Vec<WorldEvent>,
     /// Rich per-tick summary.
@@ -83,7 +85,7 @@ impl Default for SimulationConfig {
     fn default() -> Self {
         Self {
             engine: EngineConfig::default(),
-            adaptive: AdaptiveConfig::default(),
+            adaptive: AdaptiveConfig,
             #[cfg(feature = "storage")]
             storage_path: None,
             #[cfg(feature = "storage")]

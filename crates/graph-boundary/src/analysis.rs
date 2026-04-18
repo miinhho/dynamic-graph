@@ -1,13 +1,19 @@
 //! Core boundary analysis logic.
 
-use rustc_hash::FxHashSet;
+mod collect;
+mod report;
+mod scoring;
 
-use graph_core::{Relationship, RelationshipId};
+use graph_core::Relationship;
 use graph_schema::SchemaWorld;
 use graph_world::World;
 
-use crate::report::{BoundaryEdge, BoundaryReport};
+use crate::report::BoundaryReport;
 use graph_world::metrics::ACTIVITY_THRESHOLD;
+
+use self::collect::collect_boundary_matches;
+use self::report::build_boundary_report;
+use self::scoring::compute_tension;
 
 /// The signal used to determine whether a dynamic relationship is "alive".
 ///
@@ -16,7 +22,7 @@ use graph_world::metrics::ACTIVITY_THRESHOLD;
 /// `Strength` (activity + weight) provide more durable signals when the
 /// caller wants to measure accumulated behavioural reinforcement rather
 /// than current instantaneous activity.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum SignalMode {
     /// Use `rel.activity()` — instantaneous signal.  Decays between batches.
     Activity,
@@ -25,13 +31,8 @@ pub enum SignalMode {
     Weight,
     /// Use `rel.strength()` = `activity + weight`.  Best of both: captures
     /// current signal AND learned importance.
+    #[default]
     Strength,
-}
-
-impl Default for SignalMode {
-    fn default() -> Self {
-        Self::Strength
-    }
 }
 
 pub(crate) fn signal(rel: &Relationship, mode: SignalMode) -> f32 {
@@ -76,60 +77,9 @@ pub fn analyze_boundary_with_mode(
     mode: SignalMode,
 ) -> BoundaryReport {
     let threshold = threshold.unwrap_or(ACTIVITY_THRESHOLD);
-
-    // Collect all active dynamic relationship IDs into a set so we can
-    // subtract the ones covered by declared facts to find shadows.
-    let active_dynamic: FxHashSet<RelationshipId> = dynamic
-        .relationships()
-        .iter()
-        .filter(|r| signal(r, mode) > threshold)
-        .map(|r| r.id)
-        .collect();
-
-    let mut confirmed = Vec::new();
-    let mut ghost = Vec::new();
-    // Track which dynamic rels are "explained" by at least one declared fact.
-    let mut covered: FxHashSet<RelationshipId> = FxHashSet::default();
-
-    for fact in schema.facts.active_facts() {
-        // Look for an active dynamic relationship between subject and object
-        // in either direction.
-        let matching_rel = dynamic
-            .relationships_between(fact.subject, fact.object)
-            .find(|r| active_dynamic.contains(&r.id));
-
-        let edge = BoundaryEdge {
-            subject: fact.subject,
-            predicate: fact.predicate.clone(),
-            object: fact.object,
-            dynamic_rel: matching_rel.map(|r| r.id),
-        };
-
-        if let Some(rel) = matching_rel {
-            covered.insert(rel.id);
-            confirmed.push(edge);
-        } else {
-            ghost.push(edge);
-        }
-    }
-
-    // Shadows: active dynamic rels with no declared counterpart.
-    let shadow: Vec<RelationshipId> = active_dynamic
-        .iter()
-        .filter(|id| !covered.contains(id))
-        .copied()
-        .collect();
-
-    let total = (confirmed.len() + ghost.len() + shadow.len()).max(1) as f32;
-    let divergence = (ghost.len() + shadow.len()) as f32;
-    let tension = divergence / total;
-
-    BoundaryReport {
-        confirmed,
-        ghost,
-        shadow,
-        tension,
-    }
+    let matches = collect_boundary_matches(dynamic, schema, threshold, mode);
+    let tension = compute_tension(&matches.confirmed, &matches.ghost, &matches.shadow);
+    build_boundary_report(matches, tension)
 }
 
 #[cfg(test)]

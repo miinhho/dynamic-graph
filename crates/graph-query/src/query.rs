@@ -28,11 +28,21 @@
 //!     .collect();
 //! ```
 
-use graph_core::{
-    BatchId, Endpoints, InfluenceKindId, Locus, LocusId, LocusKindId, Relationship, RelationshipId,
-};
+use graph_core::{Locus, LocusId, Relationship, RelationshipId};
 use graph_world::World;
-use rustc_hash::FxHashSet;
+
+mod loci_filters;
+mod loci_navigation;
+mod loci_terminals;
+mod relationship_aggregation;
+mod relationship_filters;
+mod relationship_navigation;
+mod relationship_terminals;
+
+use self::loci_navigation::{
+    incoming_relationships_query, outgoing_relationships_query, touching_relationships_query,
+};
+use self::relationship_navigation::{endpoint_loci_query, source_loci_query, target_loci_query};
 
 // ─── LociQuery ────────────────────────────────────────────────────────────────
 
@@ -87,227 +97,6 @@ impl<'w> LociQuery<'w> {
         }
     }
 
-    // ── Filters ───────────────────────────────────────────────────────────────
-
-    /// Keep only loci of the given kind.
-    pub fn of_kind(mut self, kind: LocusKindId) -> Self {
-        self.loci.retain(|l| l.kind == kind);
-        self
-    }
-
-    /// Keep only loci where `state[slot]` satisfies `pred`.
-    ///
-    /// Loci whose state vector is shorter than `slot + 1` are excluded.
-    pub fn where_state(mut self, slot: usize, pred: impl Fn(f32) -> bool) -> Self {
-        self.loci
-            .retain(|l| l.state.as_slice().get(slot).is_some_and(|&v| pred(v)));
-        self
-    }
-
-    /// Keep only loci that have string property `key` satisfying `pred`.
-    pub fn where_str_property(mut self, key: &str, pred: impl Fn(&str) -> bool) -> Self {
-        self.loci.retain(|l| {
-            self.world
-                .properties()
-                .get(l.id)
-                .and_then(|p| p.get_str(key))
-                .is_some_and(&pred)
-        });
-        self
-    }
-
-    /// Keep only loci that have numeric property `key` satisfying `pred`.
-    pub fn where_f64_property(mut self, key: &str, pred: impl Fn(f64) -> bool) -> Self {
-        self.loci.retain(|l| {
-            self.world
-                .properties()
-                .get(l.id)
-                .and_then(|p| p.get_f64(key))
-                .is_some_and(&pred)
-        });
-        self
-    }
-
-    /// Keep only loci matching a custom predicate.
-    pub fn matching(mut self, pred: impl Fn(&Locus) -> bool) -> Self {
-        self.loci.retain(|l| pred(l));
-        self
-    }
-
-    /// Keep only loci with total degree ≥ `min`.
-    pub fn min_degree(mut self, min: usize) -> Self {
-        self.loci.retain(|l| self.world.degree(l.id) >= min);
-        self
-    }
-
-    /// Keep only loci that are reachable from `start` within `depth`
-    /// undirected hops (excluding `start` itself).
-    ///
-    /// Intersects the current candidate set with the reachable set — O(V+E)
-    /// BFS plus O(candidates) filter.
-    pub fn reachable_from(self, start: LocusId, depth: usize) -> Self {
-        let reachable: FxHashSet<LocusId> =
-            crate::traversal::reachable_from(self.world, start, depth)
-                .into_iter()
-                .collect();
-        Self {
-            world: self.world,
-            loci: self
-                .loci
-                .into_iter()
-                .filter(|l| reachable.contains(&l.id))
-                .collect(),
-        }
-    }
-
-    /// Keep only loci reachable by following edges **forward** from `start`
-    /// within `depth` directed hops.
-    pub fn downstream_of(self, start: LocusId, depth: usize) -> Self {
-        let set: FxHashSet<LocusId> = crate::traversal::downstream_of(self.world, start, depth)
-            .into_iter()
-            .collect();
-        Self {
-            world: self.world,
-            loci: self
-                .loci
-                .into_iter()
-                .filter(|l| set.contains(&l.id))
-                .collect(),
-        }
-    }
-
-    /// Keep only loci reachable by following edges **backward** from `start`
-    /// within `depth` directed hops.
-    pub fn upstream_of(self, start: LocusId, depth: usize) -> Self {
-        let set: FxHashSet<LocusId> = crate::traversal::upstream_of(self.world, start, depth)
-            .into_iter()
-            .collect();
-        Self {
-            world: self.world,
-            loci: self
-                .loci
-                .into_iter()
-                .filter(|l| set.contains(&l.id))
-                .collect(),
-        }
-    }
-
-    // ── Ordering ──────────────────────────────────────────────────────────────
-
-    /// Keep the top `n` loci by `state[slot]` in descending order.
-    ///
-    /// Loci missing `slot` sort last. Equivalent to sorting then truncating.
-    pub fn top_n_by_state(mut self, slot: usize, n: usize) -> Self {
-        self.loci.sort_unstable_by(|a, b| {
-            let va = a
-                .state
-                .as_slice()
-                .get(slot)
-                .copied()
-                .unwrap_or(f32::NEG_INFINITY);
-            let vb = b
-                .state
-                .as_slice()
-                .get(slot)
-                .copied()
-                .unwrap_or(f32::NEG_INFINITY);
-            vb.total_cmp(&va)
-        });
-        self.loci.truncate(n);
-        self
-    }
-
-    /// Sort the current set by `state[slot]` descending (no truncation).
-    pub fn sort_by_state(mut self, slot: usize) -> Self {
-        self.loci.sort_unstable_by(|a, b| {
-            let va = a
-                .state
-                .as_slice()
-                .get(slot)
-                .copied()
-                .unwrap_or(f32::NEG_INFINITY);
-            let vb = b
-                .state
-                .as_slice()
-                .get(slot)
-                .copied()
-                .unwrap_or(f32::NEG_INFINITY);
-            vb.total_cmp(&va)
-        });
-        self
-    }
-
-    /// Keep the top `n` loci by total degree (most-connected first).
-    pub fn top_n_by_degree(mut self, n: usize) -> Self {
-        self.loci
-            .sort_unstable_by_key(|l| std::cmp::Reverse(self.world.degree(l.id)));
-        self.loci.truncate(n);
-        self
-    }
-
-    // ── Terminal methods ──────────────────────────────────────────────────────
-
-    /// Collect matching loci as `&Locus` references.
-    pub fn collect(self) -> Vec<&'w Locus> {
-        self.loci
-    }
-
-    /// Collect just the `LocusId`s.
-    pub fn ids(self) -> Vec<LocusId> {
-        self.loci.into_iter().map(|l| l.id).collect()
-    }
-
-    /// Number of matching loci.
-    pub fn count(self) -> usize {
-        self.loci.len()
-    }
-
-    /// First matching locus (in current order), or `None` if the set is empty.
-    pub fn first(self) -> Option<&'w Locus> {
-        self.loci.into_iter().next()
-    }
-
-    /// `true` when no loci match the current constraints.
-    pub fn is_empty(&self) -> bool {
-        self.loci.is_empty()
-    }
-
-    // ── Aggregation terminals ─────────────────────────────────────────────────
-
-    /// Sum of `state[slot]` across all matching loci.
-    ///
-    /// Loci whose state vector is shorter than `slot + 1` contribute `0.0`.
-    pub fn sum_state_slot(self, slot: usize) -> f32 {
-        self.loci
-            .iter()
-            .map(|l| l.state.as_slice().get(slot).copied().unwrap_or(0.0))
-            .sum()
-    }
-
-    /// Mean of `state[slot]` across all matching loci that have the slot,
-    /// or `None` when no loci have that slot (or the set is empty).
-    pub fn mean_state_slot(self, slot: usize) -> Option<f32> {
-        let values: Vec<f32> = self
-            .loci
-            .iter()
-            .filter_map(|l| l.state.as_slice().get(slot).copied())
-            .collect();
-        let n = values.len();
-        if n == 0 {
-            return None;
-        }
-        Some(values.iter().sum::<f32>() / n as f32)
-    }
-
-    /// Maximum of `state[slot]` across all matching loci that have the slot,
-    /// or `None` when no loci have that slot (or the set is empty).
-    pub fn max_state_slot(self, slot: usize) -> Option<f32> {
-        self.loci
-            .iter()
-            .filter_map(|l| l.state.as_slice().get(slot).copied())
-            .reduce(f32::max)
-    }
-
     // ── Cross-builder navigation ──────────────────────────────────────────────
 
     /// Pivot to a [`RelationshipsQuery`] containing all directed relationships
@@ -315,18 +104,7 @@ impl<'w> LociQuery<'w> {
     ///
     /// Symmetric edges are excluded (they have no single source).
     pub fn outgoing_relationships(self) -> RelationshipsQuery<'w> {
-        let ids: FxHashSet<LocusId> = self.loci.iter().map(|l| l.id).collect();
-        RelationshipsQuery {
-            world: self.world,
-            rels: self
-                .world
-                .relationships()
-                .iter()
-                .filter(|r| {
-                    matches!(r.endpoints, Endpoints::Directed { from, .. } if ids.contains(&from))
-                })
-                .collect(),
-        }
+        outgoing_relationships_query(self.world, self.loci)
     }
 
     /// Pivot to a [`RelationshipsQuery`] containing all directed relationships
@@ -334,34 +112,14 @@ impl<'w> LociQuery<'w> {
     ///
     /// Symmetric edges are excluded.
     pub fn incoming_relationships(self) -> RelationshipsQuery<'w> {
-        let ids: FxHashSet<LocusId> = self.loci.iter().map(|l| l.id).collect();
-        RelationshipsQuery {
-            world: self.world,
-            rels: self
-                .world
-                .relationships()
-                .iter()
-                .filter(
-                    |r| matches!(r.endpoints, Endpoints::Directed { to, .. } if ids.contains(&to)),
-                )
-                .collect(),
-        }
+        incoming_relationships_query(self.world, self.loci)
     }
 
     /// Pivot to a [`RelationshipsQuery`] containing all relationships that
     /// touch any locus in the current set at either endpoint (directed or
     /// symmetric).
     pub fn touching_relationships(self) -> RelationshipsQuery<'w> {
-        let ids: FxHashSet<LocusId> = self.loci.iter().map(|l| l.id).collect();
-        RelationshipsQuery {
-            world: self.world,
-            rels: self
-                .world
-                .relationships()
-                .iter()
-                .filter(|r| ids.iter().any(|&id| r.endpoints.involves(id)))
-                .collect(),
-        }
+        touching_relationships_query(self.world, self.loci)
     }
 }
 
@@ -433,221 +191,6 @@ impl<'w> RelationshipsQuery<'w> {
         }
     }
 
-    // ── Filters ───────────────────────────────────────────────────────────────
-
-    /// Keep only relationships of the given influence kind.
-    pub fn of_kind(mut self, kind: InfluenceKindId) -> Self {
-        self.rels.retain(|r| r.kind == kind);
-        self
-    }
-
-    /// Keep only directed relationships whose source is `locus`.
-    ///
-    /// Symmetric edges are excluded (they have no single source).
-    pub fn from(mut self, locus: LocusId) -> Self {
-        self.rels
-            .retain(|r| matches!(r.endpoints, Endpoints::Directed { from, .. } if from == locus));
-        self
-    }
-
-    /// Keep only directed relationships whose target is `locus`.
-    ///
-    /// Symmetric edges are excluded.
-    pub fn to(mut self, locus: LocusId) -> Self {
-        self.rels
-            .retain(|r| matches!(r.endpoints, Endpoints::Directed { to, .. } if to == locus));
-        self
-    }
-
-    /// Keep only relationships that involve `locus` at either endpoint
-    /// (directed or symmetric).
-    pub fn touching(mut self, locus: LocusId) -> Self {
-        self.rels.retain(|r| r.endpoints.involves(locus));
-        self
-    }
-
-    /// Keep only relationships connecting `a` and `b` (direction-agnostic).
-    pub fn between(mut self, a: LocusId, b: LocusId) -> Self {
-        self.rels
-            .retain(|r| r.endpoints.involves(a) && r.endpoints.involves(b));
-        self
-    }
-
-    /// Keep only relationships whose activity exceeds `threshold`.
-    pub fn above_activity(mut self, threshold: f32) -> Self {
-        self.rels.retain(|r| r.activity() > threshold);
-        self
-    }
-
-    /// Keep only relationships whose combined strength (`activity + weight`)
-    /// exceeds `threshold`.
-    pub fn above_strength(mut self, threshold: f32) -> Self {
-        self.rels.retain(|r| r.strength() > threshold);
-        self
-    }
-
-    /// Keep only relationships where `state[slot_idx]` satisfies `pred`.
-    ///
-    /// Relationships whose state vector is shorter than `slot_idx + 1` are excluded.
-    pub fn where_slot(mut self, slot_idx: usize, pred: impl Fn(f32) -> bool) -> Self {
-        self.rels
-            .retain(|r| r.state.as_slice().get(slot_idx).is_some_and(|&v| pred(v)));
-        self
-    }
-
-    /// Keep only relationships matching a custom predicate.
-    pub fn matching(mut self, pred: impl Fn(&Relationship) -> bool) -> Self {
-        self.rels.retain(|r| pred(r));
-        self
-    }
-
-    /// Keep only directed relationships whose source is any of `loci`.
-    ///
-    /// Symmetric edges are excluded.
-    pub fn from_any(mut self, loci: &[LocusId]) -> Self {
-        let set: FxHashSet<LocusId> = loci.iter().copied().collect();
-        self.rels.retain(
-            |r| matches!(r.endpoints, Endpoints::Directed { from, .. } if set.contains(&from)),
-        );
-        self
-    }
-
-    /// Keep only directed relationships whose target is any of `loci`.
-    ///
-    /// Symmetric edges are excluded.
-    pub fn to_any(mut self, loci: &[LocusId]) -> Self {
-        let set: FxHashSet<LocusId> = loci.iter().copied().collect();
-        self.rels
-            .retain(|r| matches!(r.endpoints, Endpoints::Directed { to, .. } if set.contains(&to)));
-        self
-    }
-
-    /// Keep only relationships that involve any of `loci` at either endpoint
-    /// (directed or symmetric).
-    pub fn touching_any(mut self, loci: &[LocusId]) -> Self {
-        let set: FxHashSet<LocusId> = loci.iter().copied().collect();
-        self.rels
-            .retain(|r| set.iter().any(|&id| r.endpoints.involves(id)));
-        self
-    }
-
-    // ── Lifecycle filters ─────────────────────────────────────────────────────
-
-    /// Keep only relationships created within the inclusive batch range
-    /// `[from, to]`.
-    pub fn created_in(mut self, from: BatchId, to: BatchId) -> Self {
-        self.rels
-            .retain(|r| r.created_batch >= from && r.created_batch <= to);
-        self
-    }
-
-    /// Keep only relationships whose age (`current_batch − created_batch`) is
-    /// at least `min_batches`.
-    pub fn older_than(mut self, current_batch: BatchId, min_batches: u64) -> Self {
-        self.rels
-            .retain(|r| r.age_in_batches(current_batch) >= min_batches);
-        self
-    }
-
-    /// Keep only relationships idle for at least `min_batches` batches
-    /// (`current_batch − last_decayed_batch >= min_batches`).
-    pub fn idle_for(mut self, current_batch: BatchId, min_batches: u64) -> Self {
-        self.rels
-            .retain(|r| current_batch.0.saturating_sub(r.last_decayed_batch) >= min_batches);
-        self
-    }
-
-    // ── Ordering ──────────────────────────────────────────────────────────────
-
-    /// Keep the top `n` relationships by strength (`activity + weight`)
-    /// in descending order.
-    pub fn top_n_by_strength(mut self, n: usize) -> Self {
-        self.rels
-            .sort_unstable_by(|a, b| b.strength().total_cmp(&a.strength()));
-        self.rels.truncate(n);
-        self
-    }
-
-    /// Keep the top `n` relationships by activity in descending order.
-    pub fn top_n_by_activity(mut self, n: usize) -> Self {
-        self.rels
-            .sort_unstable_by(|a, b| b.activity().total_cmp(&a.activity()));
-        self.rels.truncate(n);
-        self
-    }
-
-    /// Keep the top `n` relationships by `change_count` in descending order.
-    pub fn top_n_by_change_count(mut self, n: usize) -> Self {
-        self.rels
-            .sort_unstable_by_key(|r| std::cmp::Reverse(r.lineage.change_count));
-        self.rels.truncate(n);
-        self
-    }
-
-    // ── Terminal methods ──────────────────────────────────────────────────────
-
-    /// Collect matching relationships as `&Relationship` references.
-    pub fn collect(self) -> Vec<&'w Relationship> {
-        self.rels
-    }
-
-    /// Collect just the `RelationshipId`s.
-    pub fn ids(self) -> Vec<RelationshipId> {
-        self.rels.into_iter().map(|r| r.id).collect()
-    }
-
-    /// Number of matching relationships.
-    pub fn count(self) -> usize {
-        self.rels.len()
-    }
-
-    /// First matching relationship (in current order), or `None` if empty.
-    pub fn first(self) -> Option<&'w Relationship> {
-        self.rels.into_iter().next()
-    }
-
-    /// `true` when no relationships match the current constraints.
-    pub fn is_empty(&self) -> bool {
-        self.rels.is_empty()
-    }
-
-    // ── Aggregation terminals ─────────────────────────────────────────────────
-
-    /// Sum of `activity()` across all matching relationships.
-    pub fn sum_activity(self) -> f32 {
-        self.rels.iter().map(|r| r.activity()).sum()
-    }
-
-    /// Mean `activity()` across all matching relationships, or `None` if the
-    /// set is empty.
-    pub fn mean_activity(self) -> Option<f32> {
-        let n = self.rels.len();
-        if n == 0 {
-            return None;
-        }
-        Some(self.rels.iter().map(|r| r.activity()).sum::<f32>() / n as f32)
-    }
-
-    /// Aggregate activity statistics for the current result set, or `None` if
-    /// the set is empty.
-    pub fn activity_stats(self) -> Option<ActivityStats> {
-        let n = self.rels.len();
-        if n == 0 {
-            return None;
-        }
-        let activities: Vec<f32> = self.rels.iter().map(|r| r.activity()).collect();
-        let sum: f32 = activities.iter().sum();
-        let min = activities.iter().copied().fold(f32::INFINITY, f32::min);
-        let max = activities.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        Some(ActivityStats {
-            count: n,
-            sum,
-            mean: sum / n as f32,
-            min,
-            max,
-        })
-    }
-
     // ── Cross-builder navigation ──────────────────────────────────────────────
 
     /// Pivot to a [`LociQuery`] over the **source** loci of all directed
@@ -656,18 +199,7 @@ impl<'w> RelationshipsQuery<'w> {
     /// Symmetric edges have no source and are skipped. Duplicate loci are
     /// deduplicated; loci no longer present in the world are silently omitted.
     pub fn source_loci(self) -> LociQuery<'w> {
-        let mut seen = FxHashSet::default();
-        let loci: Vec<&'w Locus> = self
-            .rels
-            .iter()
-            .filter_map(|r| r.endpoints.source())
-            .filter(|&id| seen.insert(id))
-            .filter_map(|id| self.world.locus(id))
-            .collect();
-        LociQuery {
-            world: self.world,
-            loci,
-        }
+        source_loci_query(self.world, self.rels)
     }
 
     /// Pivot to a [`LociQuery`] over the **target** loci of all directed
@@ -675,18 +207,7 @@ impl<'w> RelationshipsQuery<'w> {
     ///
     /// Symmetric edges have no target and are skipped. Duplicates deduplicated.
     pub fn target_loci(self) -> LociQuery<'w> {
-        let mut seen = FxHashSet::default();
-        let loci: Vec<&'w Locus> = self
-            .rels
-            .iter()
-            .filter_map(|r| r.endpoints.target())
-            .filter(|&id| seen.insert(id))
-            .filter_map(|id| self.world.locus(id))
-            .collect();
-        LociQuery {
-            world: self.world,
-            loci,
-        }
+        target_loci_query(self.world, self.rels)
     }
 
     /// Pivot to a [`LociQuery`] over **all** endpoint loci of the current
@@ -694,23 +215,7 @@ impl<'w> RelationshipsQuery<'w> {
     ///
     /// Duplicates are deduplicated; loci no longer in the world are omitted.
     pub fn endpoint_loci(self) -> LociQuery<'w> {
-        let mut seen = FxHashSet::default();
-        let ids: Vec<LocusId> = self
-            .rels
-            .iter()
-            .flat_map(|r| match r.endpoints {
-                Endpoints::Directed { from, to } => [from, to],
-                Endpoints::Symmetric { a, b } => [a, b],
-            })
-            .filter(|&id| seen.insert(id))
-            .collect();
-        LociQuery {
-            world: self.world,
-            loci: ids
-                .into_iter()
-                .filter_map(|id| self.world.locus(id))
-                .collect(),
-        }
+        endpoint_loci_query(self.world, self.rels)
     }
 }
 

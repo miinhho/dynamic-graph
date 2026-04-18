@@ -29,6 +29,14 @@ use graph_world::World;
 
 use super::super::engine::TickResult;
 
+mod aggregate;
+mod collect;
+mod summary;
+
+use aggregate::TickEventCounts;
+use collect::TickCollectedData;
+use summary::TickSummaryParts;
+
 // ─── TickSummary ─────────────────────────────────────────────────────────────
 
 /// A detailed breakdown of one `step()` call.
@@ -84,63 +92,16 @@ impl TickSummary {
         world: &World,
         extra_events: &[WorldEvent],
     ) -> Self {
-        // Collect per-batch stats for all batches committed this tick.
-        let batch_stats: Vec<BatchStats> = ((prev_batch.0 + 1)..=current_batch.0)
-            .filter_map(|b| graph_query::batch_stats(world, BatchId(b)))
-            .collect();
-
-        // Collect distinct loci changed this tick.
-        use rustc_hash::FxHashSet;
-        let mut loci_set: FxHashSet<LocusId> = FxHashSet::default();
-        for stat in &batch_stats {
-            // Re-scan the log for loci changed in each batch.
-            for change in world.log().batch(stat.batch) {
-                if let graph_core::ChangeSubject::Locus(id) = change.subject {
-                    loci_set.insert(id);
-                }
-            }
-        }
-        let loci_changed: Vec<LocusId> = loci_set.into_iter().collect();
-
-        // Categorize engine events.
-        let all_events: Vec<WorldEvent> = tick
-            .events
-            .iter()
-            .cloned()
-            .chain(extra_events.iter().cloned())
-            .collect();
-
-        let mut relationships_emerged = 0u32;
-        let mut relationships_pruned = 0u32;
-        let mut entities_born = 0u32;
-        let mut entities_dormant = 0u32;
-        let mut entities_revived = 0u32;
-
-        for event in &all_events {
-            match event {
-                WorldEvent::RelationshipEmerged { .. } => relationships_emerged += 1,
-                WorldEvent::RelationshipPruned { .. } => relationships_pruned += 1,
-                WorldEvent::EntityBorn { .. } => entities_born += 1,
-                WorldEvent::EntityDormant { .. } => entities_dormant += 1,
-                WorldEvent::EntityRevived { .. } => entities_revived += 1,
-                _ => {}
-            }
-        }
-
-        TickSummary {
-            tick_id,
-            batches_committed: tick.batches_committed,
-            changes_committed: tick.changes_committed,
-            hit_batch_cap: tick.hit_batch_cap,
-            batch_stats,
-            loci_changed,
-            relationships_emerged,
-            relationships_pruned,
-            entities_born,
-            entities_dormant,
-            entities_revived,
-            events: all_events,
-        }
+        let collected = TickCollectedData::collect(
+            prev_batch,
+            current_batch,
+            world,
+            &tick.events,
+            extra_events,
+        );
+        let event_counts = TickEventCounts::from_events(&collected.events);
+        let parts = TickSummaryParts::new(tick_id, tick, collected, event_counts);
+        parts.into_summary()
     }
 }
 

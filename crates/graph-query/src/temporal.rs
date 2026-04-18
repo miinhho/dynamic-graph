@@ -18,98 +18,20 @@
 //! );
 //! ```
 
-use graph_core::{BatchId, Change, ChangeSubject, LocusId, RelationshipId};
-use graph_world::World;
-use rustc_hash::{FxHashMap, FxHashSet};
+mod frequency;
+mod recent;
+mod stats;
 
-// ─── BatchStats ───────────────────────────────────────────────────────────────
+use graph_core::{BatchId, LocusId, RelationshipId};
+use graph_world::World;
+pub use recent::{last_n_changes_to_locus, last_n_changes_to_relationship};
+pub use stats::BatchStats;
 
 /// Aggregate statistics for a single committed batch.
 ///
 /// Produced by [`batch_stats`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct BatchStats {
-    /// The batch these stats describe.
-    pub batch: BatchId,
-    /// Total number of committed changes (including relationship-subject ones).
-    pub total_changes: usize,
-    /// Number of distinct loci that had at least one change committed.
-    pub loci_changed: usize,
-    /// Number of distinct relationships that had at least one explicit change.
-    pub relationships_changed: usize,
-    /// Mean per-slot L1 magnitude of state transitions across all changes.
-    ///
-    /// Computed as the mean of `|after[i] - before[i]|` over every slot of
-    /// every change in the batch. A proxy for "how much state moved this batch".
-    pub mean_delta: f32,
-}
-
-/// Compute aggregate statistics for `batch`, or `None` if the batch has no
-/// committed changes (e.g. the batch hasn't run yet or was fully trimmed).
 pub fn batch_stats(world: &World, batch: BatchId) -> Option<BatchStats> {
-    let changes: Vec<&Change> = world.log().batch(batch).collect();
-    if changes.is_empty() {
-        return None;
-    }
-
-    let mut loci: FxHashSet<LocusId> = FxHashSet::default();
-    let mut rels: FxHashSet<RelationshipId> = FxHashSet::default();
-    let mut total_delta = 0.0f32;
-    let mut delta_count = 0usize;
-
-    for c in &changes {
-        match c.subject {
-            ChangeSubject::Locus(id) => {
-                loci.insert(id);
-            }
-            ChangeSubject::Relationship(id) => {
-                rels.insert(id);
-            }
-        }
-        let before = c.before.as_slice();
-        let after = c.after.as_slice();
-        let len = before.len().max(after.len());
-        for i in 0..len {
-            let b = before.get(i).copied().unwrap_or(0.0);
-            let a = after.get(i).copied().unwrap_or(0.0);
-            total_delta += (a - b).abs();
-            delta_count += 1;
-        }
-    }
-
-    Some(BatchStats {
-        batch,
-        total_changes: changes.len(),
-        loci_changed: loci.len(),
-        relationships_changed: rels.len(),
-        mean_delta: if delta_count > 0 {
-            total_delta / delta_count as f32
-        } else {
-            0.0
-        },
-    })
-}
-
-// ─── Recent-change convenience ────────────────────────────────────────────────
-
-/// The last `n` changes committed to `locus`, newest first.
-///
-/// More ergonomic than `changes_to_locus_in_range` when you only want the most
-/// recent N entries and don't know the batch range in advance.
-pub fn last_n_changes_to_locus(world: &World, locus: LocusId, n: usize) -> Vec<&Change> {
-    world.changes_to_locus(locus).take(n).collect()
-}
-
-/// The last `n` changes committed to `rel`, newest first.
-///
-/// Only `ChangeSubject::Relationship` entries are returned — auto-emerge
-/// touches are not recorded as relationship-subject changes.
-pub fn last_n_changes_to_relationship(
-    world: &World,
-    rel: RelationshipId,
-    n: usize,
-) -> Vec<&Change> {
-    world.changes_to_relationship(rel).take(n).collect()
+    stats::batch_stats(world, batch)
 }
 
 // ─── Change-frequency analysis ────────────────────────────────────────────────
@@ -120,17 +42,7 @@ pub fn last_n_changes_to_relationship(
 /// Returns `(LocusId, change_count)` pairs. Useful for spotting "hot spots"
 /// that became active after a reference point (e.g. after a major input event).
 pub fn changed_since(world: &World, since_batch: BatchId) -> Vec<(LocusId, usize)> {
-    let mut counts: FxHashMap<LocusId, usize> = FxHashMap::default();
-    for c in world.log().iter() {
-        if c.batch >= since_batch
-            && let ChangeSubject::Locus(id) = c.subject
-        {
-            *counts.entry(id).or_insert(0) += 1;
-        }
-    }
-    let mut result: Vec<_> = counts.into_iter().collect();
-    result.sort_by(|a, b| b.1.cmp(&a.1));
-    result
+    frequency::changed_since(world, since_batch)
 }
 
 /// Loci ranked by total change count in `[from_batch, to_batch]`, most-changed
@@ -143,18 +55,7 @@ pub fn loci_by_change_frequency(
     from_batch: BatchId,
     to_batch: BatchId,
 ) -> Vec<(LocusId, usize)> {
-    let mut counts: FxHashMap<LocusId, usize> = FxHashMap::default();
-    for c in world.log().iter() {
-        if c.batch >= from_batch
-            && c.batch <= to_batch
-            && let ChangeSubject::Locus(id) = c.subject
-        {
-            *counts.entry(id).or_insert(0) += 1;
-        }
-    }
-    let mut result: Vec<_> = counts.into_iter().collect();
-    result.sort_by(|a, b| b.1.cmp(&a.1));
-    result
+    frequency::loci_by_change_frequency(world, from_batch, to_batch)
 }
 
 /// Relationships ranked by total explicit change count in `[from_batch,
@@ -170,18 +71,7 @@ pub fn relationships_by_change_frequency(
     from_batch: BatchId,
     to_batch: BatchId,
 ) -> Vec<(RelationshipId, usize)> {
-    let mut counts: FxHashMap<RelationshipId, usize> = FxHashMap::default();
-    for c in world.log().iter() {
-        if c.batch >= from_batch
-            && c.batch <= to_batch
-            && let ChangeSubject::Relationship(id) = c.subject
-        {
-            *counts.entry(id).or_insert(0) += 1;
-        }
-    }
-    let mut result: Vec<_> = counts.into_iter().collect();
-    result.sort_by(|a, b| b.1.cmp(&a.1));
-    result
+    frequency::relationships_by_change_frequency(world, from_batch, to_batch)
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────

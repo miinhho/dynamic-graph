@@ -21,14 +21,14 @@
 //!     .strongest();
 //! ```
 
-use graph_core::{
-    BatchId, Cohere, CohereId, CohereMembers, Entity, EntityId, EntityStatus, Locus, LocusId,
-    Relationship, RelationshipId,
-};
+use graph_core::{Cohere, Entity};
 use graph_world::World;
-use rustc_hash::FxHashSet;
 
-use crate::query::{LociQuery, RelationshipsQuery};
+mod cohere_filters;
+mod cohere_terminals;
+mod entities_filters;
+mod entities_terminals;
+mod entity_projection;
 
 // ─── EntitiesQuery ────────────────────────────────────────────────────────────
 
@@ -49,151 +49,6 @@ impl<'w> EntitiesQuery<'w> {
             world,
         }
     }
-
-    // ── Filters ──────────────────────────────────────────────────────────────
-
-    /// Keep only active entities.
-    pub fn active(mut self) -> Self {
-        self.candidates.retain(|e| e.status == EntityStatus::Active);
-        self
-    }
-
-    /// Keep only dormant entities.
-    pub fn dormant(mut self) -> Self {
-        self.candidates
-            .retain(|e| e.status == EntityStatus::Dormant);
-        self
-    }
-
-    /// Keep only entities whose current member set contains `locus`.
-    pub fn with_member(mut self, locus: LocusId) -> Self {
-        self.candidates
-            .retain(|e| e.current.members.contains(&locus));
-        self
-    }
-
-    /// Keep only entities whose current member relationship set contains `rel`.
-    pub fn with_relationship_member(mut self, rel: RelationshipId) -> Self {
-        self.candidates
-            .retain(|e| e.current.member_relationships.contains(&rel));
-        self
-    }
-
-    /// Keep only entities whose current coherence score is ≥ `min`.
-    pub fn with_min_coherence(mut self, min: f32) -> Self {
-        self.candidates.retain(|e| e.current.coherence >= min);
-        self
-    }
-
-    /// Keep only entities whose birth layer was deposited at or after `batch`.
-    ///
-    /// The birth batch is taken from the first layer in the sediment stack
-    /// (the `Born` transition layer). Entities with no layers are excluded.
-    pub fn born_after(mut self, batch: BatchId) -> Self {
-        self.candidates
-            .retain(|e| e.layers.first().map(|l| l.batch >= batch).unwrap_or(false));
-        self
-    }
-
-    /// Keep only entities born within `[from, to]` (inclusive).
-    pub fn born_in_range(mut self, from: BatchId, to: BatchId) -> Self {
-        self.candidates.retain(|e| {
-            e.layers
-                .first()
-                .map(|l| l.batch >= from && l.batch <= to)
-                .unwrap_or(false)
-        });
-        self
-    }
-
-    /// Keep only entities with at least `min` sediment layers.
-    pub fn with_min_layer_count(mut self, min: usize) -> Self {
-        self.candidates.retain(|e| e.layers.len() >= min);
-        self
-    }
-
-    /// Keep only entities whose current member count is at least `min`.
-    pub fn with_min_member_count(mut self, min: usize) -> Self {
-        self.candidates.retain(|e| e.current.members.len() >= min);
-        self
-    }
-
-    /// Keep only entities matching an arbitrary predicate.
-    pub fn matching<F>(mut self, pred: F) -> Self
-    where
-        F: Fn(&Entity) -> bool,
-    {
-        self.candidates.retain(|e| pred(e));
-        self
-    }
-
-    // ── Terminals ────────────────────────────────────────────────────────────
-
-    /// Consume the query and return all matching entities.
-    pub fn collect(self) -> Vec<&'w Entity> {
-        self.candidates
-    }
-
-    /// Return the `EntityId`s of all matching entities.
-    pub fn ids(self) -> Vec<EntityId> {
-        self.candidates.iter().map(|e| e.id).collect()
-    }
-
-    /// Number of matching entities.
-    pub fn count(self) -> usize {
-        self.candidates.len()
-    }
-
-    /// Mean coherence across matching entities, or `None` if empty.
-    pub fn mean_coherence(self) -> Option<f32> {
-        if self.candidates.is_empty() {
-            return None;
-        }
-        let sum: f32 = self.candidates.iter().map(|e| e.current.coherence).sum();
-        Some(sum / self.candidates.len() as f32)
-    }
-
-    /// The entity with the highest current coherence score, or `None` if empty.
-    pub fn strongest(self) -> Option<&'w Entity> {
-        self.candidates.into_iter().max_by(|a, b| {
-            a.current
-                .coherence
-                .partial_cmp(&b.current.coherence)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-    }
-
-    // ── Cross-layer navigation ────────────────────────────────────────────────
-
-    /// Collect all loci that are members of any candidate entity (deduplicated),
-    /// returning them as a [`LociQuery`] for further filtering.
-    pub fn member_loci(self) -> LociQuery<'w> {
-        let world = self.world;
-        let mut seen = FxHashSet::default();
-        let loci: Vec<&'w Locus> = self
-            .candidates
-            .into_iter()
-            .flat_map(|e| e.current.members.iter().copied())
-            .filter(|&id| seen.insert(id))
-            .filter_map(|id| world.locus(id))
-            .collect();
-        LociQuery::from_candidates(world, loci)
-    }
-
-    /// Collect all relationships that are members of any candidate entity
-    /// (deduplicated), returning them as a [`RelationshipsQuery`].
-    pub fn member_relationships(self) -> RelationshipsQuery<'w> {
-        let world = self.world;
-        let mut seen = FxHashSet::default();
-        let rels: Vec<&'w Relationship> = self
-            .candidates
-            .into_iter()
-            .flat_map(|e| e.current.member_relationships.iter().copied())
-            .filter(|&id| seen.insert(id))
-            .filter_map(|id| world.relationships().get(id))
-            .collect();
-        RelationshipsQuery::from_candidates(world, rels)
-    }
 }
 
 // ─── CohereQuery ─────────────────────────────────────────────────────────────
@@ -204,7 +59,6 @@ impl<'w> EntitiesQuery<'w> {
 /// perspectives). All filter methods consume `self` and return a new
 /// `CohereQuery`.
 pub struct CohereQuery<'w> {
-    world: &'w World,
     candidates: Vec<&'w Cohere>,
 }
 
@@ -215,97 +69,12 @@ impl<'w> CohereQuery<'w> {
             .get(perspective)
             .map(|slice| slice.iter().collect())
             .unwrap_or_default();
-        Self { world, candidates }
+        Self { candidates }
     }
 
     pub(crate) fn from_all(world: &'w World) -> Self {
         let candidates = world.coheres().iter_all().map(|(_, c)| c).collect();
-        Self { world, candidates }
-    }
-
-    // ── Filters ──────────────────────────────────────────────────────────────
-
-    /// Keep only coheres with strength ≥ `min`.
-    pub fn with_min_strength(mut self, min: f32) -> Self {
-        self.candidates.retain(|c| c.strength >= min);
-        self
-    }
-
-    /// Keep only coheres that contain `entity` as a member.
-    pub fn with_entity_member(mut self, entity: EntityId) -> Self {
-        self.candidates.retain(|c| match &c.members {
-            CohereMembers::Entities(ids) => ids.contains(&entity),
-            CohereMembers::Mixed { entities, .. } => entities.contains(&entity),
-            CohereMembers::Relationships(_) => false,
-        });
-        self
-    }
-
-    /// Keep only coheres that contain `rel` as a member.
-    pub fn with_relationship_member(mut self, rel: RelationshipId) -> Self {
-        self.candidates.retain(|c| match &c.members {
-            CohereMembers::Relationships(ids) => ids.contains(&rel),
-            CohereMembers::Mixed { relationships, .. } => relationships.contains(&rel),
-            CohereMembers::Entities(_) => false,
-        });
-        self
-    }
-
-    /// Keep only coheres with at least `min` entity members.
-    pub fn with_min_entity_count(mut self, min: usize) -> Self {
-        self.candidates.retain(|c| c.members.entity_count() >= min);
-        self
-    }
-
-    /// Keep only coheres with at least `min` relationship members.
-    pub fn with_min_relationship_count(mut self, min: usize) -> Self {
-        self.candidates
-            .retain(|c| c.members.relationship_count() >= min);
-        self
-    }
-
-    /// Keep only coheres matching an arbitrary predicate.
-    pub fn matching<F>(mut self, pred: F) -> Self
-    where
-        F: Fn(&Cohere) -> bool,
-    {
-        self.candidates.retain(|c| pred(c));
-        self
-    }
-
-    // ── Terminals ────────────────────────────────────────────────────────────
-
-    /// Consume the query and return all matching cohere clusters.
-    pub fn collect(self) -> Vec<&'w Cohere> {
-        self.candidates
-    }
-
-    /// Return the `CohereId`s of all matching clusters.
-    pub fn ids(self) -> Vec<CohereId> {
-        self.candidates.iter().map(|c| c.id).collect()
-    }
-
-    /// Number of matching cohere clusters.
-    pub fn count(self) -> usize {
-        self.candidates.len()
-    }
-
-    /// The cohere cluster with the highest strength, or `None` if empty.
-    pub fn strongest(self) -> Option<&'w Cohere> {
-        self.candidates.into_iter().max_by(|a, b| {
-            a.strength
-                .partial_cmp(&b.strength)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-    }
-
-    /// Mean strength across matching cohere clusters, or `None` if empty.
-    pub fn mean_strength(self) -> Option<f32> {
-        if self.candidates.is_empty() {
-            return None;
-        }
-        let sum: f32 = self.candidates.iter().map(|c| c.strength).sum();
-        Some(sum / self.candidates.len() as f32)
+        Self { candidates }
     }
 }
 

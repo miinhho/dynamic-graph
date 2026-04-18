@@ -305,7 +305,6 @@ impl InfluenceKindConfig {
             learning_rate: rate,
             weight_decay: 0.99,
             max_weight: 1.0,
-            ..Default::default()
         };
         self
     }
@@ -582,7 +581,7 @@ pub struct InfluenceKindRegistry {
     /// Cross-kind interaction effects registered via `register_interaction`.
     /// Keyed by `(kind_a, kind_b)` in canonical (min, max) order so lookup
     /// is symmetric: `interaction_between(A, B)` == `interaction_between(B, A)`.
-    interactions: FxHashMap<(InfluenceKindId, InfluenceKindId), InteractionEffect>,
+    interactions: InteractionRegistry,
 }
 
 impl InfluenceKindRegistry {
@@ -603,53 +602,8 @@ impl InfluenceKindRegistry {
     /// - `plasticity.weight_decay` must be in `(0.0, 1.0]`.
     /// - `plasticity.max_weight` must be `> 0.0`.
     pub fn insert(&mut self, kind: InfluenceKindId, config: InfluenceKindConfig) {
-        assert!(
-            config.decay_per_batch > 0.0 && config.decay_per_batch <= 1.0,
-            "InfluenceKindConfig '{}': decay_per_batch must be in (0.0, 1.0], got {}",
-            config.name,
-            config.decay_per_batch
-        );
-        assert!(
-            config.plasticity.learning_rate >= 0.0,
-            "InfluenceKindConfig '{}': plasticity.learning_rate must be >= 0, got {}",
-            config.name,
-            config.plasticity.learning_rate
-        );
-        assert!(
-            config.plasticity.learning_rate >= 0.0,
-            "InfluenceKindConfig '{}': plasticity.learning_rate must be >= 0, got {}",
-            config.name,
-            config.plasticity.learning_rate
-        );
-        assert!(
-            config.plasticity.weight_decay > 0.0 && config.plasticity.weight_decay <= 1.0,
-            "InfluenceKindConfig '{}': plasticity.weight_decay must be in (0.0, 1.0], got {}",
-            config.name,
-            config.plasticity.weight_decay
-        );
-        assert!(
-            config.plasticity.max_weight > 0.0,
-            "InfluenceKindConfig '{}': plasticity.max_weight must be > 0, got {}",
-            config.name,
-            config.plasticity.max_weight
-        );
-        assert!(
-            config.activity_contribution.is_finite(),
-            "InfluenceKindConfig '{}': activity_contribution must be finite, got {}",
-            config.name,
-            config.activity_contribution
-        );
-        if let Some(parent) = config.parent {
-            assert!(
-                self.configs.contains_key(&parent),
-                "InfluenceKindConfig '{}': parent {parent:?} must be registered before inserting child",
-                config.name
-            );
-        }
-        if self.configs.insert(kind, config).is_some() {
-            panic!("InfluenceKindRegistry: duplicate registration for {kind:?}");
-        }
-        self.rebuild_slot_defs();
+        let insert = ValidatedInfluenceInsert::new(self, kind, config);
+        self.apply_insert(insert);
     }
 
     // ─── Kind hierarchy ────────────────────────────────────────────────────────
@@ -684,7 +638,7 @@ impl InfluenceKindRegistry {
     /// Scans all registered configs — O(n × depth). Fast for typical registry sizes.
     pub fn kind_and_descendants(&self, kind: InfluenceKindId) -> Vec<InfluenceKindId> {
         let mut result = vec![kind];
-        for (&id, _) in &self.configs {
+        for &id in self.configs.keys() {
             if id != kind && self.is_subkind_of(id, kind) {
                 result.push(id);
             }
@@ -706,8 +660,7 @@ impl InfluenceKindRegistry {
         kind_b: InfluenceKindId,
         effect: InteractionEffect,
     ) {
-        let key = canonical_pair(kind_a, kind_b);
-        self.interactions.insert(key, effect);
+        self.interactions.register(kind_a, kind_b, effect);
     }
 
     /// Return the declared interaction effect for `(kind_a, kind_b)`, or `None`
@@ -719,8 +672,7 @@ impl InfluenceKindRegistry {
         kind_a: InfluenceKindId,
         kind_b: InfluenceKindId,
     ) -> Option<&InteractionEffect> {
-        let key = canonical_pair(kind_a, kind_b);
-        self.interactions.get(&key)
+        self.interactions.get(kind_a, kind_b)
     }
 
     // ─── Slot inheritance ─────────────────────────────────────────────────────
@@ -776,22 +728,18 @@ impl InfluenceKindRegistry {
         StateVector::from_slice(&values)
     }
 
-    fn rebuild_slot_defs(&mut self) {
-        // Use resolved (inherited) slots so BatchContext sees the full slot
-        // layout including ancestor-defined slots.
-        self.slot_defs = self
-            .configs
-            .keys()
-            .copied()
-            .filter_map(|k| {
-                let resolved = self.resolved_extra_slots(k);
-                if resolved.is_empty() {
-                    None
-                } else {
-                    Some((k, resolved))
-                }
-            })
-            .collect();
+    fn apply_insert(&mut self, insert: ValidatedInfluenceInsert) {
+        let kind = insert.kind;
+        self.insert_config(insert);
+        SlotDefsUpdate::for_kind(self, kind).apply(&mut self.slot_defs);
+    }
+
+    fn insert_config(&mut self, insert: ValidatedInfluenceInsert) {
+        let previous = self.configs.insert(insert.kind, insert.config);
+        debug_assert!(
+            previous.is_none(),
+            "validated influence-kind insert must not overwrite existing config"
+        );
     }
 
     /// Borrow the pre-built slot-definitions map.
@@ -891,10 +839,153 @@ impl InfluenceKindRegistry {
     }
 }
 
-/// Return a canonical (min, max) pair so interaction lookups are symmetric.
-#[inline]
-fn canonical_pair(a: InfluenceKindId, b: InfluenceKindId) -> (InfluenceKindId, InfluenceKindId) {
-    if a <= b { (a, b) } else { (b, a) }
+#[derive(Debug, Default, Clone)]
+struct InteractionRegistry {
+    effects: FxHashMap<(InfluenceKindId, InfluenceKindId), InteractionEffect>,
+}
+
+impl InteractionRegistry {
+    fn register(
+        &mut self,
+        kind_a: InfluenceKindId,
+        kind_b: InfluenceKindId,
+        effect: InteractionEffect,
+    ) {
+        self.effects
+            .insert(InteractionKey::new(kind_a, kind_b).into_pair(), effect);
+    }
+
+    fn get(&self, kind_a: InfluenceKindId, kind_b: InfluenceKindId) -> Option<&InteractionEffect> {
+        self.effects
+            .get(&InteractionKey::new(kind_a, kind_b).into_pair())
+    }
+}
+
+#[derive(Debug)]
+struct ValidatedInfluenceInsert {
+    kind: InfluenceKindId,
+    config: InfluenceKindConfig,
+}
+
+impl ValidatedInfluenceInsert {
+    fn new(
+        registry: &InfluenceKindRegistry,
+        kind: InfluenceKindId,
+        config: InfluenceKindConfig,
+    ) -> Self {
+        Self::assert_kind_available(registry, kind);
+        Self::assert_valid_config(registry, &config);
+        Self { kind, config }
+    }
+
+    fn assert_kind_available(registry: &InfluenceKindRegistry, kind: InfluenceKindId) {
+        assert!(
+            !registry.configs.contains_key(&kind),
+            "InfluenceKindRegistry: duplicate registration for {kind:?}"
+        );
+    }
+
+    fn assert_valid_config(registry: &InfluenceKindRegistry, config: &InfluenceKindConfig) {
+        Self::assert_decay(config);
+        Self::assert_plasticity(config);
+        Self::assert_activity_contribution(config);
+        Self::assert_parent_registered(registry, config);
+    }
+
+    fn assert_decay(config: &InfluenceKindConfig) {
+        assert!(
+            config.decay_per_batch > 0.0 && config.decay_per_batch <= 1.0,
+            "InfluenceKindConfig '{}': decay_per_batch must be in (0.0, 1.0], got {}",
+            config.name,
+            config.decay_per_batch
+        );
+    }
+
+    fn assert_plasticity(config: &InfluenceKindConfig) {
+        assert!(
+            config.plasticity.learning_rate >= 0.0,
+            "InfluenceKindConfig '{}': plasticity.learning_rate must be >= 0, got {}",
+            config.name,
+            config.plasticity.learning_rate
+        );
+        assert!(
+            config.plasticity.weight_decay > 0.0 && config.plasticity.weight_decay <= 1.0,
+            "InfluenceKindConfig '{}': plasticity.weight_decay must be in (0.0, 1.0], got {}",
+            config.name,
+            config.plasticity.weight_decay
+        );
+        assert!(
+            config.plasticity.max_weight > 0.0,
+            "InfluenceKindConfig '{}': plasticity.max_weight must be > 0, got {}",
+            config.name,
+            config.plasticity.max_weight
+        );
+    }
+
+    fn assert_activity_contribution(config: &InfluenceKindConfig) {
+        assert!(
+            config.activity_contribution.is_finite(),
+            "InfluenceKindConfig '{}': activity_contribution must be finite, got {}",
+            config.name,
+            config.activity_contribution
+        );
+    }
+
+    fn assert_parent_registered(registry: &InfluenceKindRegistry, config: &InfluenceKindConfig) {
+        if let Some(parent) = config.parent {
+            assert!(
+                registry.configs.contains_key(&parent),
+                "InfluenceKindConfig '{}': parent {parent:?} must be registered before inserting child",
+                config.name
+            );
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SlotDefsUpdate {
+    kind: InfluenceKindId,
+    resolved_slots: Vec<RelationshipSlotDef>,
+}
+
+impl SlotDefsUpdate {
+    fn for_kind(registry: &InfluenceKindRegistry, kind: InfluenceKindId) -> Self {
+        Self {
+            kind,
+            resolved_slots: registry.resolved_extra_slots(kind),
+        }
+    }
+
+    fn apply(self, slot_defs: &mut SlotDefsMap) {
+        if self.resolved_slots.is_empty() {
+            slot_defs.remove(&self.kind);
+        } else {
+            slot_defs.insert(self.kind, self.resolved_slots);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct InteractionKey {
+    kind_a: InfluenceKindId,
+    kind_b: InfluenceKindId,
+}
+
+impl InteractionKey {
+    fn new(kind_a: InfluenceKindId, kind_b: InfluenceKindId) -> Self {
+        if kind_a <= kind_b {
+            Self { kind_a, kind_b }
+        } else {
+            Self {
+                kind_a: kind_b,
+                kind_b: kind_a,
+            }
+        }
+    }
+
+    fn into_pair(self) -> (InfluenceKindId, InfluenceKindId) {
+        (self.kind_a, self.kind_b)
+    }
 }
 
 #[cfg(test)]

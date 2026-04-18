@@ -18,6 +18,16 @@
 //! `ProcessingContext` (typed inbox grouped by influence kind, read
 //! tracking, kind registry access) lands when the batch loop does.
 
+mod relationship_filters;
+mod relationship_queries;
+
+use self::relationship_filters::{
+    is_incoming_relationship, is_outgoing_relationship, relationship_has_kind,
+};
+use self::relationship_queries::{
+    neighbor_ids, neighbor_ids_of_kind, relationship_between, relationship_between_kind,
+    relationships_between,
+};
 use crate::BatchId;
 use crate::change::{Change, ChangeSubject};
 use crate::cohere::Cohere;
@@ -58,7 +68,7 @@ pub trait LocusContext {
     /// Find a specific relationship between two loci, if one exists.
     /// Checks both directions and symmetric edges.
     fn relationship_between(&self, a: LocusId, b: LocusId) -> Option<&Relationship> {
-        self.relationships_for(a).find(|r| r.endpoints.involves(b))
+        relationship_between(self, a, b)
     }
 
     /// Iterate **all** relationships connecting `a` and `b`, across all
@@ -71,10 +81,7 @@ pub trait LocusContext {
         a: LocusId,
         b: LocusId,
     ) -> Box<dyn Iterator<Item = &'a Relationship> + 'a> {
-        Box::new(
-            self.relationships_for(a)
-                .filter(move |r| r.endpoints.involves(b)),
-        )
+        relationships_between(self, a, b)
     }
 
     /// Recent changes that targeted `locus`, newest first, limited to
@@ -141,19 +148,14 @@ pub trait LocusContext {
     /// One entry per relationship — if two relationships of different kinds
     /// connect to the same neighbor, that neighbor appears twice.
     fn neighbor_ids(&self, locus: LocusId) -> Vec<LocusId> {
-        self.relationships_for(locus)
-            .map(|r| r.endpoints.other_than(locus))
-            .collect()
+        neighbor_ids(self, locus)
     }
 
     /// IDs of all loci connected to `locus` via a relationship of `kind`.
     ///
     /// Like `neighbor_ids` but restricts to a single influence kind.
     fn neighbor_ids_of_kind(&self, locus: LocusId, kind: RelationshipKindId) -> Vec<LocusId> {
-        self.relationships_for(locus)
-            .filter(|r| r.kind == kind)
-            .map(|r| r.endpoints.other_than(locus))
-            .collect()
+        neighbor_ids_of_kind(self, locus, kind)
     }
 
     /// Find a relationship between `a` and `b` of a specific kind.
@@ -169,8 +171,7 @@ pub trait LocusContext {
         b: LocusId,
         kind: RelationshipKindId,
     ) -> Option<&Relationship> {
-        self.relationships_for(a)
-            .find(|r| r.kind == kind && r.endpoints.involves(b))
+        relationship_between_kind(self, a, b, kind)
     }
 
     /// Iterate all relationships that include `locus` as an endpoint,
@@ -183,7 +184,7 @@ pub trait LocusContext {
     ) -> Box<dyn Iterator<Item = &'a Relationship> + 'a> {
         Box::new(
             self.relationships_for(locus)
-                .filter(move |r| r.kind == kind),
+                .filter(move |r| relationship_has_kind(r, kind)),
         )
     }
 
@@ -197,10 +198,7 @@ pub trait LocusContext {
     ) -> Box<dyn Iterator<Item = &'a Relationship> + 'a> {
         Box::new(
             self.relationships_for(locus)
-                .filter(move |r| match r.endpoints {
-                    Endpoints::Directed { to, .. } => to == locus,
-                    Endpoints::Symmetric { .. } => true,
-                }),
+                .filter(move |r| is_incoming_relationship(r, locus)),
         )
     }
 
@@ -214,10 +212,7 @@ pub trait LocusContext {
     ) -> Box<dyn Iterator<Item = &'a Relationship> + 'a> {
         Box::new(
             self.relationships_for(locus)
-                .filter(move |r| match r.endpoints {
-                    Endpoints::Directed { from, .. } => from == locus,
-                    Endpoints::Symmetric { .. } => true,
-                }),
+                .filter(move |r| is_outgoing_relationship(r, locus)),
         )
     }
 
@@ -230,13 +225,11 @@ pub trait LocusContext {
         locus: LocusId,
         kind: RelationshipKindId,
     ) -> Box<dyn Iterator<Item = &'a Relationship> + 'a> {
-        Box::new(self.relationships_for(locus).filter(move |r| {
-            r.kind == kind
-                && match r.endpoints {
-                    Endpoints::Directed { to, .. } => to == locus,
-                    Endpoints::Symmetric { .. } => true,
-                }
-        }))
+        Box::new(
+            self.relationships_for(locus).filter(move |r| {
+                relationship_has_kind(r, kind) && is_incoming_relationship(r, locus)
+            }),
+        )
     }
 
     /// Outgoing relationships filtered to a specific kind.
@@ -248,13 +241,11 @@ pub trait LocusContext {
         locus: LocusId,
         kind: RelationshipKindId,
     ) -> Box<dyn Iterator<Item = &'a Relationship> + 'a> {
-        Box::new(self.relationships_for(locus).filter(move |r| {
-            r.kind == kind
-                && match r.endpoints {
-                    Endpoints::Directed { from, .. } => from == locus,
-                    Endpoints::Symmetric { .. } => true,
-                }
-        }))
+        Box::new(
+            self.relationships_for(locus).filter(move |r| {
+                relationship_has_kind(r, kind) && is_outgoing_relationship(r, locus)
+            }),
+        )
     }
 
     /// Return the domain-level properties for a locus, if any.

@@ -17,32 +17,60 @@ fn main() {
 }
 
 #[cfg(feature = "ollama")]
+struct RefConfig {
+    label: &'static str,
+    description: &'static str,
+    ref_decay: f32,
+    ref_contrib: f32,
+    ref_lr: f32,
+}
+
+#[cfg(feature = "ollama")]
+struct Noop;
+
+#[cfg(feature = "ollama")]
+impl graph_core::LocusProgram for Noop {
+    fn process(
+        &self,
+        _: &graph_core::Locus,
+        _: &[&graph_core::Change],
+        _: &dyn graph_core::LocusContext,
+    ) -> Vec<graph_core::ProposedChange> {
+        vec![]
+    }
+}
+
+#[cfg(feature = "ollama")]
 fn main() {
-    #[allow(unused_imports)]
-    use graph_core::ProposedChange as _ProposedChange;
-    use graph_core::{Change, Locus, LocusContext, LocusProgram, ProposedChange, props};
-    use graph_engine::{InfluenceKindConfig, PlasticityConfig, SimulationBuilder};
-    use graph_llm::{OllamaClient, configure_cohere, configure_emergence, configure_influence};
+    use graph_llm::OllamaClient;
 
     let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "llama3:8b".to_owned());
     let client = OllamaClient::new(&model);
     println!("=== LLM-assisted parameter configuration  (model: {model}) ===\n");
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Domain 1: Neuroscience — C. elegans-style connectome
-    // Reference values from examples/celegans.rs (hand-tuned)
-    // ─────────────────────────────────────────────────────────────────────────
-    println!("━━━ Domain 1: Neuroscience (C. elegans connectome) ━━━\n");
+    run_influence_domain(
+        &client,
+        "Domain 1: Neuroscience (C. elegans connectome)",
+        &neuroscience_cases(),
+    );
+    run_influence_domain(
+        &client,
+        "Domain 2: Social Network (rumor & tie strength)",
+        &social_cases(),
+    );
+    run_influence_domain(
+        &client,
+        "Domain 3: Supply Chain (demand propagation)",
+        &supply_cases(),
+    );
+    run_threshold_calibration(&client);
+    run_end_to_end_social_simulation(&client);
+    println!("\n=== done ===");
+}
 
-    struct RefConfig {
-        label: &'static str,
-        description: &'static str,
-        ref_decay: f32,
-        ref_contrib: f32,
-        ref_lr: f32,
-    }
-
-    let neuro_cases = [
+#[cfg(feature = "ollama")]
+fn neuroscience_cases() -> [RefConfig; 3] {
+    [
         RefConfig {
             label: "excitatory synapse",
             description: "Excitatory chemical synapse (glutamate): activity fades moderately \
@@ -71,25 +99,12 @@ fn main() {
             ref_contrib: 1.0,
             ref_lr: 0.0,
         },
-    ];
+    ]
+}
 
-    for r in &neuro_cases {
-        print_influence_case(
-            &client,
-            r.label,
-            r.description,
-            r.ref_decay,
-            r.ref_contrib,
-            r.ref_lr,
-        );
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Domain 2: Social network — rumor and tie strength dynamics
-    // ─────────────────────────────────────────────────────────────────────────
-    println!("━━━ Domain 2: Social Network (rumor & tie strength) ━━━\n");
-
-    let social_cases = [
+#[cfg(feature = "ollama")]
+fn social_cases() -> [RefConfig; 3] {
+    [
         RefConfig {
             label: "viral rumor",
             description: "Viral rumor spread: decays very quickly (rumors lose credibility \
@@ -119,25 +134,12 @@ fn main() {
             ref_contrib: 1.0,
             ref_lr: 0.1,
         },
-    ];
+    ]
+}
 
-    for r in &social_cases {
-        print_influence_case(
-            &client,
-            r.label,
-            r.description,
-            r.ref_decay,
-            r.ref_contrib,
-            r.ref_lr,
-        );
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Domain 3: Supply chain — demand propagation
-    // ─────────────────────────────────────────────────────────────────────────
-    println!("━━━ Domain 3: Supply Chain (demand propagation) ━━━\n");
-
-    let supply_cases = [
+#[cfg(feature = "ollama")]
+fn supply_cases() -> [RefConfig; 2] {
+    [
         RefConfig {
             label: "demand signal",
             description: "Customer demand signal: decays moderately fast between restocking \
@@ -157,22 +159,19 @@ fn main() {
             ref_contrib: -2.0,
             ref_lr: 0.0,
         },
-    ];
+    ]
+}
 
-    for r in &supply_cases {
-        print_influence_case(
-            &client,
-            r.label,
-            r.description,
-            r.ref_decay,
-            r.ref_contrib,
-            r.ref_lr,
-        );
+#[cfg(feature = "ollama")]
+fn run_influence_domain(client: &graph_llm::OllamaClient, title: &str, cases: &[RefConfig]) {
+    println!("━━━ {title} ━━━\n");
+    for case in cases {
+        print_influence_case(client, case);
     }
+}
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Domain 4: Emergence & Cohere threshold calibration
-    // ─────────────────────────────────────────────────────────────────────────
+#[cfg(feature = "ollama")]
+fn run_threshold_calibration(client: &graph_llm::OllamaClient) {
     println!("━━━ Domain 4: Emergence & Cohere thresholds ━━━\n");
 
     let emergence_cases: &[(&str, f32)] = &[
@@ -185,26 +184,8 @@ fn main() {
             0.25,
         ),
     ];
-
-    for (desc, ref_activity) in emergence_cases {
-        println!("  ▶ emergence: \"{}...\"", &desc[..desc.len().min(70)]);
-        match configure_emergence(&client, desc) {
-            Ok(p) => {
-                println!("    LLM → min_activity={:.3}", p.min_activity_threshold);
-                println!("    REF → min_activity={:.3}", ref_activity);
-                let a_ok = (p.min_activity_threshold - ref_activity).abs() < 0.15;
-                println!(
-                    "    {}  (activity_close={a_ok})",
-                    if a_ok {
-                        "✓ reasonable"
-                    } else {
-                        "✗ diverged"
-                    }
-                );
-            }
-            Err(e) => println!("    [error] {e}"),
-        }
-        println!();
+    for (description, reference) in emergence_cases {
+        print_emergence_case(client, description, *reference);
     }
 
     let cohere_cases: &[(&str, f32)] = &[
@@ -217,49 +198,34 @@ fn main() {
             0.05,
         ),
     ];
-
-    for (desc, ref_bridge) in cohere_cases {
-        println!("  ▶ cohere: \"{}\"", &desc[..desc.len().min(70)]);
-        match configure_cohere(&client, desc) {
-            Ok(p) => {
-                println!("    LLM → min_bridge={:.3}", p.min_bridge_activity);
-                println!("    REF → min_bridge={:.3}", ref_bridge);
-                let direction_ok = if *ref_bridge >= 0.2 {
-                    p.min_bridge_activity >= 0.15
-                } else {
-                    p.min_bridge_activity <= 0.15
-                };
-                println!(
-                    "    {}  (direction_ok={direction_ok})",
-                    if direction_ok {
-                        "✓ reasonable"
-                    } else {
-                        "✗ diverged"
-                    }
-                );
-            }
-            Err(e) => println!("    [error] {e}"),
-        }
-        println!();
+    for (description, reference) in cohere_cases {
+        print_cohere_case(client, description, *reference);
     }
+}
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // End-to-end: social network simulation with LLM-inferred configs
-    // Two influence kinds: rumor (fast decay) and friendship (slow decay).
-    // Verifiable property: after N ticks with no new stimuli,
-    //   rumor activity should decay much more than friendship activity.
-    // ─────────────────────────────────────────────────────────────────────────
+#[cfg(feature = "ollama")]
+fn run_end_to_end_social_simulation(client: &graph_llm::OllamaClient) {
     println!("━━━ End-to-end: social network with LLM-inferred params ━━━\n");
 
-    struct Noop;
-    impl LocusProgram for Noop {
-        fn process(&self, _: &Locus, _: &[&Change], _: &dyn LocusContext) -> Vec<ProposedChange> {
-            vec![]
-        }
-    }
+    let rumor_cfg = infer_rumor_config(client);
+    let friend_cfg = infer_friendship_config(client);
+    let mut sim = build_social_simulation(&rumor_cfg, &friend_cfg);
 
-    let rumor_cfg = configure_influence(
-        &client,
+    print_inferred_configs(&rumor_cfg, &friend_cfg);
+    seed_social_graph(&mut sim);
+    print_relationship_count(&sim, "\n  After co-occurrence flush");
+    run_decay_ticks(&mut sim, 10);
+    print_relationship_count(&sim, "  After 10 decay ticks    ");
+    print_decay_summary(&rumor_cfg, &friend_cfg, 10);
+}
+
+#[cfg(feature = "ollama")]
+fn infer_rumor_config(client: &graph_llm::OllamaClient) -> graph_engine::InfluenceKindConfig {
+    use graph_engine::InfluenceKindConfig;
+    use graph_llm::configure_influence;
+
+    configure_influence(
+        client,
         "rumor",
         "Viral rumor: decays very quickly (half-life of ~1 tick), \
          strong positive contribution, no plasticity.",
@@ -269,10 +235,16 @@ fn main() {
         InfluenceKindConfig::new("rumor")
             .with_decay(0.6)
             .with_activity_contribution(2.0)
-    });
+    })
+}
 
-    let friend_cfg = configure_influence(
-        &client,
+#[cfg(feature = "ollama")]
+fn infer_friendship_config(client: &graph_llm::OllamaClient) -> graph_engine::InfluenceKindConfig {
+    use graph_engine::{InfluenceKindConfig, PlasticityConfig};
+    use graph_llm::configure_influence;
+
+    configure_influence(
+        client,
         "friendship",
         "Strong friendship bond: extremely slow decay (persists for hundreds of ticks), \
          moderate positive contribution, moderate Hebbian plasticity.",
@@ -288,24 +260,25 @@ fn main() {
                 max_weight: 2.0,
                 ..Default::default()
             })
-    });
+    })
+}
+
+#[cfg(feature = "ollama")]
+fn build_social_simulation(
+    rumor_cfg: &graph_engine::InfluenceKindConfig,
+    friend_cfg: &graph_engine::InfluenceKindConfig,
+) -> graph_engine::Simulation {
+    use graph_engine::{PlasticityConfig, SimulationBuilder};
 
     let rumor_decay = rumor_cfg.decay_per_batch;
-    let friend_decay = friend_cfg.decay_per_batch;
     let rumor_contrib = rumor_cfg.activity_contribution;
+    let friend_decay = friend_cfg.decay_per_batch;
     let friend_contrib = friend_cfg.activity_contribution;
     let friend_lr = friend_cfg.plasticity.learning_rate;
     let friend_wd = friend_cfg.plasticity.weight_decay;
     let friend_mw = friend_cfg.plasticity.max_weight;
 
-    println!(
-        "  Inferred rumor     : decay={rumor_decay:.3}  contrib={rumor_contrib:+.2}  lr=0.000"
-    );
-    println!(
-        "  Inferred friendship: decay={friend_decay:.3}  contrib={friend_contrib:+.2}  lr={friend_lr:.3}"
-    );
-
-    let mut sim = SimulationBuilder::new()
+    SimulationBuilder::new()
         .locus_kind("person", Noop)
         .default_influence("rumor")
         .influence("rumor", move |cfg| {
@@ -324,42 +297,63 @@ fn main() {
                 })
                 .symmetric()
         })
-        .build();
+        .build()
+}
 
-    // Create three nodes; co-occurrence auto-wires relationships
+#[cfg(feature = "ollama")]
+fn print_inferred_configs(
+    rumor_cfg: &graph_engine::InfluenceKindConfig,
+    friend_cfg: &graph_engine::InfluenceKindConfig,
+) {
+    println!(
+        "  Inferred rumor     : decay={:.3}  contrib={:+.2}  lr=0.000",
+        rumor_cfg.decay_per_batch, rumor_cfg.activity_contribution
+    );
+    println!(
+        "  Inferred friendship: decay={:.3}  contrib={:+.2}  lr={:.3}",
+        friend_cfg.decay_per_batch,
+        friend_cfg.activity_contribution,
+        friend_cfg.plasticity.learning_rate
+    );
+}
+
+#[cfg(feature = "ollama")]
+fn seed_social_graph(sim: &mut graph_engine::Simulation) {
+    use graph_core::props;
+
     sim.ingest_cooccurrence(vec![
         ("alice", "person", props! {}),
         ("bob", "person", props! {}),
         ("carol", "person", props! {}),
     ]);
-    sim.step(vec![]); // flush → relationships emerge
+    sim.step(vec![]);
+}
 
-    let world = sim.world();
-    println!(
-        "\n  After co-occurrence flush: {} relationships",
-        world.relationships().len()
-    );
-    drop(world);
-
-    // Run 10 decay ticks
-    for _ in 0..10 {
+#[cfg(feature = "ollama")]
+fn run_decay_ticks(sim: &mut graph_engine::Simulation, ticks: usize) {
+    for _ in 0..ticks {
         sim.step(vec![]);
     }
+}
 
+#[cfg(feature = "ollama")]
+fn print_relationship_count(sim: &graph_engine::Simulation, label: &str) {
     let world = sim.world();
-    println!(
-        "  After 10 decay ticks     : {} relationships",
-        world.relationships().len()
-    );
-    drop(world);
+    println!("{label}: {} relationships", world.relationships().len());
+}
 
-    // Key property: decay ordering should be correct
-    let decay_ordering_ok = rumor_decay < friend_decay;
-    let rumor_remaining = rumor_decay.powi(10);
-    let friend_remaining = friend_decay.powi(10);
+#[cfg(feature = "ollama")]
+fn print_decay_summary(
+    rumor_cfg: &graph_engine::InfluenceKindConfig,
+    friend_cfg: &graph_engine::InfluenceKindConfig,
+    ticks: i32,
+) {
+    let rumor_remaining = rumor_cfg.decay_per_batch.powi(ticks);
+    let friend_remaining = friend_cfg.decay_per_batch.powi(ticks);
+    let decay_ordering_ok = rumor_cfg.decay_per_batch < friend_cfg.decay_per_batch;
     let meaningful_spread = friend_remaining > rumor_remaining * 2.0;
 
-    println!("\n  Expected remaining activity after 10 ticks (starting from 1.0):");
+    println!("\n  Expected remaining activity after {ticks} ticks (starting from 1.0):");
     println!("    rumor:      {rumor_remaining:.4}");
     println!("    friendship: {friend_remaining:.4}");
     println!(
@@ -375,22 +369,80 @@ fn main() {
         "  Decay ordering (rumor < friendship): {decay_ordering_ok}  {}",
         if decay_ordering_ok { "✓" } else { "✗" }
     );
-
-    println!("\n=== done ===");
 }
 
 #[cfg(feature = "ollama")]
-fn print_influence_case(
-    client: &graph_llm::OllamaClient,
-    label: &str,
-    description: &str,
-    ref_decay: f32,
-    ref_contrib: f32,
-    ref_lr: f32,
-) {
+fn print_emergence_case(client: &graph_llm::OllamaClient, description: &str, ref_activity: f32) {
+    use graph_llm::configure_emergence;
+
+    println!(
+        "  ▶ emergence: \"{}...\"",
+        &description[..description.len().min(70)]
+    );
+    match configure_emergence(client, description) {
+        Ok(params) => {
+            println!("    LLM → min_activity={:?}", params.min_activity_threshold);
+            println!("    REF → min_activity={:.3}", ref_activity);
+            let activity_ok = params
+                .min_activity_threshold
+                .map(|value| (value - ref_activity).abs() < 0.15)
+                .unwrap_or(false);
+            println!(
+                "    {}  (activity_close={activity_ok})",
+                if activity_ok {
+                    "✓ reasonable"
+                } else {
+                    "✗ diverged"
+                }
+            );
+        }
+        Err(error) => println!("    [error] {error}"),
+    }
+    println!();
+}
+
+#[cfg(feature = "ollama")]
+fn print_cohere_case(client: &graph_llm::OllamaClient, description: &str, ref_bridge: f32) {
+    use graph_llm::configure_cohere;
+
+    println!(
+        "  ▶ cohere: \"{}\"",
+        &description[..description.len().min(70)]
+    );
+    match configure_cohere(client, description) {
+        Ok(params) => {
+            println!("    LLM → min_bridge={:?}", params.min_bridge_activity);
+            println!("    REF → min_bridge={:.3}", ref_bridge);
+            let direction_ok = params
+                .min_bridge_activity
+                .map(|value| {
+                    if ref_bridge >= 0.2 {
+                        value >= 0.15
+                    } else {
+                        value <= 0.15
+                    }
+                })
+                .unwrap_or(false);
+            println!(
+                "    {}  (direction_ok={direction_ok})",
+                if direction_ok {
+                    "✓ reasonable"
+                } else {
+                    "✗ diverged"
+                }
+            );
+        }
+        Err(error) => println!("    [error] {error}"),
+    }
+    println!();
+}
+
+#[cfg(feature = "ollama")]
+fn print_influence_case(client: &graph_llm::OllamaClient, case: &RefConfig) {
     use graph_llm::configure_influence;
-    println!("  ▶ {label}");
-    match configure_influence(client, label, description) {
+
+    println!("  ▶ {}", case.label);
+    match configure_influence(client, case.label, case.description) {
         Ok(cfg) => {
             println!(
                 "    LLM → decay={:.3}  contrib={:+.2}  lr={:.3}",
@@ -398,11 +450,11 @@ fn print_influence_case(
             );
             println!(
                 "    REF → decay={:.3}  contrib={:+.2}  lr={:.3}",
-                ref_decay, ref_contrib, ref_lr
+                case.ref_decay, case.ref_contrib, case.ref_lr
             );
-            let decay_ok = (cfg.decay_per_batch - ref_decay).abs() < 0.15;
-            let sign_ok = cfg.activity_contribution.signum() == ref_contrib.signum();
-            let lr_ok = if ref_lr == 0.0 {
+            let decay_ok = (cfg.decay_per_batch - case.ref_decay).abs() < 0.15;
+            let sign_ok = cfg.activity_contribution.signum() == case.ref_contrib.signum();
+            let lr_ok = if case.ref_lr == 0.0 {
                 cfg.plasticity.learning_rate < 0.05
             } else {
                 cfg.plasticity.learning_rate > 0.0

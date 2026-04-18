@@ -12,7 +12,7 @@
 pub struct StabilizationConfig {
     /// Blending weight for state updates: `result = (1 − alpha) · before
     /// + alpha · after`. `1.0` = no blending (pass-through); `0.0` =
-    /// state never moves.
+    ///   state never moves.
     ///
     /// **Default**: `1.0` (transparent — the guard rail is a no-op).
     /// Kept as the sole blend axis after Phase 4 (see

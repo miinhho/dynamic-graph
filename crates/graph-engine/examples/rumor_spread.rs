@@ -19,7 +19,7 @@ use graph_core::{
 };
 use graph_engine::{
     Engine, EngineConfig, InfluenceKindConfig, InfluenceKindRegistry, LocusKindConfig,
-    LocusKindRegistry,
+    LocusKindRegistry, TickResult,
 };
 use graph_query as Q;
 use graph_world::World;
@@ -335,113 +335,95 @@ fn print_beliefs(world: &World) {
     }
 }
 
-// ─── Main ─────────────────────────────────────────────────────────────────────
+fn rumor_stimuli() -> Vec<ProposedChange> {
+    vec![
+        ProposedChange::stimulus(INFLUENCER_A, BELIEF_KIND, &[1.0]),
+        ProposedChange::stimulus(INFLUENCER_B, BELIEF_KIND, &[1.0]),
+    ]
+}
 
-fn main() {
-    let (mut world, loci, influences) = build_world();
-    let engine = Engine::new(EngineConfig {
-        max_batches_per_tick: 32,
-    });
-
+fn print_intro() {
     println!("=== Rumor Propagation Example ===\n");
     println!("  INFLUENCER_A → REG_1 → REG_3 → SKEPTIC_1");
     println!("  INFLUENCER_A → REG_2");
     println!("  INFLUENCER_B → REG_2 → REG_4 → SKEPTIC_2");
     println!("  INFLUENCER_B → REG_3\n");
+}
 
-    // ── Tick 1: inject first rumor stimulus ───────────────────────────────────
-
-    println!("--- Tick 1: influencers start spreading ---");
-    let r1 = engine.tick(
-        &mut world,
-        &loci,
-        &influences,
-        vec![
-            ProposedChange::stimulus(INFLUENCER_A, BELIEF_KIND, &[1.0]),
-            ProposedChange::stimulus(INFLUENCER_B, BELIEF_KIND, &[1.0]),
-        ],
-    );
+fn run_push_tick(
+    engine: &Engine,
+    world: &mut World,
+    loci: &LocusKindRegistry,
+    influences: &InfluenceKindRegistry,
+    title: &str,
+) -> TickResult {
+    println!("--- {title} ---");
+    let result = engine.tick(world, loci, influences, rumor_stimuli());
     println!(
         "  batches={} changes={} relationships={}",
-        r1.batches_committed,
-        r1.changes_committed,
+        result.batches_committed,
+        result.changes_committed,
         world.relationships().len()
     );
-    print_beliefs(&world);
+    print_beliefs(world);
     println!();
+    result
+}
 
-    // ── Tick 2: second wave ───────────────────────────────────────────────────
+fn run_propagation(
+    engine: &Engine,
+    world: &mut World,
+    loci: &LocusKindRegistry,
+    influences: &InfluenceKindRegistry,
+) -> [TickResult; 3] {
+    [
+        run_push_tick(
+            engine,
+            world,
+            loci,
+            influences,
+            "Tick 1: influencers start spreading",
+        ),
+        run_push_tick(engine, world, loci, influences, "Tick 2: second push"),
+        run_push_tick(engine, world, loci, influences, "Tick 3: final push"),
+    ]
+}
 
-    println!("--- Tick 2: second push ---");
-    let r2 = engine.tick(
-        &mut world,
-        &loci,
-        &influences,
-        vec![
-            ProposedChange::stimulus(INFLUENCER_A, BELIEF_KIND, &[1.0]),
-            ProposedChange::stimulus(INFLUENCER_B, BELIEF_KIND, &[1.0]),
-        ],
-    );
-    println!(
-        "  batches={} changes={} relationships={}",
-        r2.batches_committed,
-        r2.changes_committed,
-        world.relationships().len()
-    );
-    print_beliefs(&world);
-    println!();
-
-    // ── Tick 3: one more push, then let it decay ──────────────────────────────
-
-    println!("--- Tick 3: final push ---");
-    let r3 = engine.tick(
-        &mut world,
-        &loci,
-        &influences,
-        vec![
-            ProposedChange::stimulus(INFLUENCER_A, BELIEF_KIND, &[1.0]),
-            ProposedChange::stimulus(INFLUENCER_B, BELIEF_KIND, &[1.0]),
-        ],
-    );
-    println!(
-        "  batches={} changes={} relationships={}",
-        r3.batches_committed,
-        r3.changes_committed,
-        world.relationships().len()
-    );
-    print_beliefs(&world);
-    println!();
-
+fn print_graph_query_analysis(
+    world: &World,
+    loci: &LocusKindRegistry,
+    influences: &InfluenceKindRegistry,
+    tick_results: &[TickResult],
+) {
     let current_batch = world.current_batch();
     println!("  current batch: {}", current_batch.0);
 
-    // ════════════════════════════════════════════════════════════════════════
-    // graph-query analysis
-    // ════════════════════════════════════════════════════════════════════════
-
     println!("\n=== Graph-Query Analysis ===\n");
+    print_structural_analysis(world);
+    print_belief_analysis(world);
+    print_relationship_analysis(world, current_batch);
+    print_temporal_and_causal_analysis(world, current_batch);
+    print_schema_and_event_analysis(loci, influences, tick_results);
+    print_transitive_and_profile_analysis(world);
+    println!("\nDone.");
+}
 
-    // ── Structural: who are the hubs? ─────────────────────────────────────────
-
+fn print_structural_analysis(world: &World) {
     println!("--- Hub & degree analysis ---");
-
-    // Builder API: top-3 most connected loci with degree info
-    let hubs = Q::loci(&world).top_n_by_degree(3).collect();
+    let hubs = Q::loci(world).top_n_by_degree(3).collect();
     for l in &hubs {
-        let out = Q::locus_out_degree(&world, l.id);
-        let inn = Q::locus_in_degree(&world, l.id);
+        let out = Q::locus_out_degree(world, l.id);
+        let inn = Q::locus_in_degree(world, l.id);
         let deg = out + inn;
         println!("  {} deg={} (out={} in={})", label(l.id), deg, out, inn);
     }
 
-    let isolated = Q::isolated_loci(&world);
-    println!("  isolated loci: {}", isolated.len()); // should be 0
-
-    // ── Neighbors: immediate social contacts ──────────────────────────────────
+    let isolated = Q::isolated_loci(world);
+    println!("  isolated loci: {}", isolated.len());
 
     println!("\n--- Neighbors of REG_2 ---");
-    let upstr = Q::upstream_of(&world, REG_2, 1);
-    let downstr = Q::downstream_of(&world, REG_2, 1);
+    let upstr = Q::upstream_of(world, REG_2, 1);
+    let downstr = Q::downstream_of(world, REG_2, 1);
     print!("  sources of REG_2: ");
     for id in &upstr {
         print!("{} ", label(*id));
@@ -452,16 +434,14 @@ fn main() {
         print!("{} ", label(*id));
     }
     println!();
+}
 
-    // ── Filter: who has been significantly influenced? ────────────────────────
-
+fn print_belief_analysis(world: &World) {
     println!("\n--- Belief distribution ---");
-
-    // Builder API: filter by state threshold, collect names
-    let convinced = Q::loci(&world)
+    let convinced = Q::loci(world)
         .where_state(BELIEF_SLOT, |b| b > 0.5)
         .collect();
-    let unconvinced = Q::loci(&world)
+    let unconvinced = Q::loci(world)
         .where_state(BELIEF_SLOT, |b| b <= 0.1)
         .collect();
     println!(
@@ -475,12 +455,8 @@ fn main() {
         unconvinced.iter().map(|l| label(l.id)).collect::<Vec<_>>()
     );
 
-    // ── Ranking: who has the highest belief? ─────────────────────────────────
-
     println!("\n--- Top 4 by belief ---");
-
-    // Builder API: sort by belief state slot, take top 4
-    let top4 = Q::loci(&world).top_n_by_state(BELIEF_SLOT, 4).collect();
+    let top4 = Q::loci(world).top_n_by_state(BELIEF_SLOT, 4).collect();
     for (rank, l) in top4.iter().enumerate() {
         println!(
             "  #{} {} belief={:.3}",
@@ -490,12 +466,8 @@ fn main() {
         );
     }
 
-    // ── Convince-reach: regulars near INFLUENCER_A with high belief ───────────
-
     println!("\n--- Convinced reach from INFLUENCER_A (depth=3, belief>0.3) ---");
-
-    // Builder API: compose reachability with state filter
-    let convinced_reach = Q::loci(&world)
+    let convinced_reach = Q::loci(world)
         .reachable_from(INFLUENCER_A, 3)
         .where_state(BELIEF_SLOT, |b| b > 0.3)
         .top_n_by_state(BELIEF_SLOT, 5)
@@ -508,11 +480,9 @@ fn main() {
         );
     }
 
-    // ── Influence balance: net senders vs receivers ───────────────────────────
-
     println!("\n--- Influence balance ---");
     for id in [INFLUENCER_A, INFLUENCER_B, REG_2, REG_3, SKEPTIC_1] {
-        let balance = Q::net_influence_balance(&world, id);
+        let balance = Q::net_influence_balance(world, id);
         let direction = if balance > 0.0 {
             "sender"
         } else if balance < 0.0 {
@@ -522,13 +492,11 @@ fn main() {
         };
         println!("  {:<14} net={:+.3}  ({})", label(id), balance, direction);
     }
+}
 
-    // ── Relationships: strongest and most active ──────────────────────────────
-
+fn print_relationship_analysis(world: &World, current_batch: graph_core::BatchId) {
     println!("\n--- Strongest relationships ---");
-
-    // Builder API: top 3 by strength, with kind filter
-    let top3 = Q::relationships(&world)
+    let top3 = Q::relationships(world)
         .of_kind(BELIEF_KIND)
         .top_n_by_strength(3)
         .collect();
@@ -546,12 +514,8 @@ fn main() {
         );
     }
 
-    // ── Outgoing edges of INFLUENCER_A with high activity ────────────────────
-
     println!("\n--- Active outgoing edges from INFLUENCER_A ---");
-
-    // Builder API: from + activity threshold
-    let active_out = Q::relationships(&world)
+    let active_out = Q::relationships(world)
         .from(INFLUENCER_A)
         .above_activity(0.0)
         .collect();
@@ -560,11 +524,33 @@ fn main() {
         println!("  INFLUENCER_A→{}  activity={:.3}", to, r.activity());
     }
 
-    // ── Batch-temporal: who changed in each batch? ───────────────────────────
+    println!("\n--- Relationship lifecycle ---");
+    let old_rels = Q::relationships(world).older_than(current_batch, 1).count();
+    println!("  relationships older than 1 batch: {}", old_rels);
+    let volatile_count = Q::relationships(world).above_activity(1.0).count();
+    println!("  highly active (activity > 1.0): {}", volatile_count);
 
+    println!("\n--- Reciprocal (bidirectional) pairs ---");
+    let pairs = Q::reciprocal_pairs(world);
+    println!(
+        "  reciprocal pairs: {} (expected 0 for DAG topology)",
+        pairs.len()
+    );
+
+    println!("\n--- Relationship touch rate (touches/batch) ---");
+    let top_touch = Q::relationships(world).top_n_by_change_count(3).collect();
+    for r in &top_touch {
+        let rate = Q::relationship_touch_rate(world, r.id, current_batch);
+        let from = r.endpoints.source().map(label).unwrap_or("?");
+        let to = r.endpoints.target().map(label).unwrap_or("?");
+        println!("  {}→{}  {:.2} touches/batch", from, to, rate);
+    }
+}
+
+fn print_temporal_and_causal_analysis(world: &World, current_batch: graph_core::BatchId) {
     println!("\n--- Per-batch activity ---");
-    for batch_id in Q::committed_batches(&world) {
-        let changed = Q::loci_changed_in_batch(&world, batch_id);
+    for batch_id in Q::committed_batches(world) {
+        let changed = Q::loci_changed_in_batch(world, batch_id);
         if changed.is_empty() {
             continue;
         }
@@ -575,52 +561,23 @@ fn main() {
         println!("({} loci)", changed.len());
     }
 
-    // ── Causal analysis: how deep is SKEPTIC_1's conviction? ─────────────────
-
     println!("\n--- Causal depth of skeptics' changes ---");
-    let s1_latest = Q::last_change_to_locus(&world, SKEPTIC_1);
-    let s2_latest = Q::last_change_to_locus(&world, SKEPTIC_2);
-
+    let s1_latest = Q::last_change_to_locus(world, SKEPTIC_1);
+    let s2_latest = Q::last_change_to_locus(world, SKEPTIC_2);
     match (s1_latest, s2_latest) {
         (Some(c1), Some(c2)) => {
-            let d1 = Q::causal_depth(&world, c1.id);
-            let d2 = Q::causal_depth(&world, c2.id);
+            let d1 = Q::causal_depth(world, c1.id);
+            let d2 = Q::causal_depth(world, c2.id);
             println!("  SKEPTIC_1 latest change: depth={d1} (chain length from root)");
             println!("  SKEPTIC_2 latest change: depth={d2}");
-
-            let shared = Q::common_ancestors(&world, c1.id, c2.id);
+            let shared = Q::common_ancestors(world, c1.id, c2.id);
             println!("  common ancestors of both: {}", shared.len());
         }
         _ => println!("  (skeptics unchanged — need more ticks)"),
     }
 
-    // ── Relationship lifecycle: aging edges ───────────────────────────────────
-
-    println!("\n--- Relationship lifecycle ---");
-
-    // Builder API: filter by creation batch range
-    let old_rels = Q::relationships(&world)
-        .older_than(current_batch, 1)
-        .count();
-    println!("  relationships older than 1 batch: {}", old_rels);
-
-    // Builder API: high-activity filter
-    let volatile_count = Q::relationships(&world).above_activity(1.0).count();
-    println!("  highly active (activity > 1.0): {}", volatile_count);
-
-    // ── Reciprocal pairs: mutual influence ────────────────────────────────────
-
-    println!("\n--- Reciprocal (bidirectional) pairs ---");
-    let pairs = Q::reciprocal_pairs(&world);
-    println!(
-        "  reciprocal pairs: {} (expected 0 for DAG topology)",
-        pairs.len()
-    );
-
-    // ── Entity recognition ────────────────────────────────────────────────────
-
     println!("\n--- Entity recognition ---");
-    let entities = Q::active_entities(&world);
+    let entities = Q::active_entities(world);
     println!("  active entities: {}", entities.len());
     for e in &entities {
         let members: Vec<_> = e.current.members.iter().map(|id| label(*id)).collect();
@@ -630,33 +587,16 @@ fn main() {
         );
     }
 
-    let skeptic_entities = Q::entities_with_member(&world, SKEPTIC_1);
+    let skeptic_entities = Q::entities_with_member(world, SKEPTIC_1);
     if skeptic_entities.is_empty() {
         println!("  SKEPTIC_1 is not yet in any entity (not enough coherence)");
     } else {
         println!("  SKEPTIC_1 belongs to entity#{}", skeptic_entities[0].id.0);
     }
 
-    // ── Touch rate: which edge is most actively reinforced? ───────────────────
-
-    println!("\n--- Relationship touch rate (touches/batch) ---");
-
-    // Builder API: top 3 by change count, then derive touch rate
-    let top_touch = Q::relationships(&world).top_n_by_change_count(3).collect();
-    for r in &top_touch {
-        let rate = Q::relationship_touch_rate(&world, r.id, current_batch);
-        let from = r.endpoints.source().map(label).unwrap_or("?");
-        let to = r.endpoints.target().map(label).unwrap_or("?");
-        println!("  {}→{}  {:.2} touches/batch", from, to, rate);
-    }
-
-    // ── Upstream neighbor state via builder ───────────────────────────────────
-
     println!("\n--- Upstream neighbors of SKEPTIC_1 (via builder) ---");
-
-    // Builder API: seed from traversal result, inspect state
-    let upstream_ids = Q::upstream_of(&world, SKEPTIC_1, 1);
-    let upstream_loci = Q::loci_from_ids(&world, &upstream_ids)
+    let upstream_ids = Q::upstream_of(world, SKEPTIC_1, 1);
+    let upstream_loci = Q::loci_from_ids(world, &upstream_ids)
         .sort_by_state(BELIEF_SLOT)
         .collect();
     for l in &upstream_loci {
@@ -667,15 +607,16 @@ fn main() {
         );
     }
 
-    // ── Schema / ontology events from TickResult ──────────────────────────────
+    let _ = current_batch;
+}
 
+fn print_schema_and_event_analysis(
+    loci: &LocusKindRegistry,
+    influences: &InfluenceKindRegistry,
+    tick_results: &[TickResult],
+) {
     println!("\n--- Ontology events from ticks ---");
-    let all_events: Vec<_> = r1
-        .events
-        .iter()
-        .chain(r2.events.iter())
-        .chain(r3.events.iter())
-        .collect();
+    let all_events: Vec<_> = tick_results.iter().flat_map(|r| r.events.iter()).collect();
     let emerged: Vec<_> = all_events
         .iter()
         .filter(|e| matches!(e, graph_core::WorldEvent::RelationshipEmerged { .. }))
@@ -694,8 +635,6 @@ fn main() {
     } else {
         println!("  → some edges emerged outside declared applies_between pairs");
     }
-
-    // ── Schema introspection via loci registry ────────────────────────────────
 
     println!("\n--- Schema introspection (locus kind metadata) ---");
     for (kind_id, name) in loci.named_kinds() {
@@ -733,24 +672,19 @@ fn main() {
         })
         .collect();
     println!("  'belief' applies_between: {:?}", constraints);
+}
 
-    // ── Transitive influence: how strong is the INFLUENCER_A→SKEPTIC_1 chain? ──
-    //
-    // The direct path is INFLUENCER_A → REG_1 → REG_3 → SKEPTIC_1 (3 hops).
-    // `infer_transitive` composes intermediate edge activities using Product rule:
-    //   composed = edge1_activity × edge2_activity × edge3_activity
-    // A low value means the signal attenuates strongly over the chain.
-
+fn print_transitive_and_profile_analysis(world: &World) {
     println!("\n--- Transitive influence (INFLUENCER_A → SKEPTIC_1, 3 hops) ---");
     let transitive_product = Q::infer_transitive(
-        &world,
+        world,
         INFLUENCER_A,
         SKEPTIC_1,
         BELIEF_KIND,
         Q::TransitiveRule::Product,
     );
     let transitive_min = Q::infer_transitive(
-        &world,
+        world,
         INFLUENCER_A,
         SKEPTIC_1,
         BELIEF_KIND,
@@ -765,9 +699,8 @@ fn main() {
         None => println!("  Min rule: no directed BELIEF_KIND path found"),
     }
 
-    // Also check INFLUENCER_B → SKEPTIC_2 path (INFLUENCER_B → REG_2 → REG_4 → SKEPTIC_2)
     let b_to_s2 = Q::infer_transitive(
-        &world,
+        world,
         INFLUENCER_B,
         SKEPTIC_2,
         BELIEF_KIND,
@@ -778,14 +711,8 @@ fn main() {
         None => println!("  INFLUENCER_B → SKEPTIC_2: no path"),
     }
 
-    // ── Relationship bundle: INFLUENCER_A ↔ REG_1 pair ────────────────────────
-    //
-    // Shows the full multi-dimensional view of the coupling between two loci.
-    // With a single BELIEF_KIND, net_activity == excitatory_activity, and
-    // profile_similarity with another single-kind pair will be 1.0 (same dimension).
-
     println!("\n--- Relationship profile: INFLUENCER_A ↔ REG_1 ---");
-    let bundle_a1 = Q::relationship_profile(&world, INFLUENCER_A, REG_1);
+    let bundle_a1 = Q::relationship_profile(world, INFLUENCER_A, REG_1);
     println!(
         "  edges: {}  net_activity={:.3}  is_excitatory={}",
         bundle_a1.len(),
@@ -796,14 +723,24 @@ fn main() {
         println!("  dominant_kind={dom:?}");
     }
 
-    // Compare with INFLUENCER_A ↔ REG_2 profile
-    let bundle_a2 = Q::relationship_profile(&world, INFLUENCER_A, REG_2);
+    let bundle_a2 = Q::relationship_profile(world, INFLUENCER_A, REG_2);
     let sim = bundle_a1.profile_similarity(&bundle_a2);
     println!("\n--- Profile similarity: (A↔REG_1) vs (A↔REG_2) ---");
     println!("  profile_similarity={sim:.3}  (1.0 = identical coupling profile)");
     println!(
         "  (with single-kind topology all profiles are collinear — add multi-kind for richer signal)"
     );
+}
 
-    println!("\nDone.");
+// ─── Main ─────────────────────────────────────────────────────────────────────
+
+fn main() {
+    let (mut world, loci, influences) = build_world();
+    let engine = Engine::new(EngineConfig {
+        max_batches_per_tick: 32,
+    });
+
+    print_intro();
+    let tick_results = run_propagation(&engine, &mut world, &loci, &influences);
+    print_graph_query_analysis(&world, &loci, &influences, &tick_results);
 }

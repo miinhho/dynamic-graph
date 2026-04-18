@@ -32,8 +32,7 @@ use std::collections::HashMap;
 use graph_core::{
     BatchId, Change, ChangeId, ChangeSubject, Cohere, Entity, EntityId, InfluenceKindId,
     KindObservation, Locus, LocusContext, LocusId, LocusKindId, LocusProgram, ProposedChange,
-    Relationship, RelationshipId, RelationshipKindId, RelationshipLineage, StateVector,
-    StructuralProposal,
+    Relationship, RelationshipId, RelationshipLineage, StateVector, StructuralProposal,
 };
 
 // ─── ProgramOutput ────────────────────────────────────────────────────────────
@@ -178,7 +177,6 @@ impl LocusContext for TestLocusContext {
 
 /// A single synthetic incoming [`Change`] in the program inbox.
 struct IncomingSpec {
-    from: LocusId,
     kind: InfluenceKindId,
     after: StateVector,
 }
@@ -299,10 +297,10 @@ impl ProgramFixture {
         value: f32,
     ) -> Self {
         self.inbox.push(IncomingSpec {
-            from: from_locus,
             kind,
             after: StateVector::from_slice(&[value]),
         });
+        let _ = from_locus;
         self
     }
 
@@ -315,10 +313,10 @@ impl ProgramFixture {
         values: &[f32],
     ) -> Self {
         self.inbox.push(IncomingSpec {
-            from: from_locus,
             kind,
             after: StateVector::from_slice(values),
         });
+        let _ = from_locus;
         self
     }
 
@@ -388,7 +386,7 @@ impl ProgramFixture {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use graph_core::{ChangeSubject, InfluenceKindId, LocusId, StateVector};
+    use graph_core::{ChangeSubject, LocusId, StateVector};
 
     use crate::programs::{
         AccumulatorProgram, BroadcastProgram, ForwardProgram, InertProgram, TEST_KIND,

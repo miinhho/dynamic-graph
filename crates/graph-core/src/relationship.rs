@@ -23,6 +23,9 @@ use crate::ids::{BatchId, ChangeId, InfluenceKindId, LocusId, RelationshipKindId
 use crate::property::Properties;
 use crate::state::StateVector;
 
+mod endpoints;
+mod lineage;
+
 /// Per-kind observation record in a `RelationshipLineage`.
 ///
 /// Tracks how many times a specific influence kind has flowed through the
@@ -147,51 +150,30 @@ impl Endpoints {
     /// Shorthand for `Endpoints::Directed { from, to }`.
     #[inline]
     pub fn directed(from: LocusId, to: LocusId) -> Self {
-        Endpoints::Directed { from, to }
+        endpoints::directed(from, to)
     }
 
     /// Shorthand for `Endpoints::Symmetric { a, b }`.
     #[inline]
     pub fn symmetric(a: LocusId, b: LocusId) -> Self {
-        Endpoints::Symmetric { a, b }
+        endpoints::symmetric(a, b)
     }
 
     /// Returns `true` if every endpoint in this relationship is contained
     /// in `set`. Used by `World::induced_subgraph`.
     pub fn all_endpoints_in(&self, set: &rustc_hash::FxHashSet<LocusId>) -> bool {
-        match self {
-            Endpoints::Directed { from, to } => set.contains(from) && set.contains(to),
-            Endpoints::Symmetric { a, b } => set.contains(a) && set.contains(b),
-        }
+        endpoints::all_endpoints_in(self, set)
     }
 
     /// Returns `true` if `locus` appears in any endpoint position.
     pub fn involves(&self, locus: LocusId) -> bool {
-        match self {
-            Endpoints::Directed { from, to } => *from == locus || *to == locus,
-            Endpoints::Symmetric { a, b } => *a == locus || *b == locus,
-        }
+        endpoints::involves(self, locus)
     }
 
     /// The endpoint that is not `locus`, treating the relationship as
     /// undirected. For a self-loop (`from == to == locus`), returns `locus`.
     pub fn other_than(&self, locus: LocusId) -> LocusId {
-        match self {
-            Endpoints::Directed { from, to } => {
-                if *from == locus {
-                    *to
-                } else {
-                    *from
-                }
-            }
-            Endpoints::Symmetric { a, b } => {
-                if *a == locus {
-                    *b
-                } else {
-                    *a
-                }
-            }
-        }
+        endpoints::other_than(self, locus)
     }
 
     /// Returns `true` when this is a `Directed` edge (`from → to`).
@@ -209,19 +191,13 @@ impl Endpoints {
     /// For a `Directed` edge, return the source endpoint (`from`).
     /// Returns `None` for `Symmetric` edges.
     pub fn source(&self) -> Option<LocusId> {
-        match self {
-            Endpoints::Directed { from, .. } => Some(*from),
-            Endpoints::Symmetric { .. } => None,
-        }
+        endpoints::source(self)
     }
 
     /// For a `Directed` edge, return the target endpoint (`to`).
     /// Returns `None` for `Symmetric` edges.
     pub fn target(&self) -> Option<LocusId> {
-        match self {
-            Endpoints::Directed { to, .. } => Some(*to),
-            Endpoints::Symmetric { .. } => None,
-        }
+        endpoints::target(self)
     }
 
     /// Canonical lookup key — endpoints flattened into a stable shape so
@@ -229,13 +205,7 @@ impl Endpoints {
     /// order. For `Symmetric`, the two ids are sorted; for `Directed`,
     /// order is preserved (it carries meaning).
     pub fn key(&self) -> EndpointKey {
-        match self {
-            Endpoints::Directed { from, to } => EndpointKey::Directed(*from, *to),
-            Endpoints::Symmetric { a, b } => {
-                let (lo, hi) = if a.0 <= b.0 { (*a, *b) } else { (*b, *a) };
-                EndpointKey::Symmetric(lo, hi)
-            }
-        }
+        endpoints::key(self)
     }
 }
 
@@ -276,39 +246,20 @@ impl RelationshipLineage {
     /// Create a lineage for a newly auto-emerged relationship (single kind, change-attributed).
     #[inline]
     pub fn new_emerged(change_id: ChangeId, kind: InfluenceKindId, batch: BatchId) -> Self {
-        let mut kinds_observed = SmallVec::new();
-        kinds_observed.push(KindObservation::once(kind, batch));
-        Self {
-            created_by: Some(change_id),
-            last_touched_by: Some(change_id),
-            change_count: 1,
-            kinds_observed,
-        }
+        lineage::new_emerged(change_id, kind, batch)
     }
 
     /// Create a lineage for a synthetically created relationship (structural proposals,
     /// test helpers, queries) — no originating change, single observed kind.
     #[inline]
     pub fn new_synthetic(kind: InfluenceKindId) -> Self {
-        let mut kinds_observed = SmallVec::new();
-        kinds_observed.push(KindObservation::synthetic(kind));
-        Self {
-            created_by: None,
-            last_touched_by: None,
-            change_count: 1,
-            kinds_observed,
-        }
+        lineage::new_synthetic(kind)
     }
 
     /// Create an empty lineage — no observed kinds, no attributed change.
     #[inline]
     pub fn empty() -> Self {
-        Self {
-            created_by: None,
-            last_touched_by: None,
-            change_count: 0,
-            kinds_observed: SmallVec::new(),
-        }
+        lineage::empty()
     }
 
     /// Record or update the observation for `kind` at `batch`.
@@ -318,41 +269,25 @@ impl RelationshipLineage {
     /// `KindObservation`. This is the canonical way for the engine to
     /// update lineage on each relationship touch.
     pub fn observe_kind(&mut self, kind: InfluenceKindId, batch: BatchId) {
-        if let Some(obs) = self.kinds_observed.iter_mut().find(|o| o.kind == kind) {
-            obs.touch_count += 1;
-            obs.last_batch = batch;
-        } else {
-            self.kinds_observed.push(KindObservation::once(kind, batch));
-        }
+        lineage::observe_kind(&mut self.kinds_observed, kind, batch);
     }
 
     /// Return the influence kind that has flowed through this relationship
     /// the most times. Ties are broken by kind id (lower wins). Returns
     /// `None` when `kinds_observed` is empty.
     pub fn dominant_flow_kind(&self) -> Option<InfluenceKindId> {
-        self.kinds_observed
-            .iter()
-            .max_by(|a, b| {
-                a.touch_count
-                    .cmp(&b.touch_count)
-                    .then_with(|| b.kind.0.cmp(&a.kind.0)) // lower id wins tie
-            })
-            .map(|obs| obs.kind)
+        lineage::dominant_flow_kind(&self.kinds_observed)
     }
 
     /// Number of times `kind` has touched this relationship. Returns `0`
     /// when the kind has never been observed.
     pub fn touch_count_for(&self, kind: InfluenceKindId) -> u64 {
-        self.kinds_observed
-            .iter()
-            .find(|o| o.kind == kind)
-            .map(|o| o.touch_count)
-            .unwrap_or(0)
+        lineage::touch_count_for(&self.kinds_observed, kind)
     }
 
     /// Returns `true` when `kind` has been observed on this relationship.
     pub fn has_seen_kind(&self, kind: InfluenceKindId) -> bool {
-        self.kinds_observed.iter().any(|o| o.kind == kind)
+        lineage::has_seen_kind(&self.kinds_observed, kind)
     }
 
     /// Iterate the ids of all influence kinds that have been observed.

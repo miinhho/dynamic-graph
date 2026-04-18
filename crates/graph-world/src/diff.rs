@@ -50,8 +50,14 @@
 //!
 //! For large worlds with long histories, consider narrowing the range.
 
-use graph_core::{BatchId, ChangeId, ChangeSubject, EntityId, LocusId, RelationshipId};
-use rustc_hash::FxHashMap;
+mod collect;
+
+use graph_core::{BatchId, ChangeId, EntityId, LocusId, RelationshipId};
+
+use self::collect::{
+    change_id_set, collect_change_range, collect_entities_changed, collect_pruned_relationships,
+    collect_relationship_changes, collect_relationship_trajectory, collect_subscription_changes,
+};
 
 /// Activity delta for a relationship over a `WorldDiff` batch range.
 ///
@@ -152,100 +158,16 @@ impl WorldDiff {
             };
         }
 
-        // ── changes + relationship trajectory ─────────────────────────────
-        let mut change_ids: Vec<ChangeId> = Vec::new();
-        // rel_id → (activity_before_range, activity_after_range)
-        // Populated lazily — allocated only if the range contains at least
-        // one ChangeSubject::Relationship entry (uncommon in pure locus workloads).
-        let mut rel_activity_range: Option<FxHashMap<RelationshipId, (f32, f32)>> = None;
-
-        for b in from.0..to.0 {
-            for c in world.log().batch(BatchId(b)) {
-                change_ids.push(c.id);
-                if let ChangeSubject::Relationship(rel_id) = c.subject {
-                    let before_act = c.before.as_slice().first().copied().unwrap_or(0.0);
-                    let after_act = c.after.as_slice().first().copied().unwrap_or(0.0);
-                    rel_activity_range
-                        .get_or_insert_with(FxHashMap::default)
-                        .entry(rel_id)
-                        .and_modify(|r| r.1 = after_act)
-                        .or_insert((before_act, after_act));
-                }
-            }
-        }
-
-        // Build a set of change ids in range for O(1) membership tests below.
-        let in_range: rustc_hash::FxHashSet<ChangeId> = change_ids.iter().copied().collect();
-
-        // ── relationships ─────────────────────────────────────────────────
-        let mut relationships_created = Vec::new();
-        let mut relationships_updated = Vec::new();
-        for rel in world.relationships().iter() {
-            let created_in_range = rel
-                .lineage
-                .created_by
-                .map(|cid| in_range.contains(&cid))
-                .unwrap_or(false);
-            let touched_in_range = rel
-                .lineage
-                .last_touched_by
-                .map(|cid| in_range.contains(&cid))
-                .unwrap_or(false);
-
-            if created_in_range {
-                relationships_created.push(rel.id);
-            } else if touched_in_range {
-                relationships_updated.push(rel.id);
-            }
-        }
-
-        // ── entities ──────────────────────────────────────────────────────
-        let mut entities_changed = Vec::new();
-        for entity in world.entities().iter() {
-            let has_layer_in_range = entity
-                .layers
-                .iter()
-                .any(|l| l.batch.0 >= from.0 && l.batch.0 < to.0);
-            if has_layer_in_range {
-                entities_changed.push(entity.id);
-            }
-        }
-
-        // ── subscriptions ─────────────────────────────────────────────────
-        let mut subscriptions_added = Vec::new();
-        let mut subscriptions_removed = Vec::new();
-        for event in world.subscriptions().events_in_range(from, to) {
-            if event.subscribed {
-                subscriptions_added.push((event.subscriber, event.rel_id));
-            } else {
-                subscriptions_removed.push((event.subscriber, event.rel_id));
-            }
-        }
-
-        // ── relationship trajectory ───────────────────────────────────────
-        let mut relationships_strengthening = Vec::new();
-        let mut relationships_weakening = Vec::new();
-        for (id, (activity_before, activity_after)) in rel_activity_range.unwrap_or_default() {
-            let delta = RelationshipDelta {
-                id,
-                activity_before,
-                activity_after,
-            };
-            if activity_after > activity_before {
-                relationships_strengthening.push(delta);
-            } else if activity_after < activity_before {
-                relationships_weakening.push(delta);
-            }
-            // Equal: no trajectory signal — skip.
-        }
-
-        // ── pruning ───────────────────────────────────────────────────────
-        let relationships_pruned: Vec<RelationshipId> = world
-            .pruned_log()
-            .iter()
-            .filter(|(_, b)| b.0 >= from.0 && b.0 < to.0)
-            .map(|(id, _)| *id)
-            .collect();
+        let (change_ids, rel_activity_range) = collect_change_range(world, from, to);
+        let in_range = change_id_set(&change_ids);
+        let (relationships_created, relationships_updated) =
+            collect_relationship_changes(world, &in_range);
+        let entities_changed = collect_entities_changed(world, from, to);
+        let (subscriptions_added, subscriptions_removed) =
+            collect_subscription_changes(world, from, to);
+        let (relationships_strengthening, relationships_weakening) =
+            collect_relationship_trajectory(rel_activity_range);
+        let relationships_pruned = collect_pruned_relationships(world, from, to);
 
         WorldDiff {
             from_batch: from,

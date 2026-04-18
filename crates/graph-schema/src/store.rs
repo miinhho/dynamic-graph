@@ -118,7 +118,7 @@ impl DeclarationStore {
             .into_iter()
             .flat_map(|v| v.iter().copied())
             .filter(|&fid| {
-                self.fact(fid).map_or(false, |f| {
+                self.fact(fid).is_some_and(|f| {
                     f.is_active() && &f.predicate == predicate && f.object == object
                 })
             })

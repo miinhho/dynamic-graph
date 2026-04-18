@@ -62,7 +62,7 @@ impl DeclaredFact {
     /// Returns `true` if this fact was active at the given store version.
     #[inline]
     pub fn active_at(&self, version: u64) -> bool {
-        self.asserted_at <= version && self.retracted_at.map_or(true, |r| version < r)
+        self.asserted_at <= version && self.retracted_at.is_none_or(|r| version < r)
     }
 }
 

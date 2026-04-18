@@ -40,8 +40,16 @@ use graph_core::{LocusId, RelationshipId};
 use graph_schema::{DeclaredFactId, DeclaredRelKind, SchemaWorld};
 use graph_world::World;
 
-use crate::analysis::{SignalMode, signal};
+use crate::analysis::SignalMode;
 use crate::report::BoundaryReport;
+
+mod assembly;
+mod candidates;
+mod policy;
+
+use self::assembly::{assemble_assertion, assemble_retraction};
+use self::candidates::{collect_ghost_candidates, collect_shadow_candidates};
+use self::policy::{should_assert_shadow, should_retract_ghost};
 
 /// Configuration for [`prescribe_updates`].
 #[derive(Debug, Clone)]
@@ -125,59 +133,16 @@ pub fn prescribe_updates(
     dynamic: &World,
     config: &PrescriptionConfig,
 ) -> Vec<BoundaryAction> {
-    let mut actions = Vec::new();
+    let retractions = collect_ghost_candidates(report, schema)
+        .into_iter()
+        .filter(|candidate| should_retract_ghost(candidate, config))
+        .map(assemble_retraction);
+    let assertions = collect_shadow_candidates(report, dynamic, config.signal_mode)
+        .into_iter()
+        .filter(|candidate| should_assert_shadow(candidate, config))
+        .map(|candidate| assemble_assertion(candidate, config));
 
-    // ── Ghost → retract proposals ─────────────────────────────────────────
-    if let Some(age_threshold) = config.ghost_version_threshold {
-        let current_version = schema.facts.version();
-
-        for ghost_edge in &report.ghost {
-            // Find the underlying fact.
-            let maybe_fact = schema
-                .facts
-                .facts_between(ghost_edge.subject, &ghost_edge.predicate, ghost_edge.object)
-                .next();
-
-            if let Some(fact) = maybe_fact {
-                let age = current_version.saturating_sub(fact.asserted_at);
-                if age >= age_threshold {
-                    actions.push(BoundaryAction::RetractFact {
-                        fact_id: fact.id,
-                        reason: RetractReason::LongRunningGhost { age_versions: age },
-                    });
-                }
-            }
-        }
-    }
-
-    // ── Shadow → assert proposals ─────────────────────────────────────────
-    if let Some(signal_threshold) = config.shadow_signal_threshold {
-        for &rel_id in &report.shadow {
-            let Some(rel) = dynamic.relationships().get(rel_id) else {
-                continue;
-            };
-
-            let sig = signal(rel, config.signal_mode);
-
-            if sig < signal_threshold {
-                continue;
-            }
-
-            let (subject, object) = match rel.endpoints {
-                graph_core::Endpoints::Symmetric { a, b } => (a, b),
-                graph_core::Endpoints::Directed { from, to } => (from, to),
-            };
-
-            actions.push(BoundaryAction::AssertFact {
-                subject,
-                predicate: config.shadow_predicate.clone(),
-                object,
-                shadow_rel: rel_id,
-            });
-        }
-    }
-
-    actions
+    retractions.chain(assertions).collect()
 }
 
 /// Apply a list of `BoundaryAction`s directly to the `SchemaWorld`.

@@ -21,7 +21,7 @@ impl PropertyStore {
     }
 
     pub fn insert(&mut self, id: LocusId, properties: Properties) {
-        self.data.insert(id, properties);
+        self.insert_entry(id, properties);
     }
 
     pub fn get(&self, id: LocusId) -> Option<&Properties> {
@@ -40,9 +40,7 @@ impl PropertyStore {
         key: impl Into<String>,
         value: impl Into<graph_core::PropertyValue>,
     ) {
-        if let Some(props) = self.data.get_mut(&id) {
-            props.set(key, value);
-        }
+        self.apply_existing(id, |props| props.set(key, value));
     }
 
     pub fn remove(&mut self, id: LocusId) -> Option<Properties> {
@@ -68,10 +66,24 @@ impl PropertyStore {
     /// Bulk-reconstruct from (LocusId, Properties) pairs (used by snapshot restore).
     pub fn from_entries(entries: impl IntoIterator<Item = (LocusId, Properties)>) -> Self {
         let mut store = Self::new();
-        for (id, props) in entries {
-            store.insert(id, props);
-        }
+        store.insert_entries(entries);
         store
+    }
+
+    fn insert_entry(&mut self, id: LocusId, properties: Properties) {
+        self.data.insert(id, properties);
+    }
+
+    fn apply_existing(&mut self, id: LocusId, f: impl FnOnce(&mut Properties)) {
+        if let Some(props) = self.data.get_mut(&id) {
+            f(props);
+        }
+    }
+
+    fn insert_entries(&mut self, entries: impl IntoIterator<Item = (LocusId, Properties)>) {
+        for (id, props) in entries {
+            self.insert(id, props);
+        }
     }
 }
 

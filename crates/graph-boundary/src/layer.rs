@@ -21,12 +21,11 @@
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use graph_core::{InfluenceKindId, RelationshipId};
+use graph_core::InfluenceKindId;
 use graph_schema::{DeclaredFact, DeclaredRelKind, SchemaWorld};
 use graph_world::World;
 
-use crate::analysis::{SignalMode, analyze_boundary_with_mode, signal};
-use crate::report::BoundaryReport;
+use crate::analysis::{SignalMode, signal};
 
 /// Tension breakdown for a single dynamic layer (RelationshipKindId).
 #[derive(Debug, Clone)]
@@ -77,84 +76,16 @@ pub fn layer_tension(
     mode: SignalMode,
 ) -> LayerReport {
     let thresh = threshold.unwrap_or(graph_world::metrics::ACTIVITY_THRESHOLD);
-
-    // Collect all distinct relationship kinds in the dynamic world.
-    let mut all_kinds: Vec<InfluenceKindId> = dynamic
-        .relationships()
-        .iter()
-        .map(|r| r.kind)
-        .collect::<FxHashSet<_>>()
-        .into_iter()
-        .collect();
-    all_kinds.sort_by_key(|k| k.0);
-
-    // Reverse map: InfluenceKindId → Vec<DeclaredRelKind predicates>
-    let mut kind_to_predicates: FxHashMap<InfluenceKindId, Vec<DeclaredRelKind>> =
-        FxHashMap::default();
-    for (pred, &kind_id) in kind_map {
-        kind_to_predicates
-            .entry(kind_id)
-            .or_default()
-            .push(pred.clone());
-    }
-
-    // Pre-group active facts by mapped kind — O(F) once instead of O(K × F).
-    let mut facts_by_kind: FxHashMap<InfluenceKindId, Vec<&DeclaredFact>> = FxHashMap::default();
-    for fact in schema.facts.active_facts() {
-        if let Some(&kind_id) = kind_map.get(&fact.predicate) {
-            facts_by_kind.entry(kind_id).or_default().push(fact);
-        }
-    }
-
+    let all_kinds = distinct_dynamic_kinds(dynamic);
+    let facts_by_kind = group_facts_by_kind(schema, kind_map);
     let mut layers: Vec<LayerTension> = all_kinds
-        .iter()
-        .map(|&kind_id| {
+        .into_iter()
+        .map(|kind_id| {
             let kind_facts = facts_by_kind
                 .get(&kind_id)
-                .map(|v| v.as_slice())
+                .map(Vec::as_slice)
                 .unwrap_or(&[]);
-
-            // Count confirmed / ghost among declared facts for this kind.
-            let mut confirmed_decl = 0usize;
-            let mut ghost_decl = 0usize;
-            for &fact in kind_facts {
-                let matched = dynamic
-                    .relationships_between(fact.subject, fact.object)
-                    .any(|r| r.kind == kind_id && signal(r, mode) > thresh);
-                if matched {
-                    confirmed_decl += 1;
-                } else {
-                    ghost_decl += 1;
-                }
-            }
-
-            // Shadow: active dynamic relationships of this kind with no
-            // declared counterpart. Use EndpointKey for direction-correct matching.
-            let declared_pairs: FxHashSet<graph_core::EndpointKey> = kind_facts
-                .iter()
-                .map(|f| graph_core::Endpoints::symmetric(f.subject, f.object).key())
-                .collect();
-
-            let shadow_count: usize = dynamic
-                .relationships()
-                .iter()
-                .filter(|r| {
-                    r.kind == kind_id
-                        && signal(r, mode) > thresh
-                        && !declared_pairs.contains(&r.endpoints.key())
-                })
-                .count();
-
-            let total = (confirmed_decl + ghost_decl + shadow_count).max(1) as f32;
-            let tension = (ghost_decl + shadow_count) as f32 / total;
-
-            LayerTension {
-                kind: kind_id,
-                confirmed: confirmed_decl,
-                ghost: ghost_decl,
-                shadow: shadow_count,
-                tension,
-            }
+            build_layer_tension(dynamic, kind_id, kind_facts, thresh, mode)
         })
         .collect();
 
@@ -175,12 +106,105 @@ pub fn layer_tension(
     }
 }
 
+fn distinct_dynamic_kinds(dynamic: &World) -> Vec<InfluenceKindId> {
+    let mut all_kinds: Vec<InfluenceKindId> = dynamic
+        .relationships()
+        .iter()
+        .map(|r| r.kind)
+        .collect::<FxHashSet<_>>()
+        .into_iter()
+        .collect();
+    all_kinds.sort_by_key(|kind| kind.0);
+    all_kinds
+}
+
+fn group_facts_by_kind<'a>(
+    schema: &'a SchemaWorld,
+    kind_map: &FxHashMap<DeclaredRelKind, InfluenceKindId>,
+) -> FxHashMap<InfluenceKindId, Vec<&'a DeclaredFact>> {
+    let mut facts_by_kind: FxHashMap<InfluenceKindId, Vec<&DeclaredFact>> = FxHashMap::default();
+    for fact in schema.facts.active_facts() {
+        if let Some(&kind_id) = kind_map.get(&fact.predicate) {
+            facts_by_kind.entry(kind_id).or_default().push(fact);
+        }
+    }
+    facts_by_kind
+}
+
+fn build_layer_tension(
+    dynamic: &World,
+    kind_id: InfluenceKindId,
+    kind_facts: &[&DeclaredFact],
+    threshold: f32,
+    mode: SignalMode,
+) -> LayerTension {
+    let (confirmed, ghost) = count_declared_matches(dynamic, kind_id, kind_facts, threshold, mode);
+    let shadow = count_shadow_relationships(dynamic, kind_id, kind_facts, threshold, mode);
+    let total = (confirmed + ghost + shadow).max(1) as f32;
+    let tension = (ghost + shadow) as f32 / total;
+
+    LayerTension {
+        kind: kind_id,
+        confirmed,
+        ghost,
+        shadow,
+        tension,
+    }
+}
+
+fn count_declared_matches(
+    dynamic: &World,
+    kind_id: InfluenceKindId,
+    kind_facts: &[&DeclaredFact],
+    threshold: f32,
+    mode: SignalMode,
+) -> (usize, usize) {
+    let mut confirmed = 0usize;
+    let mut ghost = 0usize;
+
+    for &fact in kind_facts {
+        let matched = dynamic
+            .relationships_between(fact.subject, fact.object)
+            .any(|r| r.kind == kind_id && signal(r, mode) > threshold);
+        if matched {
+            confirmed += 1;
+        } else {
+            ghost += 1;
+        }
+    }
+
+    (confirmed, ghost)
+}
+
+fn count_shadow_relationships(
+    dynamic: &World,
+    kind_id: InfluenceKindId,
+    kind_facts: &[&DeclaredFact],
+    threshold: f32,
+    mode: SignalMode,
+) -> usize {
+    let declared_pairs: FxHashSet<graph_core::EndpointKey> = kind_facts
+        .iter()
+        .map(|fact| graph_core::Endpoints::symmetric(fact.subject, fact.object).key())
+        .collect();
+
+    dynamic
+        .relationships()
+        .iter()
+        .filter(|rel| {
+            rel.kind == kind_id
+                && signal(rel, mode) > threshold
+                && !declared_pairs.contains(&rel.endpoints.key())
+        })
+        .count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use graph_core::{
         BatchId, Endpoints, InfluenceKindId, Locus, LocusId, LocusKindId, Relationship,
-        RelationshipLineage, StateVector,
+        RelationshipId, RelationshipLineage, StateVector,
     };
     use graph_schema::{DeclaredRelKind, SchemaWorld};
     use graph_world::World;

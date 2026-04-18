@@ -47,10 +47,10 @@ impl PartitionIndex {
 
     /// Remove `locus_id` from the index (called on locus deletion).
     pub fn remove(&mut self, id: LocusId) {
-        if let Some(bucket) = self.assignment.remove(&id) {
-            if let Some(v) = self.members.get_mut(&bucket) {
-                v.retain(|&x| x != id);
-            }
+        if let Some(bucket) = self.assignment.remove(&id)
+            && let Some(v) = self.members.get_mut(&bucket)
+        {
+            v.retain(|&x| x != id);
         }
     }
 

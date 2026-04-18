@@ -43,48 +43,53 @@ pub struct BatchContext<'a> {
 }
 
 impl<'a> BatchContext<'a> {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        loci: &'a LocusStore,
-        relationships: &'a RelationshipStore,
-        log: &'a ChangeLog,
-        entities: &'a EntityStore,
-        coheres: &'a CohereStore,
+        stores: BatchStores<'a>,
         batch: BatchId,
-        properties: &'a PropertyStore,
         slot_defs: &'a FxHashMap<RelationshipKindId, Vec<RelationshipSlotDef>>,
     ) -> Self {
-        // Build reverse index: locus → (owning entity id, entity coherence).
-        // Stored as (EntityId, f32) so tie-breaking requires no second map.
-        // If a locus appears in multiple active entities, the one with the
-        // highest coherence wins.
-        let mut winner: FxHashMap<LocusId, (EntityId, f32)> = FxHashMap::default();
-        for entity in entities.active() {
-            let coh = entity.current.coherence;
-            for &lid in &entity.current.members {
-                let replace = winner.get(&lid).is_none_or(|&(_, prev_coh)| coh > prev_coh);
-                if replace {
-                    winner.insert(lid, (entity.id, coh));
-                }
-            }
-        }
-        let locus_to_entity: FxHashMap<LocusId, EntityId> = winner
-            .into_iter()
-            .map(|(lid, (eid, _))| (lid, eid))
-            .collect();
+        let locus_to_entity = build_locus_entity_index(stores.entities);
 
         Self {
-            loci,
-            relationships,
-            log,
-            entities,
-            coheres,
+            loci: stores.loci,
+            relationships: stores.relationships,
+            log: stores.log,
+            entities: stores.entities,
+            coheres: stores.coheres,
             batch,
-            properties,
+            properties: stores.properties,
             locus_to_entity,
             slot_defs,
         }
     }
+}
+
+pub struct BatchStores<'a> {
+    pub loci: &'a LocusStore,
+    pub relationships: &'a RelationshipStore,
+    pub log: &'a ChangeLog,
+    pub entities: &'a EntityStore,
+    pub coheres: &'a CohereStore,
+    pub properties: &'a PropertyStore,
+}
+
+fn build_locus_entity_index(entities: &EntityStore) -> FxHashMap<LocusId, EntityId> {
+    let mut winner: FxHashMap<LocusId, (EntityId, f32)> = FxHashMap::default();
+    for entity in entities.active() {
+        let coherence = entity.current.coherence;
+        for &locus_id in &entity.current.members {
+            let replace = winner
+                .get(&locus_id)
+                .is_none_or(|&(_, prev_coherence)| coherence > prev_coherence);
+            if replace {
+                winner.insert(locus_id, (entity.id, coherence));
+            }
+        }
+    }
+    winner
+        .into_iter()
+        .map(|(locus_id, (entity_id, _))| (locus_id, entity_id))
+        .collect()
 }
 
 impl<'a> LocusContext for BatchContext<'a> {

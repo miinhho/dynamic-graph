@@ -18,8 +18,8 @@
 //! ```
 
 use graph_core::{
-    DefaultEntityWeathering, Encoder, EntityWeatheringPolicy, InfluenceKindId, LocusId,
-    LocusKindId, LocusProgram, RelationshipId,
+    Encoder, EntityWeatheringPolicy, InfluenceKindId, LocusId, LocusKindId, LocusProgram,
+    RelationshipId,
 };
 use graph_world::World;
 use rustc_hash::FxHashMap;
@@ -27,6 +27,7 @@ use rustc_hash::FxHashMap;
 use super::config::BackpressurePolicy;
 use super::{Simulation, SimulationConfig};
 use crate::engine::EngineConfig;
+use crate::plasticity::PlasticityLearners;
 use crate::regime::AdaptiveConfig;
 use crate::registry::{
     InfluenceKindConfig, InfluenceKindRegistry, LocusKindConfig, LocusKindRegistry,
@@ -45,6 +46,7 @@ pub struct SimulationBuilder {
     default_influence: Option<String>,
     config: SimulationConfig,
     auto_weather_policy: Option<Box<dyn EntityWeatheringPolicy>>,
+    plasticity_learners: Option<PlasticityLearners>,
 }
 
 impl SimulationBuilder {
@@ -60,6 +62,7 @@ impl SimulationBuilder {
             default_influence: None,
             config: SimulationConfig::default(),
             auto_weather_policy: None,
+            plasticity_learners: None,
         }
     }
 
@@ -73,11 +76,7 @@ impl SimulationBuilder {
         name: impl Into<String>,
         program: impl LocusProgram + 'static,
     ) -> Self {
-        let name = name.into();
-        let id = LocusKindId(self.next_locus_kind);
-        self.next_locus_kind += 1;
-        self.loci_registry.insert(id, Box::new(program));
-        self.locus_kind_names.insert(name, id);
+        self.register_locus_kind(name.into(), Box::new(program));
         self
     }
 
@@ -94,22 +93,7 @@ impl SimulationBuilder {
         program: impl LocusProgram + 'static,
         configure: impl FnOnce(LocusKindBuilder) -> LocusKindBuilder,
     ) -> Self {
-        let name = name.into();
-        let id = LocusKindId(self.next_locus_kind);
-        self.next_locus_kind += 1;
-        let built = configure(LocusKindBuilder::default());
-        self.loci_registry.insert_with_config(
-            id,
-            LocusKindConfig {
-                name: Some(name.clone()),
-                state_slots: built.state_slots,
-                program: Box::new(program),
-                refractory_batches: built.refractory_batches,
-                encoder: built.encoder,
-                max_proposals_per_dispatch: built.max_proposals_per_dispatch,
-            },
-        );
-        self.locus_kind_names.insert(name, id);
+        self.register_locus_kind_with(name.into(), Box::new(program), configure);
         self
     }
 
@@ -227,12 +211,7 @@ impl SimulationBuilder {
         name: impl Into<String>,
         program: impl LocusProgram + 'static,
     ) -> LocusKindId {
-        let name = name.into();
-        let id = LocusKindId(self.next_locus_kind);
-        self.next_locus_kind += 1;
-        self.loci_registry.insert(id, Box::new(program));
-        self.locus_kind_names.insert(name, id);
-        id
+        self.register_locus_kind(name.into(), Box::new(program))
     }
 
     /// Register a locus kind with full config — **mutable** variant for bootstrap use.
@@ -247,23 +226,7 @@ impl SimulationBuilder {
         program: impl LocusProgram + 'static,
         configure: impl FnOnce(LocusKindBuilder) -> LocusKindBuilder,
     ) -> LocusKindId {
-        let name = name.into();
-        let id = LocusKindId(self.next_locus_kind);
-        self.next_locus_kind += 1;
-        let built = configure(LocusKindBuilder::default());
-        self.loci_registry.insert_with_config(
-            id,
-            LocusKindConfig {
-                name: Some(name.clone()),
-                state_slots: built.state_slots,
-                program: Box::new(program),
-                refractory_batches: built.refractory_batches,
-                encoder: built.encoder,
-                max_proposals_per_dispatch: built.max_proposals_per_dispatch,
-            },
-        );
-        self.locus_kind_names.insert(name, id);
-        id
+        self.register_locus_kind_with(name.into(), Box::new(program), configure)
     }
 
     /// Pre-register subscriptions before the first tick.
@@ -298,6 +261,12 @@ impl SimulationBuilder {
     /// Configure the adaptive guard rail.
     pub fn adaptive(mut self, configure: impl FnOnce(AdaptiveConfig) -> AdaptiveConfig) -> Self {
         self.config.adaptive = configure(self.config.adaptive);
+        self
+    }
+
+    /// Install per-kind plasticity learners used to scale learning rates at step time.
+    pub fn with_plasticity_learners(mut self, learners: PlasticityLearners) -> Self {
+        self.plasticity_learners = Some(learners);
         self
     }
 
@@ -356,8 +325,72 @@ impl SimulationBuilder {
 
         // Transfer auto-weather policy (trait objects can't go through SimulationConfig).
         sim.auto_weather_policy = self.auto_weather_policy;
+        if let Some(learners) = self.plasticity_learners {
+            sim.set_plasticity_learners(learners);
+        }
 
         sim
+    }
+
+    fn register_locus_kind(&mut self, name: String, program: Box<dyn LocusProgram>) -> LocusKindId {
+        let id = self.allocate_locus_kind_id();
+        self.insert_plain_locus_kind(name, id, program);
+        id
+    }
+
+    fn register_locus_kind_with(
+        &mut self,
+        name: String,
+        program: Box<dyn LocusProgram>,
+        configure: impl FnOnce(LocusKindBuilder) -> LocusKindBuilder,
+    ) -> LocusKindId {
+        let id = self.allocate_locus_kind_id();
+        let config = self.build_locus_kind_config(name.clone(), program, configure);
+        self.insert_configured_locus_kind(name, id, config);
+        id
+    }
+
+    fn allocate_locus_kind_id(&mut self) -> LocusKindId {
+        let id = LocusKindId(self.next_locus_kind);
+        self.next_locus_kind += 1;
+        id
+    }
+
+    fn build_locus_kind_config(
+        &self,
+        name: String,
+        program: Box<dyn LocusProgram>,
+        configure: impl FnOnce(LocusKindBuilder) -> LocusKindBuilder,
+    ) -> LocusKindConfig {
+        let built = configure(LocusKindBuilder::default());
+        LocusKindConfig {
+            name: Some(name),
+            state_slots: built.state_slots,
+            program,
+            refractory_batches: built.refractory_batches,
+            encoder: built.encoder,
+            max_proposals_per_dispatch: built.max_proposals_per_dispatch,
+        }
+    }
+
+    fn insert_plain_locus_kind(
+        &mut self,
+        name: String,
+        id: LocusKindId,
+        program: Box<dyn LocusProgram>,
+    ) {
+        self.loci_registry.insert(id, program);
+        self.locus_kind_names.insert(name, id);
+    }
+
+    fn insert_configured_locus_kind(
+        &mut self,
+        name: String,
+        id: LocusKindId,
+        config: LocusKindConfig,
+    ) {
+        self.loci_registry.insert_with_config(id, config);
+        self.locus_kind_names.insert(name, id);
     }
 }
 
@@ -515,9 +548,7 @@ mod tests {
     #[test]
     fn world_mut_bootstrap_and_add_locus_kind() {
         // A simple observer program that records the relationship ID it watches.
-        struct ObserverProgram {
-            watched: RelationshipId,
-        }
+        struct ObserverProgram;
         impl LocusProgram for ObserverProgram {
             fn process(
                 &self,
@@ -570,7 +601,7 @@ mod tests {
             .subscribe_at(OBSERVER, rel_id, None);
 
         // Register the observer program — only possible here because rel_id is now known.
-        builder.add_locus_kind("OBSERVER", ObserverProgram { watched: rel_id });
+        builder.add_locus_kind("OBSERVER", ObserverProgram);
 
         let sim = builder.build();
 

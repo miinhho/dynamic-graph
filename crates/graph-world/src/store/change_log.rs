@@ -20,12 +20,12 @@
 //! this to compute array indices in O(1). `trim_before_batch` shifts the
 //! offset but preserves density.
 
-use std::collections::VecDeque;
+use graph_core::{BatchId, Change, ChangeId, ChangeSubject, LocusId, RelationshipId, TrimSummary};
+use rustc_hash::FxHashMap;
 
-use graph_core::{
-    BatchId, Change, ChangeId, ChangeSubject, InfluenceKindId, LocusId, RelationshipId, TrimSummary,
-};
-use rustc_hash::{FxHashMap, FxHashSet};
+mod causal;
+mod indexing;
+mod trim;
 
 /// Append-only log with O(1) lookup by id and O(k) subject/batch-filtered iteration.
 ///
@@ -95,44 +95,8 @@ impl ChangeLog {
         if changes.is_empty() {
             return;
         }
-        let batch = changes[0].batch;
-
-        // Pass 1: group by subject into local HashMaps (smaller → hotter cache).
-        // IDs are dense and sequential, so all belong to the same batch entry.
-        let mut locus_groups: FxHashMap<LocusId, Vec<ChangeId>> =
-            FxHashMap::with_capacity_and_hasher(16, Default::default());
-        let mut rel_groups: FxHashMap<RelationshipId, Vec<ChangeId>> =
-            FxHashMap::with_capacity_and_hasher(4, Default::default());
-
-        for change in &changes {
-            match change.subject {
-                ChangeSubject::Locus(id) => {
-                    locus_groups.entry(id).or_default().push(change.id);
-                }
-                ChangeSubject::Relationship(id) => {
-                    rel_groups.entry(id).or_default().push(change.id);
-                }
-            }
-        }
-
-        // Pass 2: update by_batch with a single entry lookup, pushing IDs
-        // directly to avoid an intermediate allocation.
-        {
-            let batch_vec = self.by_batch.entry(batch).or_insert_with(Vec::new);
-            batch_vec.reserve(changes.len());
-            for change in &changes {
-                batch_vec.push(change.id);
-            }
-        }
-
-        // Merge grouped ids into the persistent reverse indices.
-        for (locus_id, ids) in locus_groups {
-            self.by_locus.entry(locus_id).or_default().extend(ids);
-        }
-        for (rel_id, ids) in rel_groups {
-            self.by_relationship.entry(rel_id).or_default().extend(ids);
-        }
-
+        let index_updates = indexing::build_index_updates(&changes);
+        indexing::apply_index_updates(self, index_updates);
         self.changes.extend(changes);
     }
 
@@ -226,24 +190,7 @@ impl ChangeLog {
     /// (e.g. trimmed by `trim_before_batch`) — those ancestors are simply
     /// absent from the result.
     pub fn causal_ancestors(&self, start: ChangeId) -> Vec<&Change> {
-        let Some(root) = self.get(start) else {
-            return Vec::new();
-        };
-        let mut visited: FxHashSet<ChangeId> = FxHashSet::default();
-        visited.insert(start);
-        let mut queue: VecDeque<ChangeId> = root.predecessors.iter().copied().collect();
-        let mut result = Vec::new();
-        // Both guards must hold: if `get()` returns None the id was trimmed
-        // and traversal stops for that branch (no panic, no queue extension).
-        while let Some(id) = queue.pop_front() {
-            if visited.insert(id)
-                && let Some(change) = self.get(id)
-            {
-                result.push(change);
-                queue.extend(change.predecessors.iter().copied());
-            }
-        }
-        result
+        causal::causal_ancestors(self, start)
     }
 
     /// Return `true` if `ancestor` is a causal ancestor of `descendant`.
@@ -253,35 +200,7 @@ impl ChangeLog {
     /// (predecessors always have smaller ids, so they can't lead to `ancestor`).
     /// Short-circuits as soon as `ancestor` is found.
     pub fn is_ancestor_of(&self, ancestor: ChangeId, descendant: ChangeId) -> bool {
-        if ancestor.0 >= descendant.0 {
-            return false;
-        }
-        let Some(desc) = self.get(descendant) else {
-            return false;
-        };
-        let mut stack: Vec<ChangeId> = desc
-            .predecessors
-            .iter()
-            .copied()
-            .filter(|&pid| pid.0 >= ancestor.0)
-            .collect();
-        let mut visited: FxHashSet<ChangeId> = FxHashSet::default();
-        while let Some(id) = stack.pop() {
-            if id == ancestor {
-                return true;
-            }
-            if visited.insert(id)
-                && let Some(c) = self.get(id)
-            {
-                stack.extend(
-                    c.predecessors
-                        .iter()
-                        .copied()
-                        .filter(|&pid| pid.0 >= ancestor.0),
-                );
-            }
-        }
-        false
+        causal::is_ancestor_of(self, ancestor, descendant)
     }
 
     /// Remove all changes with a batch index strictly older than
@@ -301,100 +220,7 @@ impl ChangeLog {
     /// compressed layers) or in workloads where old predecessor ids are
     /// never queried.
     pub fn trim_before_batch(&mut self, retain_from_batch: BatchId) -> usize {
-        let split = self
-            .changes
-            .partition_point(|c| c.batch < retain_from_batch);
-        if split == 0 {
-            return 0;
-        }
-
-        // ── E2: generate per-locus summaries before discarding ──────────────
-        // Walk only the to-be-trimmed slice to aggregate per-locus stats
-        // and populate the trimmed_id_to_locus reverse index.
-        {
-            let mut locus_stats: FxHashMap<
-                LocusId,
-                (u32, Vec<f32>, Vec<f32>, Vec<InfluenceKindId>, BatchId),
-            > = FxHashMap::default();
-            for change in &self.changes[..split] {
-                let ChangeSubject::Locus(locus) = change.subject else {
-                    continue;
-                };
-                // Build the trimmed-id reverse index so causal_coarse_trail can
-                // resolve trimmed predecessor IDs back to their subject locus.
-                self.trimmed_id_to_locus.insert(change.id, locus);
-                let entry = locus_stats.entry(locus).or_insert_with(|| {
-                    let dim = change
-                        .after
-                        .as_slice()
-                        .len()
-                        .max(change.before.as_slice().len());
-                    (
-                        0,
-                        vec![0.0f32; dim],
-                        vec![0.0f32; dim],
-                        Vec::new(),
-                        change.batch,
-                    )
-                });
-                entry.0 += 1;
-                // Sum after and before independently; delta = sum_after - sum_before.
-                let aft = change.after.as_slice();
-                let bef = change.before.as_slice();
-                let dim = entry.1.len();
-                for i in 0..dim {
-                    entry.1[i] += aft.get(i).copied().unwrap_or(0.0);
-                    entry.2[i] += bef.get(i).copied().unwrap_or(0.0);
-                }
-                if !entry.3.contains(&change.kind) {
-                    entry.3.push(change.kind);
-                }
-                // Track earliest batch in the range.
-                if change.batch < entry.4 {
-                    entry.4 = change.batch;
-                }
-            }
-
-            for (locus, (count, sum_after, sum_before, kinds, batch_from)) in locus_stats {
-                let delta: Vec<f32> = sum_after
-                    .iter()
-                    .zip(sum_before.iter())
-                    .map(|(a, b)| a - b)
-                    .collect();
-                let summary = TrimSummary {
-                    locus,
-                    batch_from,
-                    batch_to: retain_from_batch,
-                    change_count: count,
-                    net_delta_state: graph_core::StateVector::from_slice(&delta),
-                    kinds_observed: kinds,
-                };
-                self.summaries.entry(locus).or_default().push(summary);
-            }
-        }
-
-        if split == self.changes.len() {
-            // Trimming the entire log — clear all indices.
-            self.by_locus.clear();
-            self.by_relationship.clear();
-            self.by_batch.clear();
-            self.changes.clear();
-            return split;
-        }
-        // The first id we keep; id-indexed vecs are oldest-first so we can
-        // use partition_point to strip the front of each vec in O(log k).
-        let first_kept = self.changes[split].id;
-        for ids in self.by_locus.values_mut() {
-            let remove = ids.partition_point(|&id| id < first_kept);
-            ids.drain(..remove);
-        }
-        for ids in self.by_relationship.values_mut() {
-            let remove = ids.partition_point(|&id| id < first_kept);
-            ids.drain(..remove);
-        }
-        // Batch entries for fully-trimmed batches are dropped wholesale.
-        self.by_batch.retain(|&b, _| b >= retain_from_batch);
-        self.changes.drain(..split).count()
+        trim::trim_before_batch(self, retain_from_batch)
     }
 
     // ── Coarse trail (E2) ────────────────────────────────────────────────────

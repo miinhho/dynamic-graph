@@ -10,6 +10,8 @@
 //! enabling temporal analysis ("which entities were clustered together
 //! over the last N recognition passes?").
 
+mod history;
+
 use graph_core::{BatchId, Cohere, CohereId};
 use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
@@ -63,23 +65,7 @@ impl CohereStore {
     /// the *previous* set is pushed to the history ring buffer before
     /// being replaced.
     pub fn update(&mut self, perspective: impl Into<String>, coheres: Vec<Cohere>) {
-        let key = perspective.into();
-        if self.max_history > 0
-            && let Some(prev) = self.by_perspective.get(&key)
-            && !prev.is_empty()
-        {
-            let ring = self.history.entry(key.clone()).or_default();
-            // We don't have the batch here; use BatchId(0) as placeholder.
-            // Use update_at() for batch-tagged snapshots.
-            ring.push_back(CohereSnapshot {
-                batch: BatchId(0),
-                coheres: prev.clone(),
-            });
-            while ring.len() > self.max_history {
-                ring.pop_front();
-            }
-        }
-        self.by_perspective.insert(key, coheres);
+        history::update(self, perspective, coheres);
     }
 
     /// Replace the cohere set and tag the outgoing snapshot with `batch`.
@@ -89,21 +75,7 @@ impl CohereStore {
         coheres: Vec<Cohere>,
         batch: BatchId,
     ) {
-        let key = perspective.into();
-        if self.max_history > 0
-            && let Some(prev) = self.by_perspective.get(&key)
-            && !prev.is_empty()
-        {
-            let ring = self.history.entry(key.clone()).or_default();
-            ring.push_back(CohereSnapshot {
-                batch,
-                coheres: prev.clone(),
-            });
-            while ring.len() > self.max_history {
-                ring.pop_front();
-            }
-        }
-        self.by_perspective.insert(key, coheres);
+        history::update_at(self, perspective, coheres, batch, true);
     }
 
     /// Get the current cohere set for `perspective`.

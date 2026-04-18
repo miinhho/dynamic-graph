@@ -10,10 +10,13 @@
 //! causal flow is observed for the first time. The store does not
 //! enforce who is allowed to insert; that policy lives in the engine.
 
-use graph_core::{
-    EndpointKey, Endpoints, LocusId, Relationship, RelationshipId, RelationshipKindId,
-};
+mod indexing;
+mod queries;
+
+use graph_core::{EndpointKey, LocusId, Relationship, RelationshipId, RelationshipKindId};
 use rustc_hash::FxHashMap;
+
+use indexing::{deindex_relationship_loci, index_relationship_loci};
 
 #[derive(Debug, Default, Clone)]
 pub struct RelationshipStore {
@@ -74,9 +77,7 @@ impl RelationshipStore {
     pub fn insert(&mut self, relationship: Relationship) {
         let id = relationship.id;
         let key = (relationship.endpoints.key(), relationship.kind);
-        locus_ids_of(&relationship.endpoints, |locus| {
-            self.by_locus.entry(locus).or_default().push(id);
-        });
+        index_relationship_loci(&mut self.by_locus, id, &relationship.endpoints);
         if self.by_id.insert(id, relationship).is_some() {
             panic!("RelationshipStore: duplicate id {id:?}");
         }
@@ -108,11 +109,7 @@ impl RelationshipStore {
         let rel = self.by_id.remove(&id)?;
         let key = (rel.endpoints.key(), rel.kind);
         self.by_key.remove(&key);
-        locus_ids_of(&rel.endpoints, |locus| {
-            if let Some(v) = self.by_locus.get_mut(&locus) {
-                v.retain(|&rid| rid != id);
-            }
-        });
+        deindex_relationship_loci(&mut self.by_locus, id, &rel.endpoints);
         self.generation += 1;
         Some(rel)
     }
@@ -131,90 +128,6 @@ impl RelationshipStore {
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Relationship> {
         self.generation += 1;
         self.by_id.values_mut()
-    }
-
-    // ── degree queries ────────────────────────────────────────────────────
-
-    /// Number of relationships that involve `locus` (any endpoint position).
-    /// O(1) via the `by_locus` index.
-    pub fn degree(&self, locus: LocusId) -> usize {
-        self.by_locus.get(&locus).map(Vec::len).unwrap_or(0)
-    }
-
-    /// Directed in-degree: number of directed relationships where `to == locus`.
-    /// O(k).
-    pub fn in_degree(&self, locus: LocusId) -> usize {
-        self.relationships_to(locus).count()
-    }
-
-    /// Directed out-degree: number of directed relationships where `from == locus`.
-    /// O(k).
-    pub fn out_degree(&self, locus: LocusId) -> usize {
-        self.relationships_from(locus).count()
-    }
-
-    /// Iterate all `(LocusId, degree)` pairs for loci that have at least one
-    /// relationship. O(n_loci_with_edges).
-    pub fn degree_iter(&self) -> impl Iterator<Item = (LocusId, usize)> + '_ {
-        self.by_locus.iter().map(|(&locus, ids)| (locus, ids.len()))
-    }
-
-    // ── locus-based queries ───────────────────────────────────────────────
-
-    /// All relationships that involve `locus` in any endpoint position.
-    /// O(k) where k is the number of relationships at that locus.
-    pub fn relationships_for_locus(&self, locus: LocusId) -> impl Iterator<Item = &Relationship> {
-        self.by_locus
-            .get(&locus)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
-            .iter()
-            .filter_map(|id| self.by_id.get(id))
-    }
-
-    /// Directed relationships where `from == locus`.
-    /// O(k) on the locus's relationship set.
-    pub fn relationships_from(&self, locus: LocusId) -> impl Iterator<Item = &Relationship> {
-        self.relationships_for_locus(locus).filter(
-            move |r| matches!(&r.endpoints, Endpoints::Directed { from, .. } if *from == locus),
-        )
-    }
-
-    /// Directed relationships where `to == locus`.
-    /// O(k) on the locus's relationship set.
-    pub fn relationships_to(&self, locus: LocusId) -> impl Iterator<Item = &Relationship> {
-        self.relationships_for_locus(locus)
-            .filter(move |r| matches!(&r.endpoints, Endpoints::Directed { to, .. } if *to == locus))
-    }
-
-    /// Relationships whose endpoints include both `a` and `b`
-    /// (regardless of direction or kind).
-    /// O(k_a) where k_a is the number of relationships at locus `a`.
-    pub fn relationships_between(
-        &self,
-        a: LocusId,
-        b: LocusId,
-    ) -> impl Iterator<Item = &Relationship> {
-        self.relationships_for_locus(a)
-            .filter(move |r| r.endpoints.involves(b))
-    }
-}
-
-/// Invoke `f` once for every distinct `LocusId` that appears in `endpoints`.
-fn locus_ids_of(endpoints: &Endpoints, mut f: impl FnMut(LocusId)) {
-    match endpoints {
-        Endpoints::Directed { from, to } => {
-            f(*from);
-            if from != to {
-                f(*to);
-            }
-        }
-        Endpoints::Symmetric { a, b } => {
-            f(*a);
-            if a != b {
-                f(*b);
-            }
-        }
     }
 }
 

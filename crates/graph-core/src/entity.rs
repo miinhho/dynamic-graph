@@ -14,6 +14,8 @@
 use crate::ids::{BatchId, LocusId};
 use crate::relationship::RelationshipId;
 
+mod layers;
+
 /// Why a lifecycle transition happened. Provides a causal link from
 /// entity-layer events back to the lower-layer evidence that triggered them.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -86,11 +88,7 @@ impl Default for EntitySnapshot {
 
 impl EntitySnapshot {
     pub fn empty() -> Self {
-        Self {
-            members: Vec::new(),
-            member_relationships: Vec::new(),
-            coherence: 0.0,
-        }
+        layers::empty_snapshot()
     }
 }
 
@@ -122,10 +120,7 @@ impl LayerTransition {
     /// True for transitions that the default weathering policy exempts
     /// from removal (see `docs/redesign.md` §3.5).
     pub fn is_significant(&self) -> bool {
-        matches!(
-            self,
-            LayerTransition::Born | LayerTransition::Split { .. } | LayerTransition::Merged { .. }
-        )
+        layers::is_significant_transition(self)
     }
 }
 
@@ -169,15 +164,7 @@ pub enum CompressedTransition {
 
 impl From<&LayerTransition> for CompressedTransition {
     fn from(t: &LayerTransition) -> Self {
-        match t {
-            LayerTransition::Born => CompressedTransition::Born,
-            LayerTransition::MembershipDelta { .. } => CompressedTransition::MembershipDelta,
-            LayerTransition::CoherenceShift { .. } => CompressedTransition::CoherenceShift,
-            LayerTransition::Split { .. } => CompressedTransition::Split,
-            LayerTransition::Merged { .. } => CompressedTransition::Merged,
-            LayerTransition::BecameDormant => CompressedTransition::BecameDormant,
-            LayerTransition::Revived => CompressedTransition::Revived,
-        }
+        layers::compressed_transition(t)
     }
 }
 
@@ -200,13 +187,7 @@ pub struct EntityLayer {
 
 impl EntityLayer {
     pub fn new(batch: BatchId, snapshot: EntitySnapshot, transition: LayerTransition) -> Self {
-        Self {
-            batch,
-            snapshot: Some(snapshot),
-            transition,
-            compression: CompressionLevel::Full,
-            cause: LifecycleCause::Unspecified,
-        }
+        layers::new_entity_layer(batch, snapshot, transition)
     }
 
     pub fn with_cause(mut self, cause: LifecycleCause) -> Self {
@@ -243,14 +224,7 @@ pub struct Entity {
 impl Entity {
     /// Construct a newly born entity.
     pub fn born(id: EntityId, batch: BatchId, snapshot: EntitySnapshot) -> Self {
-        let layer = EntityLayer::new(batch, snapshot.clone(), LayerTransition::Born);
-        Self {
-            id,
-            current: snapshot,
-            layers: vec![layer],
-            lineage: EntityLineage::default(),
-            status: EntityStatus::Active,
-        }
+        layers::born_entity(id, batch, snapshot)
     }
 
     /// Deposit a new layer on top of the sediment stack, updating
@@ -261,9 +235,7 @@ impl Entity {
         snapshot: EntitySnapshot,
         transition: LayerTransition,
     ) {
-        self.current = snapshot.clone();
-        self.layers
-            .push(EntityLayer::new(batch, snapshot, transition));
+        layers::deposit_layer(self, batch, snapshot, transition);
     }
 
     /// Total number of layers deposited (including the birth layer).

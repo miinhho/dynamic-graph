@@ -29,10 +29,10 @@
 //! (size 2 — drift tolerance for 1 locus noise), which is hard-coded because
 //! 1-locus drift is universally meaningless.
 
-use graph_core::{
-    BatchId, EmergenceProposal, Entity, EntityId, EntityLayer, EntitySnapshot, EntityStatus,
-    LayerTransition, LifecycleCause, LocusId, Relationship, RelationshipId,
-};
+mod community;
+mod proposals;
+
+use graph_core::{BatchId, EmergenceProposal, EntityId, LocusId, RelationshipId};
 use graph_world::{EntityStore, RelationshipStore};
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -142,7 +142,176 @@ enum EntityDecision {
     /// Entity claims this component as its continuation. Resolution (whether
     /// this becomes a `DepositLayer`, or collapses with other claimers into
     /// a `Merge`) happens in pass 2.
-    Claims(usize),
+    Claims,
+}
+
+struct CommunityIndex {
+    component_sets: Vec<FxHashSet<LocusId>>,
+    locus_to_component: FxHashMap<LocusId, usize>,
+}
+
+pub(super) struct ProposalContext<'a> {
+    existing: &'a EntityStore,
+    relationships: &'a RelationshipStore,
+    threshold: f32,
+    proposals: &'a mut Vec<EmergenceProposal>,
+}
+
+struct RecognitionContext<'a> {
+    batch: BatchId,
+    existing: &'a EntityStore,
+    relationships: &'a RelationshipStore,
+    threshold: f32,
+}
+
+struct RecognitionState {
+    components: Vec<Vec<LocusId>>,
+    adj: AdjMap,
+    community_index: CommunityIndex,
+    flow: FlowAnalysis,
+}
+
+struct FlowAnalysis {
+    decisions: FxHashMap<EntityId, EntityDecision>,
+    claims_per_component: FxHashMap<usize, Vec<EntityId>>,
+}
+
+struct EntityBuckets {
+    significant: Vec<(usize, usize)>,
+    unassigned: usize,
+}
+
+fn build_community_index(components: &[Vec<LocusId>]) -> CommunityIndex {
+    let component_sets: Vec<FxHashSet<LocusId>> = components
+        .iter()
+        .map(|members| members.iter().copied().collect())
+        .collect();
+
+    let mut locus_to_component: FxHashMap<LocusId, usize> = FxHashMap::default();
+    for (idx, comp) in components.iter().enumerate() {
+        for &locus in comp {
+            locus_to_component.insert(locus, idx);
+        }
+    }
+
+    CommunityIndex {
+        component_sets,
+        locus_to_component,
+    }
+}
+
+fn analyze_entity_flows(
+    existing: &EntityStore,
+    locus_to_component: &FxHashMap<LocusId, usize>,
+) -> FlowAnalysis {
+    let mut decisions: FxHashMap<EntityId, EntityDecision> = FxHashMap::default();
+    let mut claims_per_component: FxHashMap<usize, Vec<EntityId>> = FxHashMap::default();
+
+    for entity in existing.active() {
+        let buckets = bucket_entity_members(entity.current.members.as_slice(), locus_to_component);
+        let decision = decide_entity_flow(entity.id, &buckets, &mut claims_per_component);
+        decisions.insert(entity.id, decision);
+    }
+
+    FlowAnalysis {
+        decisions,
+        claims_per_component,
+    }
+}
+
+fn bucket_entity_members(
+    members: &[LocusId],
+    locus_to_component: &FxHashMap<LocusId, usize>,
+) -> EntityBuckets {
+    let mut buckets: FxHashMap<usize, usize> = FxHashMap::default();
+    let mut unassigned = 0usize;
+    for locus in members {
+        match locus_to_component.get(locus) {
+            Some(&c_idx) => *buckets.entry(c_idx).or_default() += 1,
+            None => unassigned += 1,
+        }
+    }
+
+    let mut significant: Vec<(usize, usize)> = buckets
+        .into_iter()
+        .filter(|&(_, n)| n >= MIN_SIGNIFICANT_BUCKET)
+        .collect();
+    significant.sort_by_key(|&(i, _)| i);
+
+    EntityBuckets {
+        significant,
+        unassigned,
+    }
+}
+
+fn decide_entity_flow(
+    entity_id: EntityId,
+    buckets: &EntityBuckets,
+    claims_per_component: &mut FxHashMap<usize, Vec<EntityId>>,
+) -> EntityDecision {
+    match buckets.significant.len() {
+        0 => EntityDecision::Dormant,
+        1 => {
+            let (c_idx, bucket_size) = buckets.significant[0];
+            if buckets.unassigned > bucket_size {
+                EntityDecision::Dormant
+            } else {
+                claims_per_component
+                    .entry(c_idx)
+                    .or_default()
+                    .push(entity_id);
+                EntityDecision::Claims
+            }
+        }
+        _ => EntityDecision::Split(buckets.significant.iter().map(|&(i, _)| i).collect()),
+    }
+}
+
+fn prepare_recognition(context: &RecognitionContext<'_>) -> RecognitionState {
+    let community = community::find_communities(context.relationships, context.threshold);
+    let community_index = build_community_index(&community.components);
+    let flow = analyze_entity_flows(context.existing, &community_index.locus_to_component);
+
+    RecognitionState {
+        components: community.components,
+        adj: community.adj,
+        community_index,
+        flow,
+    }
+}
+
+fn emit_component_proposals(
+    state: &RecognitionState,
+    split_offspring_components: &FxHashSet<usize>,
+    context: &mut ProposalContext<'_>,
+    batch: BatchId,
+) {
+    for (c_idx, members) in state.components.iter().enumerate() {
+        if split_offspring_components.contains(&c_idx) {
+            continue;
+        }
+        let claimers = state
+            .flow
+            .claims_per_component
+            .get(&c_idx)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let (coherence, member_rels) = community::component_stats(
+            &state.community_index.component_sets[c_idx],
+            &state.adj,
+            context.threshold,
+        );
+
+        proposals::resolve_component_proposal(
+            batch,
+            members,
+            &state.community_index.component_sets[c_idx],
+            claimers,
+            member_rels,
+            coherence,
+            context,
+        );
+    }
 }
 
 impl EmergencePerspective for DefaultEmergencePerspective {
@@ -152,229 +321,37 @@ impl EmergencePerspective for DefaultEmergencePerspective {
         existing: &EntityStore,
         batch: BatchId,
     ) -> Vec<EmergenceProposal> {
-        let threshold = self
-            .min_activity_threshold
-            .unwrap_or_else(|| auto_activity_threshold(relationships));
-        let community = find_communities(relationships, threshold);
-        let components = community.components;
-        let adj = &community.adj;
-
-        let component_sets: Vec<FxHashSet<LocusId>> = components
-            .iter()
-            .map(|members| members.iter().copied().collect())
-            .collect();
-
-        // Reverse index: locus → component index. O(sum of component sizes).
-        let mut locus_to_component: FxHashMap<LocusId, usize> = FxHashMap::default();
-        for (idx, comp) in components.iter().enumerate() {
-            for &locus in comp {
-                locus_to_component.insert(locus, idx);
-            }
-        }
-
-        // Pass 1: per-active-entity flow analysis.
-        let mut decisions: FxHashMap<EntityId, EntityDecision> = FxHashMap::default();
-        let mut claims_per_component: FxHashMap<usize, Vec<EntityId>> = FxHashMap::default();
-
-        for entity in existing.active() {
-            let mut buckets: FxHashMap<usize, usize> = FxHashMap::default();
-            let mut unassigned = 0usize;
-            for locus in &entity.current.members {
-                match locus_to_component.get(locus) {
-                    Some(&c_idx) => *buckets.entry(c_idx).or_default() += 1,
-                    None => unassigned += 1,
-                }
-            }
-            let mut significant: Vec<(usize, usize)> = buckets
-                .into_iter()
-                .filter(|&(_, n)| n >= MIN_SIGNIFICANT_BUCKET)
-                .collect();
-            // Deterministic order for tests.
-            significant.sort_by_key(|&(i, _)| i);
-
-            let decision = match significant.len() {
-                0 => EntityDecision::Dormant,
-                1 => {
-                    let (c_idx, bucket_size) = significant[0];
-                    if unassigned > bucket_size {
-                        // Entity lost more than it kept — treat the
-                        // surviving bucket as an independent Born, not
-                        // the entity's continuation. This is the key
-                        // guard against subset-attack degeneration.
-                        EntityDecision::Dormant
-                    } else {
-                        claims_per_component
-                            .entry(c_idx)
-                            .or_default()
-                            .push(entity.id);
-                        EntityDecision::Claims(c_idx)
-                    }
-                }
-                _ => {
-                    let comp_idxs = significant.iter().map(|&(i, _)| i).collect();
-                    EntityDecision::Split(comp_idxs)
-                }
-            };
-            decisions.insert(entity.id, decision);
-        }
+        let recognition = RecognitionContext {
+            batch,
+            existing,
+            relationships,
+            threshold: self
+                .min_activity_threshold
+                .unwrap_or_else(|| auto_activity_threshold(relationships)),
+        };
+        let state = prepare_recognition(&recognition);
 
         let mut proposals: Vec<EmergenceProposal> = Vec::new();
-        // Components claimed as offspring of a Split — they are NOT independent
-        // `Born` / `Merge` candidates in pass 2 (the Split proposal itself
-        // creates their entities via `Entity::born`).
-        let mut split_offspring_components: FxHashSet<usize> = FxHashSet::default();
+        let mut context = ProposalContext {
+            existing: recognition.existing,
+            relationships: recognition.relationships,
+            threshold: recognition.threshold,
+            proposals: &mut proposals,
+        };
+        let split_offspring_components = proposals::emit_entity_proposals(
+            &state.flow.decisions,
+            &state.components,
+            &state.community_index.component_sets,
+            &state.adj,
+            &mut context,
+        );
 
-        // Emit Dormant / Split proposals from pass 1.
-        for (&entity_id, decision) in &decisions {
-            match decision {
-                EntityDecision::Dormant => {
-                    let decayed: Vec<RelationshipId> = existing
-                        .get(entity_id)
-                        .map(|e| {
-                            e.current
-                                .member_relationships
-                                .iter()
-                                .copied()
-                                .filter(|rid| {
-                                    relationships
-                                        .get(*rid)
-                                        .map(|r| r.activity() < threshold)
-                                        .unwrap_or(true)
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    proposals.push(EmergenceProposal::Dormant {
-                        entity: entity_id,
-                        cause: LifecycleCause::RelationshipDecay {
-                            decayed_relationships: decayed,
-                        },
-                    });
-                }
-                EntityDecision::Split(comp_idxs) => {
-                    let mut offspring = Vec::with_capacity(comp_idxs.len());
-                    for &i in comp_idxs {
-                        let (coh, rels) = component_stats(&component_sets[i], adj, threshold);
-                        offspring.push((components[i].clone(), rels, coh));
-                        split_offspring_components.insert(i);
-                    }
-                    proposals.push(EmergenceProposal::Split {
-                        source: entity_id,
-                        offspring,
-                        cause: LifecycleCause::ComponentSplit {
-                            weak_bridges: Vec::new(),
-                        },
-                    });
-                }
-                EntityDecision::Claims(_) => {}
-            }
-        }
-
-        // Pass 2: component resolution.
-        for (c_idx, members) in components.iter().enumerate() {
-            if split_offspring_components.contains(&c_idx) {
-                continue;
-            }
-            let claimers = claims_per_component
-                .get(&c_idx)
-                .cloned()
-                .unwrap_or_default();
-            let (coherence, member_rels) = component_stats(&component_sets[c_idx], adj, threshold);
-
-            match claimers.len() {
-                0 => {
-                    // No active entity claims this component. Try to match
-                    // against a dormant entity with a majority overlap (Revive);
-                    // otherwise a fresh Born.
-                    let member_set = &component_sets[c_idx];
-                    let dormant_match = existing
-                        .iter()
-                        .filter(|e| e.status == EntityStatus::Dormant)
-                        .filter_map(|e| {
-                            let overlap = e
-                                .current
-                                .members
-                                .iter()
-                                .filter(|l| member_set.contains(l))
-                                .count();
-                            if overlap >= MIN_SIGNIFICANT_BUCKET
-                                && overlap * 2 >= e.current.members.len()
-                            {
-                                Some((e.id, overlap))
-                            } else {
-                                None
-                            }
-                        })
-                        .max_by_key(|&(_, o)| o);
-                    if let Some((dormant_id, _)) = dormant_match {
-                        let snapshot = EntitySnapshot {
-                            members: members.clone(),
-                            member_relationships: member_rels.clone(),
-                            coherence,
-                        };
-                        proposals.push(EmergenceProposal::Revive {
-                            entity: dormant_id,
-                            snapshot,
-                            cause: LifecycleCause::RelationshipCluster {
-                                key_relationships: member_rels,
-                            },
-                        });
-                    } else {
-                        proposals.push(EmergenceProposal::Born {
-                            members: members.clone(),
-                            member_relationships: member_rels.clone(),
-                            coherence,
-                            parents: Vec::new(),
-                            cause: LifecycleCause::RelationshipCluster {
-                                key_relationships: member_rels,
-                            },
-                        });
-                    }
-                }
-                1 => {
-                    let entity_id = claimers[0];
-                    let entity = existing
-                        .get(entity_id)
-                        .expect("claimers contain only live active entity ids");
-                    let snapshot = EntitySnapshot {
-                        members: members.clone(),
-                        member_relationships: member_rels,
-                        coherence,
-                    };
-                    if snapshot_changed(entity, &snapshot) {
-                        let transition = membership_delta(entity, &snapshot);
-                        proposals.push(EmergenceProposal::DepositLayer {
-                            entity: entity_id,
-                            layer: EntityLayer::new(batch, snapshot, transition),
-                        });
-                    }
-                }
-                _ => {
-                    // Multiple active entities converge on one component → Merge.
-                    // Survivor: whichever had the most members pre-merge
-                    // (largest identity absorbs smaller ones).
-                    let into = *claimers
-                        .iter()
-                        .max_by_key(|id| {
-                            existing
-                                .get(**id)
-                                .map(|e| e.current.members.len())
-                                .unwrap_or(0)
-                        })
-                        .expect("claimers non-empty in ≥2 branch");
-                    let absorbed: Vec<EntityId> =
-                        claimers.iter().copied().filter(|id| *id != into).collect();
-                    proposals.push(EmergenceProposal::Merge {
-                        absorbed: absorbed.clone(),
-                        into,
-                        new_members: members.clone(),
-                        member_relationships: member_rels,
-                        coherence,
-                        cause: LifecycleCause::MergedFrom { absorbed },
-                    });
-                }
-            }
-        }
+        emit_component_proposals(
+            &state,
+            &split_offspring_components,
+            &mut context,
+            recognition.batch,
+        );
 
         proposals
     }
@@ -385,6 +362,10 @@ impl EmergencePerspective for DefaultEmergencePerspective {
 /// Adjacency entry: neighbor locus, relationship id, activity weight.
 type AdjEntry = (LocusId, RelationshipId, f32);
 
+/// Dense adjacency entry used by label propagation after `LocusId`s are
+/// rewritten to stable local indices.
+type LocalAdjEntry = (usize, RelationshipId, f32);
+
 /// Adjacency list built once per `find_communities` call, reused by
 /// both label propagation and `component_stats`.
 type AdjMap = rustc_hash::FxHashMap<LocusId, Vec<AdjEntry>>;
@@ -392,9 +373,14 @@ type AdjMap = rustc_hash::FxHashMap<LocusId, Vec<AdjEntry>>;
 /// Result of `find_communities`: the communities plus the adjacency
 /// list so `component_stats` can compute coherence + rel_ids without
 /// re-scanning the RelationshipStore.
-struct CommunityResult {
+pub(super) struct CommunityResult {
     components: Vec<Vec<LocusId>>,
     adj: AdjMap,
+}
+
+pub(super) struct LocalCommunityGraph {
+    all_loci: Vec<LocusId>,
+    local_adj: Vec<Vec<LocalAdjEntry>>,
 }
 
 /// Weighted label propagation over the relationship graph.
@@ -417,139 +403,6 @@ struct CommunityResult {
 /// Implementation note: label propagation uses dense `Vec` storage
 /// (local index → label index) rather than `HashMap` to eliminate
 /// per-edge hash lookups in the hot inner loop.
-fn find_communities(store: &RelationshipStore, threshold: f32) -> CommunityResult {
-    use rustc_hash::FxHashMap;
-
-    // Phase 1: build LocusId adjacency map (returned in CommunityResult
-    // for reuse by component_stats — do not change the output type).
-    let mut adj: AdjMap = FxHashMap::default();
-    for rel in store.iter() {
-        if rel.activity().abs() < threshold {
-            continue;
-        }
-        let (a, b) = endpoints_pair(rel);
-        let w = rel.activity() + rel.weight();
-        adj.entry(a).or_default().push((b, rel.id, w));
-        adj.entry(b).or_default().push((a, rel.id, w));
-    }
-
-    if adj.is_empty() {
-        return CommunityResult {
-            components: Vec::new(),
-            adj,
-        };
-    }
-
-    // Phase 2: assign each LocusId a dense local index so label propagation
-    // can use Vec<usize> instead of FxHashMap<LocusId, LocusId>.
-    // all_loci is sorted so index 0 = smallest LocusId (tie-break matches old behavior).
-    let mut all_loci: Vec<LocusId> = adj.keys().copied().collect();
-    all_loci.sort();
-    let n = all_loci.len();
-
-    let mut locus_to_idx: FxHashMap<LocusId, usize> =
-        FxHashMap::with_capacity_and_hasher(n, Default::default());
-    for (i, &id) in all_loci.iter().enumerate() {
-        locus_to_idx.insert(id, i);
-    }
-
-    // Convert adjacency to local-index form: (neighbor_idx, rel_id, weight).
-    // Stored as flat Vec<Vec<(usize, RelationshipId, f32)>> indexed by local idx.
-    let local_adj: Vec<Vec<(usize, RelationshipId, f32)>> = all_loci
-        .iter()
-        .map(|id| {
-            adj[id]
-                .iter()
-                .map(|&(nb, rid, w)| (locus_to_idx[&nb], rid, w))
-                .collect()
-        })
-        .collect();
-
-    // Phase 3: label propagation with Vec scratch buffers.
-    // labels[i] = local label index for node i.
-    // label_weight[l] = accumulated vote weight for label l (zeroed between nodes).
-    // seen[l] = true if label_weight[l] was written (avoids scanning full Vec to reset).
-    let mut labels: Vec<usize> = (0..n).collect();
-    let mut label_weight: Vec<f32> = vec![0.0; n];
-    let mut seen: Vec<bool> = vec![false; n];
-    let mut dirty_labels: Vec<usize> = Vec::new(); // labels touched this node
-
-    let mut order: Vec<usize> = (0..n).collect();
-    let mut lcg_state: u64 = 0x517cc1b727220a95;
-
-    const MAX_ITER: usize = 15;
-    for _ in 0..MAX_ITER {
-        for i in (1..n).rev() {
-            lcg_state = lcg_state
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            let j = (lcg_state >> 33) as usize % (i + 1);
-            order.swap(i, j);
-        }
-
-        let mut changed = false;
-        for &node in &order {
-            let neighbors = &local_adj[node];
-            dirty_labels.clear();
-
-            for &(nb, _, w) in neighbors {
-                let lbl = labels[nb];
-                if !seen[lbl] {
-                    seen[lbl] = true;
-                    dirty_labels.push(lbl);
-                }
-                label_weight[lbl] += w;
-            }
-
-            // Tie-break: prefer smaller local index (= smaller LocusId, matching old behavior).
-            let best_label = dirty_labels
-                .iter()
-                .copied()
-                .max_by(|&a, &b| {
-                    label_weight[a]
-                        .partial_cmp(&label_weight[b])
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                        .then(b.cmp(&a))
-                })
-                .unwrap_or(labels[node]);
-
-            // Reset scratch.
-            for &lbl in &dirty_labels {
-                label_weight[lbl] = 0.0;
-                seen[lbl] = false;
-            }
-
-            if labels[node] != best_label {
-                labels[node] = best_label;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-
-    // Phase 4: group nodes by label → LocusId components.
-    let mut groups: FxHashMap<usize, Vec<LocusId>> = FxHashMap::default();
-    for (i, &lbl) in labels.iter().enumerate() {
-        groups.entry(lbl).or_default().push(all_loci[i]);
-    }
-    let mut components: Vec<Vec<LocusId>> = groups.into_values().collect();
-    for c in &mut components {
-        c.sort();
-    }
-    components.sort_by(|a, b| a[0].0.cmp(&b[0].0));
-    CommunityResult { components, adj }
-}
-
-fn endpoints_pair(rel: &Relationship) -> (LocusId, LocusId) {
-    use graph_core::Endpoints;
-    match &rel.endpoints {
-        Endpoints::Directed { from, to } => (*from, *to),
-        Endpoints::Symmetric { a, b } => (*a, *b),
-    }
-}
-
 /// Compute coherence and member relationship ids for a component using
 /// the pre-built adjacency list.
 ///
@@ -569,86 +422,14 @@ fn endpoints_pair(rel: &Relationship) -> (LocusId, LocusId) {
 /// - For n=84 with 300 active edges (biological connectome density):
 ///   reference ≈ 186 → `density ≈ min(300/186, 1.0) = 1.0`.
 /// - For n=27 with 30 edges: reference ≈ 45 → `density ≈ 0.67`.
-fn component_stats(
-    member_set: &rustc_hash::FxHashSet<LocusId>,
-    adj: &AdjMap,
-    threshold: f32,
-) -> (f32, Vec<RelationshipId>) {
-    let mut sum = 0.0f32;
-    let mut active_count = 0usize;
-    let mut rel_ids = Vec::new();
-    for &locus in member_set {
-        if let Some(neighbors) = adj.get(&locus) {
-            for &(nb, rel_id, activity) in neighbors {
-                if nb > locus && member_set.contains(&nb) {
-                    rel_ids.push(rel_id);
-                    // Only excitatory relationships contribute to coherence.
-                    // Inhibitory edges (negative activity) are part of the
-                    // topology but do not add to internal binding strength.
-                    if activity >= threshold {
-                        sum += activity;
-                        active_count += 1;
-                    }
-                }
-            }
-        }
-    }
-    let mean_activity = if active_count == 0 {
-        0.0
-    } else {
-        sum / active_count as f32
-    };
-    // Reference edge count: n * ln(n+1) / 2.
-    // Sub-quadratic so large sparse graphs score proportionally, not near 0.
-    let n = member_set.len();
-    let reference = if n <= 1 {
-        1.0f32
-    } else {
-        (n as f32) * ((n as f32 + 1.0).ln()) / 2.0
-    };
-    let density = (active_count as f32 / reference).min(1.0);
-    let coherence = mean_activity * density;
-    (coherence, rel_ids)
-}
-
 // `overlap` / `all_matches` removed with locus-flow algorithm — see docstring.
-
-fn snapshot_changed(entity: &Entity, new: &EntitySnapshot) -> bool {
-    if entity.current.members != new.members {
-        return true;
-    }
-    (entity.current.coherence - new.coherence).abs() > 0.05
-}
-
-fn membership_delta(entity: &Entity, new: &EntitySnapshot) -> LayerTransition {
-    let old = &entity.current.members;
-    let added: Vec<LocusId> = new
-        .members
-        .iter()
-        .filter(|m| !old.contains(m))
-        .copied()
-        .collect();
-    let removed: Vec<LocusId> = old
-        .iter()
-        .filter(|m| !new.members.contains(m))
-        .copied()
-        .collect();
-    if added.is_empty() && removed.is_empty() {
-        LayerTransition::CoherenceShift {
-            from: entity.current.coherence,
-            to: new.coherence,
-        }
-    } else {
-        LayerTransition::MembershipDelta { added, removed }
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use graph_core::Relationship;
     use graph_core::{
-        Endpoints, InfluenceKindId, KindObservation, LocusId, RelationshipLineage, StateVector,
+        Endpoints, Entity, EntitySnapshot, InfluenceKindId, KindObservation, LocusId, Relationship,
+        RelationshipLineage, StateVector,
     };
     use graph_world::{EntityStore, RelationshipStore};
 
@@ -744,7 +525,7 @@ mod tests {
             .copied()
             .collect();
 
-        let (coherence, rel_ids) = component_stats(&member_set, &adj, 0.1);
+        let (coherence, rel_ids) = community::component_stats(&member_set, &adj, 0.1);
 
         // 3 edges above threshold (1-2, 1-3, 2-3); nb > locus dedup gives
         // visits for pairs (1,2), (1,3), (2,3) → active_count = 3.
@@ -761,7 +542,7 @@ mod tests {
         rel(&mut store, 1, 2, 1.0);
         rel(&mut store, 3, 4, 1.0);
 
-        let result = find_communities(&store, 0.1);
+        let result = community::find_communities(&store, 0.1);
 
         assert_eq!(result.components.len(), 2);
         for c in &result.components {
@@ -786,7 +567,7 @@ mod tests {
         let member_set: rustc_hash::FxHashSet<LocusId> =
             [LocusId(1), LocusId(2)].iter().copied().collect();
 
-        let (coherence, _) = component_stats(&member_set, &adj, 0.1);
+        let (coherence, _) = community::component_stats(&member_set, &adj, 0.1);
 
         // mean_activity = 5.0; density ≤ 1.0 so coherence = 5.0 * density
         assert!(

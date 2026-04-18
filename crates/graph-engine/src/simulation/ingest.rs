@@ -103,30 +103,9 @@ impl Simulation {
         influence: graph_core::InfluenceKindId,
         properties: graph_core::Properties,
     ) -> graph_core::LocusId {
-        let state = self.encode(kind, &properties);
-
-        let locus_id = {
-            let mut world = self.world.write().unwrap();
-            if let Some(existing) = world.names().resolve(name) {
-                if let Some(props) = world.properties_mut().get_mut(existing) {
-                    props.extend(&properties);
-                }
-                existing
-            } else {
-                let id = world.loci().next_id();
-                let locus = graph_core::Locus::new(id, kind, state.clone());
-                world.insert_locus(locus);
-                world.names_mut().insert(name, id);
-                world.properties_mut().insert(id, properties);
-                id
-            }
-        };
-
-        self.push_pending_stimulus(ProposedChange::new(
-            graph_core::ChangeSubject::Locus(locus_id),
-            influence,
-            state,
-        ));
+        let state = self.prepare_ingest_state(kind, &properties);
+        let locus_id = self.lookup_or_create_ingested_locus(name, kind, state.clone(), properties);
+        self.queue_ingest_stimulus(locus_id, influence, state);
 
         locus_id
     }
@@ -433,41 +412,10 @@ impl Simulation {
         entries: Vec<(&str, &str, graph_core::Properties)>,
         influence: graph_core::InfluenceKindId,
     ) -> super::config::StepObservation {
-        // Step 1: create/merge loci (also queues to `pending_stimuli`).
-        let ids: Vec<graph_core::LocusId> = entries
-            .into_iter()
-            .map(|(name, kind, props)| {
-                let kind_id = self.resolve_locus_kind(kind);
-                self.ingest(name, kind_id, influence, props)
-            })
-            .collect();
-
-        // Step 2: snapshot the most-recent committed change for each locus.
-        //         These may be `None` for brand-new loci (first occurrence).
-        let last_change: Vec<Option<graph_core::ChangeId>> = {
-            let world = self.world.read().unwrap();
-            ids.iter()
-                .map(|&id| world.log().changes_to_locus(id).next().map(|c| c.id))
-                .collect()
-        };
-
-        // Step 3: build stimuli with cross-locus predecessors.
-        //         Each locus names all other loci's last changes as predecessors,
-        //         so the engine's cross-locus detection fires and auto-emerges
-        //         relationships between loci that already existed.
-        let stimuli: Vec<ProposedChange> = ids
-            .iter()
-            .enumerate()
-            .map(|(i, &target_id)| {
-                let predecessors: Vec<graph_core::ChangeId> = last_change
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(j, cid)| if j != i { *cid } else { None })
-                    .collect();
-                ProposedChange::activation(target_id, influence, 1.0)
-                    .with_extra_predecessors(predecessors)
-            })
-            .collect();
+        let resolved = self.resolve_cooccurrence_entries(entries, influence);
+        let ids = self.ingest_resolved_cooccurrence_entries(resolved);
+        let last_change = self.lookup_last_committed_changes(&ids);
+        let stimuli = self.build_cooccurrence_stimuli(&ids, &last_change, influence);
 
         self.step(stimuli)
     }
@@ -482,6 +430,138 @@ impl Simulation {
         static PASSTHROUGH: graph_core::PassthroughEncoder = graph_core::PassthroughEncoder;
         let encoder = self.loci.encoder(kind).unwrap_or(&PASSTHROUGH);
         encoder.encode(properties)
+    }
+
+    fn prepare_ingest_state(
+        &self,
+        kind: graph_core::LocusKindId,
+        properties: &graph_core::Properties,
+    ) -> graph_core::StateVector {
+        self.encode(kind, properties)
+    }
+
+    fn lookup_or_create_ingested_locus(
+        &mut self,
+        name: &str,
+        kind: graph_core::LocusKindId,
+        state: graph_core::StateVector,
+        properties: graph_core::Properties,
+    ) -> graph_core::LocusId {
+        let mut world = self.world.write().unwrap();
+        match world.names().resolve(name) {
+            Some(existing) => {
+                Self::merge_locus_properties(&mut world, existing, &properties);
+                existing
+            }
+            None => Self::create_ingested_locus(&mut world, name, kind, state, properties),
+        }
+    }
+
+    fn merge_locus_properties(
+        world: &mut graph_world::World,
+        locus_id: graph_core::LocusId,
+        properties: &graph_core::Properties,
+    ) {
+        if let Some(props) = world.properties_mut().get_mut(locus_id) {
+            props.extend(properties);
+        }
+    }
+
+    fn create_ingested_locus(
+        world: &mut graph_world::World,
+        name: &str,
+        kind: graph_core::LocusKindId,
+        state: graph_core::StateVector,
+        properties: graph_core::Properties,
+    ) -> graph_core::LocusId {
+        let id = world.loci().next_id();
+        let locus = graph_core::Locus::new(id, kind, state);
+        world.insert_locus(locus);
+        world.names_mut().insert(name, id);
+        world.properties_mut().insert(id, properties);
+        id
+    }
+
+    fn queue_ingest_stimulus(
+        &mut self,
+        locus_id: graph_core::LocusId,
+        influence: graph_core::InfluenceKindId,
+        state: graph_core::StateVector,
+    ) {
+        self.push_pending_stimulus(ProposedChange::new(
+            graph_core::ChangeSubject::Locus(locus_id),
+            influence,
+            state,
+        ));
+    }
+
+    fn resolve_cooccurrence_entries<'a>(
+        &self,
+        entries: Vec<(&'a str, &'a str, graph_core::Properties)>,
+        influence: graph_core::InfluenceKindId,
+    ) -> Vec<(
+        &'a str,
+        graph_core::LocusKindId,
+        graph_core::InfluenceKindId,
+        graph_core::Properties,
+    )> {
+        entries
+            .into_iter()
+            .map(|(name, kind, props)| (name, self.resolve_locus_kind(kind), influence, props))
+            .collect()
+    }
+
+    fn ingest_resolved_cooccurrence_entries(
+        &mut self,
+        entries: Vec<(
+            &'_ str,
+            graph_core::LocusKindId,
+            graph_core::InfluenceKindId,
+            graph_core::Properties,
+        )>,
+    ) -> Vec<graph_core::LocusId> {
+        entries
+            .into_iter()
+            .map(|(name, kind, influence, props)| self.ingest(name, kind, influence, props))
+            .collect()
+    }
+
+    fn lookup_last_committed_changes(
+        &self,
+        ids: &[graph_core::LocusId],
+    ) -> Vec<Option<graph_core::ChangeId>> {
+        let world = self.world.read().unwrap();
+        ids.iter()
+            .map(|&id| world.log().changes_to_locus(id).next().map(|c| c.id))
+            .collect()
+    }
+
+    fn build_cooccurrence_stimuli(
+        &self,
+        ids: &[graph_core::LocusId],
+        last_change: &[Option<graph_core::ChangeId>],
+        influence: graph_core::InfluenceKindId,
+    ) -> Vec<ProposedChange> {
+        ids.iter()
+            .enumerate()
+            .map(|(i, &target_id)| {
+                let predecessors = self.cooccurrence_predecessors(i, last_change);
+                ProposedChange::activation(target_id, influence, 1.0)
+                    .with_extra_predecessors(predecessors)
+            })
+            .collect()
+    }
+
+    fn cooccurrence_predecessors(
+        &self,
+        target_index: usize,
+        last_change: &[Option<graph_core::ChangeId>],
+    ) -> Vec<graph_core::ChangeId> {
+        last_change
+            .iter()
+            .enumerate()
+            .filter_map(|(j, cid)| if j != target_index { *cid } else { None })
+            .collect()
     }
 }
 
@@ -594,20 +674,6 @@ mod tests {
             }
         );
         assert_eq!(sim.world().loci().len(), 0);
-    }
-
-    fn make_sim_with_capacity(
-        cap: usize,
-        policy: BackpressurePolicy,
-    ) -> crate::simulation::Simulation {
-        SimulationBuilder::new()
-            .locus_kind("NODE", NoopProgram)
-            .influence("sig", |c: InfluenceKindConfig| {
-                c.with_decay(0.9).symmetric()
-            })
-            .default_influence("sig")
-            .backpressure(cap, policy)
-            .build()
     }
 
     // Backpressure-capacity tests removed with Phase 8: the queue is now

@@ -2682,7 +2682,7 @@ fn single_kind_no_interaction_applied() {
 /// can report meaningful trends.
 #[test]
 fn hebbian_updates_emit_changelog_entries_for_preinserted_rels() {
-    use graph_core::{Relationship, RelationshipLineage};
+    use graph_core::RelationshipLineage;
 
     const SOCIAL: InfluenceKindId = InfluenceKindId(1);
     const MEMBER: LocusKindId = LocusKindId(1);
@@ -2839,7 +2839,7 @@ fn stdp_causal_dag_detects_feedback_loop() {
     impl LocusProgram for RelayProgram {
         fn process(
             &self,
-            locus: &Locus,
+            _locus: &Locus,
             incoming: &[&Change],
             _: &dyn graph_core::LocusContext,
         ) -> Vec<ProposedChange> {

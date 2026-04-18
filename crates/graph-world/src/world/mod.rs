@@ -11,17 +11,17 @@
 //! threaded into ticks. Keeping the world free of program references
 //! makes snapshots cheap and replay clean.
 
+mod batching;
+mod mutation;
 mod partition;
+mod partitioning;
 mod query;
 mod snapshot;
 
 pub use partition::{PartitionFn, PartitionIndex};
 pub use snapshot::{WorldMeta, WorldSnapshot};
 
-use graph_core::{
-    BatchId, Change, ChangeId, Endpoints, KindObservation, Locus, LocusId, Relationship,
-    RelationshipId, RelationshipKindId, RelationshipLineage, StateVector,
-};
+use graph_core::{BatchId, Locus, LocusId, RelationshipId};
 use rustc_hash::FxHashMap;
 
 use crate::store::change_log::ChangeLog;
@@ -61,13 +61,6 @@ pub struct World {
 impl World {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    pub fn insert_locus(&mut self, locus: Locus) {
-        if let Some(idx) = &mut self.partition_index {
-            idx.assign(&locus);
-        }
-        self.loci.insert(locus);
     }
 
     pub fn locus(&self, id: LocusId) -> Option<&Locus> {
@@ -142,112 +135,6 @@ impl World {
         &mut self.names
     }
 
-    /// Returns the batch ID that **will be used for the next commit** — i.e.
-    /// the batch the engine is currently building, not the last written batch.
-    ///
-    /// This is an "upcoming" pointer, not a "last written" pointer.  To get
-    /// the highest batch already committed, use [`last_committed_batch`].
-    ///
-    /// ## Engine invariant
-    ///
-    /// The engine reads `current_batch()` at the start of each iteration,
-    /// uses it for all `Change.batch` fields, then calls `advance_batch()` at
-    /// the end.  Between those two calls, `current_batch()` equals the batch
-    /// that is actively being assembled.
-    ///
-    /// [`last_committed_batch`]: World::last_committed_batch
-    pub fn current_batch(&self) -> BatchId {
-        self.current_batch
-    }
-
-    /// Returns the highest batch that has already been committed to the log,
-    /// or `None` if no changes have been committed yet.
-    ///
-    /// Use this when you need the last *written* batch — for example, to
-    /// capture a baseline before stimulating the world:
-    ///
-    /// ```ignore
-    /// let baseline = world.last_committed_batch();
-    /// sim.stimulate(changes);
-    /// sim.tick();
-    /// let root_changes = world.log().batch(world.last_committed_batch().unwrap())
-    ///     .map(|c| c.id).collect::<Vec<_>>();
-    /// ```
-    ///
-    /// Note: `current_batch()` returns the batch ID that will be used *next*,
-    /// which is one ahead of this value.
-    pub fn last_committed_batch(&self) -> Option<BatchId> {
-        let c = self.current_batch.0;
-        if c == 0 { None } else { Some(BatchId(c - 1)) }
-    }
-
-    /// Mint the next `ChangeId`. Engine-only — exposed on `World` so the
-    /// counter advances atomically with appends.
-    pub fn mint_change_id(&mut self) -> ChangeId {
-        let id = ChangeId(self.next_change_id);
-        self.next_change_id += 1;
-        id
-    }
-
-    /// Reserve a contiguous block of `n` `ChangeId`s in one step.
-    ///
-    /// Returns the base `ChangeId` (the first of the reserved block).
-    /// The caller is responsible for assigning IDs `base`, `base+1`, …,
-    /// `base+n-1` and appending the corresponding `Change`s in that order
-    /// to preserve the density invariant.
-    ///
-    /// Engine-only — call `mint_change_id` for single-change paths.
-    pub fn reserve_change_ids(&mut self, n: usize) -> ChangeId {
-        let base = ChangeId(self.next_change_id);
-        self.next_change_id += n as u64;
-        base
-    }
-
-    /// Append a change to the log. The engine is expected to have set
-    /// `change.batch` to `current_batch` already; this method does not
-    /// re-check that.
-    pub fn append_change(&mut self, change: Change) -> ChangeId {
-        self.log.append(change)
-    }
-
-    /// Bulk-append a Vec of pre-built changes from the same batch.
-    ///
-    /// Delegates to [`ChangeLog::extend_batch`]: all reverse indices are
-    /// updated in one grouping pass instead of one HashMap op per change.
-    /// Use this instead of repeated `append_change` calls when committing
-    /// an entire batch at once.
-    pub fn extend_batch_changes(&mut self, changes: Vec<Change>) {
-        self.log.extend_batch(changes);
-    }
-
-    /// Advance to the next batch. Called once per batch by the engine
-    /// after all changes for the current batch have committed.
-    pub fn advance_batch(&mut self) -> BatchId {
-        self.current_batch = BatchId(self.current_batch.0 + 1);
-        self.current_batch
-    }
-
-    /// Record that a relationship was pruned at the current batch.
-    ///
-    /// Called by the engine's `flush_relationship_decay` after removing a
-    /// relationship whose activity fell below `prune_activity_threshold`.
-    /// The log is queryable via `pruned_log()` and reflected in `WorldDiff`.
-    pub fn record_pruned(&mut self, rel_id: RelationshipId) {
-        self.pruned_log.push((rel_id, self.current_batch));
-    }
-
-    /// All pruning events recorded since the last `trim_pruned_log_before` call.
-    /// Each entry is `(relationship_id, batch_at_pruning_time)`.
-    pub fn pruned_log(&self) -> &[(RelationshipId, BatchId)] {
-        &self.pruned_log
-    }
-
-    /// Discard pruning log entries older than `batch`. Call alongside
-    /// `ChangeLog::trim_before_batch` to keep memory bounded.
-    pub fn trim_pruned_log_before(&mut self, batch: BatchId) {
-        self.pruned_log.retain(|(_, b)| b.0 >= batch.0);
-    }
-
     /// Return the BCM sliding threshold θ_M for `id`, defaulting to `0.0`.
     pub fn bcm_threshold(&self, id: LocusId) -> f32 {
         self.bcm_thresholds.get(&id).copied().unwrap_or(0.0)
@@ -262,132 +149,12 @@ impl World {
     pub fn bcm_thresholds_mut(&mut self) -> &mut FxHashMap<LocusId, f32> {
         &mut self.bcm_thresholds
     }
-
-    /// Insert a new relationship with `last_decayed_batch` pre-set to
-    /// `current_batch()`, preventing spurious decay debt on first access.
-    ///
-    /// This is the preferred way to pre-create relationships in a running
-    /// world. Using `relationships_mut().insert()` directly leaves
-    /// `last_decayed_batch = 0`, which causes all accumulated batches to be
-    /// replayed as decay on the first touch.
-    pub fn add_relationship(
-        &mut self,
-        endpoints: Endpoints,
-        kind: RelationshipKindId,
-        state: StateVector,
-    ) -> RelationshipId {
-        let id = self.relationships.mint_id();
-        let current_batch = self.current_batch.0;
-        self.relationships.insert(Relationship {
-            id,
-            kind,
-            endpoints,
-            state,
-            lineage: RelationshipLineage {
-                created_by: None,
-                last_touched_by: None,
-                change_count: 0,
-                kinds_observed: smallvec::smallvec![KindObservation::synthetic(kind)],
-            },
-            created_batch: self.current_batch,
-            last_decayed_batch: current_batch,
-            metadata: None,
-        });
-        id
-    }
-
-    /// Restore a relationship that was previously evicted to cold storage.
-    ///
-    /// Unlike `relationships_mut().insert()`, this is idempotent: if the
-    /// relationship is already present in memory (not evicted), the call
-    /// is a no-op and returns `false`. Returns `true` if the relationship
-    /// was actually inserted.
-    pub fn restore_relationship(&mut self, rel: graph_core::Relationship) -> bool {
-        if self.relationships.get(rel.id).is_some() {
-            return false;
-        }
-        self.relationships.insert(rel);
-        true
-    }
-
-    /// Remove relationships whose activity is below `threshold` and that
-    /// have not been touched (decayed) for at least `min_idle_batches`.
-    ///
-    /// Returns the IDs of evicted relationships. The caller is responsible
-    /// for ensuring these are already persisted in storage before calling
-    /// this method.
-    pub fn evict_cold_relationships(
-        &mut self,
-        threshold: f32,
-        min_idle_batches: u64,
-        current_batch: BatchId,
-    ) -> Vec<graph_core::RelationshipId> {
-        let cold_ids: Vec<_> = self
-            .relationships
-            .iter()
-            .filter(|r| {
-                r.activity() < threshold
-                    && current_batch.0.saturating_sub(r.last_decayed_batch) >= min_idle_batches
-            })
-            .map(|r| r.id)
-            .collect();
-
-        for &id in &cold_ids {
-            self.relationships.remove(id);
-        }
-
-        cold_ids
-    }
-
-    // ── E4 Partition API ──────────────────────────────────────────────────
-
-    /// Attach a partition assignment function. All currently loaded loci are
-    /// immediately assigned. Loci created after this call are assigned on
-    /// insertion. Pass `None` to revert to single-partition mode.
-    pub fn set_partition_fn(&mut self, f: Option<PartitionFn>) {
-        match f {
-            None => {
-                self.partition_index = None;
-            }
-            Some(fn_) => {
-                let mut idx = PartitionIndex::new(fn_);
-                for locus in self.loci.iter() {
-                    idx.assign(locus);
-                }
-                self.partition_index = Some(idx);
-            }
-        }
-    }
-
-    /// Re-evaluate every locus through the current partition fn and rebuild
-    /// the assignment index. O(L). No-op if no partition fn is set.
-    pub fn repartition(&mut self) {
-        if let Some(idx) = self.partition_index.take() {
-            let fn_ = idx.fn_.clone();
-            let mut new_idx = PartitionIndex::new(fn_);
-            for locus in self.loci.iter() {
-                new_idx.assign(locus);
-            }
-            self.partition_index = Some(new_idx);
-        }
-    }
-
-    /// Read-only access to the partition index, if one is active.
-    pub fn partition_index(&self) -> Option<&PartitionIndex> {
-        self.partition_index.as_ref()
-    }
-
-    /// Return the partition bucket for `locus_id`, or `None` if no partition
-    /// fn is active or the locus was not yet assigned.
-    pub fn partition_of(&self, locus_id: LocusId) -> Option<u64> {
-        self.partition_index.as_ref()?.bucket_of(locus_id)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use graph_core::{LocusKindId, StateVector};
+    use graph_core::{KindObservation, LocusKindId, StateVector};
 
     #[test]
     fn change_id_counter_is_monotonic() {

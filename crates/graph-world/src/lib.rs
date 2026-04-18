@@ -10,7 +10,7 @@ pub mod metrics;
 pub mod store;
 pub mod world;
 
-pub use context::BatchContext;
+pub use context::{BatchContext, BatchStores};
 pub use diff::{RelationshipDelta, WorldDiff};
 pub use graph_core::TrimSummary;
 pub use metrics::{ACTIVITY_THRESHOLD, TOP_N, WorldMetrics};

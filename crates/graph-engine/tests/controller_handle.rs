@@ -107,7 +107,7 @@ fn flush_ingested_is_a_step() {
     // flush_ingested calls step([]); batch may or may not advance if already
     // quiescent, but it should not panic.
     let _ = h.current_batch();
-    drop(before);
+    let _ = before;
 }
 
 #[test]

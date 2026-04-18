@@ -4,6 +4,9 @@ use graph_core::{BatchId, Entity, Locus, LocusId, Properties, Relationship};
 
 use super::World;
 
+use crate::store::name_index::NameIndex;
+use crate::store::property_store::PropertyStore;
+
 /// Opaque counter snapshot used by `graph-wal` for checkpoint and
 /// recovery. Does not include program registries (those are re-supplied
 /// by the caller at startup).
@@ -46,6 +49,10 @@ pub struct WorldSnapshot {
     pub bcm_thresholds: Vec<(LocusId, f32)>,
 }
 
+struct SnapshotBuilder<'a> {
+    world: &'a World,
+}
+
 impl World {
     /// Metadata snapshot of the world's ID counters and batch clock.
     /// Used by `graph-wal` for checkpoint and recovery.
@@ -77,33 +84,7 @@ impl World {
     /// `CohereStore` is excluded — it is ephemeral and is recomputed
     /// on demand via `extract_cohere`.
     pub fn to_snapshot(&self) -> WorldSnapshot {
-        WorldSnapshot {
-            loci: self.loci.iter().cloned().collect(),
-            relationships: self.relationships.iter().cloned().collect(),
-            entities: self.entities.iter().cloned().collect(),
-            log: self.log.iter().cloned().collect(),
-            meta: self.world_meta(),
-            properties: self
-                .properties
-                .iter()
-                .map(|(id, p)| (id, p.clone()))
-                .collect(),
-            names: self
-                .names
-                .iter()
-                .map(|(n, id)| (n.to_owned(), id))
-                .collect(),
-            aliases: self
-                .names
-                .aliases()
-                .map(|(a, id)| (a.to_owned(), id))
-                .collect(),
-            bcm_thresholds: self
-                .bcm_thresholds()
-                .iter()
-                .map(|(&id, &v)| (id, v))
-                .collect(),
-        }
+        SnapshotBuilder::new(self).build()
     }
 
     /// Restore a `World` from a `WorldSnapshot`.
@@ -112,27 +93,18 @@ impl World {
     /// re-register locus kind programs and influence kind configs
     /// (those live in the engine registries, not in the world).
     pub fn from_snapshot(snapshot: WorldSnapshot) -> Self {
-        use crate::store::name_index::NameIndex;
-        use crate::store::property_store::PropertyStore;
-
         let mut world = Self::default();
-        for locus in snapshot.loci {
-            world.insert_locus(locus);
-        }
-        for rel in snapshot.relationships {
-            world.relationships_mut().insert(rel);
-        }
-        for entity in snapshot.entities {
-            world.entities_mut().insert(entity);
-        }
-        for change in snapshot.log {
-            world.log_mut().append(change);
-        }
-        world.properties = PropertyStore::from_entries(snapshot.properties);
-        world.names = NameIndex::from_entries(snapshot.names, snapshot.aliases);
-        for (id, theta) in snapshot.bcm_thresholds {
-            world.bcm_thresholds_mut().insert(id, theta);
-        }
+        load_snapshot_loci(&mut world, snapshot.loci);
+        load_snapshot_relationships(&mut world, snapshot.relationships);
+        load_snapshot_entities(&mut world, snapshot.entities);
+        load_snapshot_changes(&mut world, snapshot.log);
+        load_snapshot_sidecars(
+            &mut world,
+            snapshot.properties,
+            snapshot.names,
+            snapshot.aliases,
+            snapshot.bcm_thresholds,
+        );
         world.restore_meta(&snapshot.meta);
         world
     }
@@ -143,31 +115,7 @@ impl World {
     /// inspected with the same tooling. Requires the `serde` feature.
     #[cfg(feature = "serde")]
     pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
-        use std::io::Write;
-        let snapshot = self.to_snapshot();
-        let payload = postcard::to_allocvec(&snapshot)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        let crc = crc32fast::hash(&payload);
-        let mut buf = Vec::with_capacity(8 + payload.len());
-        buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-        buf.extend_from_slice(&crc.to_le_bytes());
-        buf.extend_from_slice(&payload);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let tmp = path.with_extension("bin.tmp");
-        {
-            let file = std::fs::File::create(&tmp)?;
-            let mut writer = std::io::BufWriter::new(file);
-            writer.write_all(&buf)?;
-            writer.flush()?;
-            writer
-                .into_inner()
-                .map_err(|e| e.into_error())?
-                .sync_data()?;
-        }
-        std::fs::rename(&tmp, path)?;
-        Ok(())
+        write_snapshot_file(path, &self.to_snapshot())
     }
 
     /// Deserialize a world previously written with [`World::save`].
@@ -175,26 +123,196 @@ impl World {
     /// Requires the `serde` feature.
     #[cfg(feature = "serde")]
     pub fn load(path: &std::path::Path) -> std::io::Result<Self> {
-        use std::io::Read as _;
-        let file = std::fs::File::open(path)?;
-        let mut reader = std::io::BufReader::new(file);
-        let mut header = [0u8; 8];
-        reader.read_exact(&mut header)?;
-        let payload_len = u32::from_le_bytes(header[0..4].try_into().unwrap()) as usize;
-        let stored_crc = u32::from_le_bytes(header[4..8].try_into().unwrap());
-        let mut payload = vec![0u8; payload_len];
-        reader.read_exact(&mut payload)?;
-        let actual_crc = crc32fast::hash(&payload);
-        if actual_crc != stored_crc {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("CRC mismatch: stored={stored_crc:#010x} actual={actual_crc:#010x}"),
-            ));
-        }
-        let snapshot: WorldSnapshot = postcard::from_bytes(&payload)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        Ok(Self::from_snapshot(snapshot))
+        read_snapshot_file(path).map(Self::from_snapshot)
     }
+}
+
+impl<'a> SnapshotBuilder<'a> {
+    fn new(world: &'a World) -> Self {
+        Self { world }
+    }
+
+    fn build(self) -> WorldSnapshot {
+        WorldSnapshot {
+            loci: self.world.loci.iter().cloned().collect(),
+            relationships: self.world.relationships.iter().cloned().collect(),
+            entities: self.world.entities.iter().cloned().collect(),
+            log: self.world.log.iter().cloned().collect(),
+            meta: self.world.world_meta(),
+            properties: self.collect_properties(),
+            names: self.collect_names(),
+            aliases: self.collect_aliases(),
+            bcm_thresholds: self.collect_bcm_thresholds(),
+        }
+    }
+
+    fn collect_properties(&self) -> Vec<(LocusId, Properties)> {
+        self.world
+            .properties
+            .iter()
+            .map(|(id, props)| (id, props.clone()))
+            .collect()
+    }
+
+    fn collect_names(&self) -> Vec<(String, LocusId)> {
+        self.world
+            .names
+            .iter()
+            .map(|(name, id)| (name.to_owned(), id))
+            .collect()
+    }
+
+    fn collect_aliases(&self) -> Vec<(String, LocusId)> {
+        self.world
+            .names
+            .aliases()
+            .map(|(alias, id)| (alias.to_owned(), id))
+            .collect()
+    }
+
+    fn collect_bcm_thresholds(&self) -> Vec<(LocusId, f32)> {
+        self.world
+            .bcm_thresholds()
+            .iter()
+            .map(|(&id, &value)| (id, value))
+            .collect()
+    }
+}
+
+fn load_snapshot_loci(world: &mut World, loci: Vec<Locus>) {
+    for locus in loci {
+        world.insert_locus(locus);
+    }
+}
+
+fn load_snapshot_relationships(world: &mut World, relationships: Vec<Relationship>) {
+    for relationship in relationships {
+        world.relationships_mut().insert(relationship);
+    }
+}
+
+fn load_snapshot_entities(world: &mut World, entities: Vec<Entity>) {
+    for entity in entities {
+        world.entities_mut().insert(entity);
+    }
+}
+
+fn load_snapshot_changes(world: &mut World, changes: Vec<graph_core::Change>) {
+    for change in changes {
+        world.log_mut().append(change);
+    }
+}
+
+fn load_snapshot_sidecars(
+    world: &mut World,
+    properties: Vec<(LocusId, Properties)>,
+    names: Vec<(String, LocusId)>,
+    aliases: Vec<(String, LocusId)>,
+    bcm_thresholds: Vec<(LocusId, f32)>,
+) {
+    world.properties = PropertyStore::from_entries(properties);
+    world.names = NameIndex::from_entries(names, aliases);
+    for (id, theta) in bcm_thresholds {
+        world.bcm_thresholds_mut().insert(id, theta);
+    }
+}
+
+#[cfg(feature = "serde")]
+fn write_snapshot_file(path: &std::path::Path, snapshot: &WorldSnapshot) -> std::io::Result<()> {
+    let payload = serialize_snapshot(snapshot)?;
+    let framed = frame_snapshot_payload(&payload);
+    ensure_snapshot_parent_dir(path)?;
+    write_snapshot_bytes(path, &framed)
+}
+
+#[cfg(feature = "serde")]
+fn read_snapshot_file(path: &std::path::Path) -> std::io::Result<WorldSnapshot> {
+    let payload = read_framed_snapshot_payload(path)?;
+    deserialize_snapshot(&payload)
+}
+
+#[cfg(feature = "serde")]
+fn serialize_snapshot(snapshot: &WorldSnapshot) -> std::io::Result<Vec<u8>> {
+    postcard::to_allocvec(snapshot)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+#[cfg(feature = "serde")]
+fn deserialize_snapshot(payload: &[u8]) -> std::io::Result<WorldSnapshot> {
+    postcard::from_bytes(payload)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+#[cfg(feature = "serde")]
+fn frame_snapshot_payload(payload: &[u8]) -> Vec<u8> {
+    let crc = crc32fast::hash(payload);
+    let mut buf = Vec::with_capacity(8 + payload.len());
+    buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&crc.to_le_bytes());
+    buf.extend_from_slice(payload);
+    buf
+}
+
+#[cfg(feature = "serde")]
+fn ensure_snapshot_parent_dir(path: &std::path::Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "serde")]
+fn write_snapshot_bytes(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let tmp = path.with_extension("bin.tmp");
+    {
+        let file = std::fs::File::create(&tmp)?;
+        let mut writer = std::io::BufWriter::new(file);
+        writer.write_all(bytes)?;
+        writer.flush()?;
+        writer
+            .into_inner()
+            .map_err(|e| e.into_error())?
+            .sync_data()?;
+    }
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+#[cfg(feature = "serde")]
+fn read_framed_snapshot_payload(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read as _;
+
+    let file = std::fs::File::open(path)?;
+    let mut reader = std::io::BufReader::new(file);
+    let (payload_len, stored_crc) = read_snapshot_header(&mut reader)?;
+    let mut payload = vec![0u8; payload_len];
+    reader.read_exact(&mut payload)?;
+    validate_snapshot_crc(stored_crc, &payload)?;
+    Ok(payload)
+}
+
+#[cfg(feature = "serde")]
+fn read_snapshot_header<R: std::io::Read>(reader: &mut R) -> std::io::Result<(usize, u32)> {
+    let mut header = [0u8; 8];
+    reader.read_exact(&mut header)?;
+    Ok((
+        u32::from_le_bytes(header[0..4].try_into().unwrap()) as usize,
+        u32::from_le_bytes(header[4..8].try_into().unwrap()),
+    ))
+}
+
+#[cfg(feature = "serde")]
+fn validate_snapshot_crc(stored_crc: u32, payload: &[u8]) -> std::io::Result<()> {
+    let actual_crc = crc32fast::hash(payload);
+    if actual_crc == stored_crc {
+        return Ok(());
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("CRC mismatch: stored={stored_crc:#010x} actual={actual_crc:#010x}"),
+    ))
 }
 
 #[cfg(test)]

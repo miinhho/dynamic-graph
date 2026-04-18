@@ -19,45 +19,14 @@
 //! }
 //! ```
 
-use graph_core::{BatchId, EntityId, RelationshipId};
-use graph_world::{World, WorldDiff};
+mod analysis;
+mod result;
 
-// ── Result types ──────────────────────────────────────────────────────────────
+use graph_core::BatchId;
+use graph_world::World;
 
-/// The structural inverse of applying a batch range — describes what must be
-/// "undone" to reconstruct the world as it was at `target_batch`.
-///
-/// Returned by [`time_travel`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct TimeTravelResult {
-    /// The batch the caller requested to travel back to.
-    pub target_batch: BatchId,
-    /// The forward `WorldDiff` for `[target_batch, current_batch)`.
-    /// Callers can use this to understand what *happened* in the range being reversed.
-    pub forward_diff: WorldDiff,
-    /// Relationships created in `(target_batch, current_batch]` — these would
-    /// not exist at `target_batch` and should be excluded from the prior view.
-    pub relationships_to_remove: Vec<RelationshipId>,
-    /// Relationships that were pruned in the range and cannot be fully restored.
-    /// The prior-batch view reports these as "irrecoverable" — their state at
-    /// `target_batch` is unknown because the pruned-log only records the ID.
-    pub relationships_irrecoverable: Vec<RelationshipId>,
-    /// Entity IDs whose prior state is approximate because the layers in the
-    /// target range have been compressed or skeletonised (snapshot dropped by
-    /// weathering).
-    pub entities_approximate: Vec<EntityId>,
-    /// `Some(batch)` when the requested `target_batch` is older than the
-    /// ChangeLog's trim boundary — the result reflects the earliest available
-    /// state, not the exact requested one.
-    pub trimmed_at: Option<BatchId>,
-}
-
-impl TimeTravelResult {
-    /// `true` when the result is exact (no trim, no approximate entities).
-    pub fn is_exact(&self) -> bool {
-        self.trimmed_at.is_none() && self.entities_approximate.is_empty()
-    }
-}
+use self::analysis::build_time_travel_result;
+pub use self::result::TimeTravelResult;
 
 // ── Core function ─────────────────────────────────────────────────────────────
 
@@ -76,64 +45,7 @@ impl TimeTravelResult {
 ///
 /// **Complexity**: O(k + R + E·L_avg) — same as `WorldDiff::compute`.
 pub fn time_travel(world: &World, target_batch: BatchId) -> TimeTravelResult {
-    let current = world.current_batch();
-
-    // Determine effective target: can't go before the earliest available batch.
-    // Use the batch of the first remaining change after any trim, or batch 0 if empty.
-    let log_start = world
-        .log()
-        .iter()
-        .next()
-        .map(|c| c.batch)
-        .unwrap_or(BatchId(0));
-    let (effective_target, trimmed_at) = if target_batch < log_start {
-        (log_start, Some(log_start))
-    } else {
-        (target_batch, None)
-    };
-
-    // If target >= current, nothing to invert.
-    if effective_target >= current {
-        return TimeTravelResult {
-            target_batch,
-            forward_diff: WorldDiff::default(),
-            relationships_to_remove: Vec::new(),
-            relationships_irrecoverable: Vec::new(),
-            entities_approximate: Vec::new(),
-            trimmed_at,
-        };
-    }
-
-    let forward_diff = world.diff_between(effective_target, current);
-
-    // Relationships created in the range → not present at target_batch.
-    let relationships_to_remove = forward_diff.relationships_created.clone();
-
-    // Pruned relationships in the range → state at target_batch irrecoverable.
-    let relationships_irrecoverable = forward_diff.relationships_pruned.clone();
-
-    // Entities where any layer in [effective_target, current) has non-Full compression.
-    let entities_approximate = world
-        .entities()
-        .iter()
-        .filter(|e| {
-            e.layers.iter().any(|l| {
-                l.batch >= effective_target
-                    && l.batch < current
-                    && !matches!(l.compression, graph_core::CompressionLevel::Full)
-            })
-        })
-        .map(|e| e.id)
-        .collect();
-
-    TimeTravelResult {
-        target_batch,
-        forward_diff,
-        relationships_to_remove,
-        relationships_irrecoverable,
-        entities_approximate,
-        trimmed_at,
-    }
+    build_time_travel_result(world, target_batch)
 }
 
 #[cfg(test)]

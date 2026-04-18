@@ -28,15 +28,13 @@ impl NameIndex {
     /// the name was already registered (the mapping is replaced).
     pub fn insert(&mut self, name: impl Into<String>, id: LocusId) -> Option<LocusId> {
         let name = name.into();
-        let prev = self.name_to_id.insert(name.clone(), id);
-        self.id_to_name.insert(id, name);
-        prev
+        self.register_canonical(name, id)
     }
 
     /// Add an alias that resolves to the same `LocusId` as an existing
     /// canonical name. No-op if `id` has no canonical entry.
     pub fn add_alias(&mut self, alias: impl Into<String>, id: LocusId) {
-        if self.id_to_name.contains_key(&id) {
+        if self.has_canonical_name(id) {
             self.alias_to_id.insert(alias.into(), id);
         }
     }
@@ -56,10 +54,8 @@ impl NameIndex {
 
     /// Remove a locus from the index (canonical + all aliases).
     pub fn remove(&mut self, id: LocusId) {
-        if let Some(name) = self.id_to_name.remove(&id) {
-            self.name_to_id.remove(&name);
-        }
-        self.alias_to_id.retain(|_, v| *v != id);
+        self.remove_canonical(id);
+        self.remove_aliases_for(id);
     }
 
     pub fn len(&self) -> usize {
@@ -86,13 +82,41 @@ impl NameIndex {
         aliases: impl IntoIterator<Item = (String, LocusId)>,
     ) -> Self {
         let mut idx = Self::new();
-        for (name, id) in names {
-            idx.insert(name, id);
-        }
-        for (alias, id) in aliases {
-            idx.add_alias(alias, id);
-        }
+        idx.insert_entries(names);
+        idx.insert_alias_entries(aliases);
         idx
+    }
+
+    fn has_canonical_name(&self, id: LocusId) -> bool {
+        self.id_to_name.contains_key(&id)
+    }
+
+    fn register_canonical(&mut self, name: String, id: LocusId) -> Option<LocusId> {
+        let previous = self.name_to_id.insert(name.clone(), id);
+        self.id_to_name.insert(id, name);
+        previous
+    }
+
+    fn remove_canonical(&mut self, id: LocusId) {
+        if let Some(name) = self.id_to_name.remove(&id) {
+            self.name_to_id.remove(&name);
+        }
+    }
+
+    fn remove_aliases_for(&mut self, id: LocusId) {
+        self.alias_to_id.retain(|_, alias_id| *alias_id != id);
+    }
+
+    fn insert_entries(&mut self, names: impl IntoIterator<Item = (String, LocusId)>) {
+        for (name, id) in names {
+            self.insert(name, id);
+        }
+    }
+
+    fn insert_alias_entries(&mut self, aliases: impl IntoIterator<Item = (String, LocusId)>) {
+        for (alias, id) in aliases {
+            self.add_alias(alias, id);
+        }
     }
 }
 

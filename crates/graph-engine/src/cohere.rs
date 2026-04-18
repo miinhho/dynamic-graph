@@ -14,7 +14,9 @@
 //! exceeds `min_bridge_activity`. Greedy single-linkage clustering is
 //! used — fast, simple, and predictable for typical graph sizes.
 
-use graph_core::{Cohere, CohereMembers, EntityId};
+mod clustering;
+
+use graph_core::Cohere;
 use graph_world::{EntityStore, RelationshipStore};
 
 /// User-replaceable hook for cohere clustering.
@@ -74,23 +76,6 @@ impl Default for DefaultCoherePerspective {
     }
 }
 
-/// Median of nonzero bridge activities. Cheap, scale-free, well-defined
-/// whenever there is at least one cross-entity relationship.
-fn auto_bridge_threshold(
-    pair_activity: &rustc_hash::FxHashMap<(graph_core::EntityId, graph_core::EntityId), f32>,
-) -> f32 {
-    let mut values: Vec<f32> = pair_activity
-        .values()
-        .copied()
-        .filter(|&a| a > 0.0)
-        .collect();
-    if values.is_empty() {
-        return 0.0;
-    }
-    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    values[values.len() / 2]
-}
-
 impl CoherePerspective for DefaultCoherePerspective {
     fn name(&self) -> &str {
         &self.name
@@ -102,108 +87,7 @@ impl CoherePerspective for DefaultCoherePerspective {
         relationships: &RelationshipStore,
         next_id: &mut dyn FnMut() -> graph_core::CohereId,
     ) -> Vec<Cohere> {
-        use graph_core::Endpoints;
-        use rustc_hash::{FxHashMap, FxHashSet};
-        use std::collections::VecDeque;
-
-        let active: Vec<EntityId> = entities.active().map(|e| e.id).collect();
-        if active.is_empty() {
-            return Vec::new();
-        }
-
-        // Build locus → entity index once: O(E × avg_members).
-        // Avoids O(E² × R) inner scan — instead scan relationships once O(R)
-        // and look up which entity pair each relationship bridges.
-        let mut locus_to_entity: FxHashMap<graph_core::LocusId, EntityId> = FxHashMap::default();
-        for &eid in &active {
-            if let Some(e) = entities.get(eid) {
-                for &locus in &e.current.members {
-                    locus_to_entity.insert(locus, eid);
-                }
-            }
-        }
-
-        // Single O(R) pass: accumulate bridge activity per (ea, eb) pair.
-        // Key is (min(ea,eb), max(ea,eb)) to avoid double-counting.
-        let mut pair_activity: FxHashMap<(EntityId, EntityId), f32> = FxHashMap::default();
-        for rel in relationships.iter() {
-            let (from, to) = match &rel.endpoints {
-                Endpoints::Directed { from, to } => (*from, *to),
-                Endpoints::Symmetric { a, b } => (*a, *b),
-            };
-            let Some(&ea) = locus_to_entity.get(&from) else {
-                continue;
-            };
-            let Some(&eb) = locus_to_entity.get(&to) else {
-                continue;
-            };
-            if ea == eb {
-                continue;
-            }
-            let key = if ea < eb { (ea, eb) } else { (eb, ea) };
-            *pair_activity.entry(key).or_default() += rel.activity();
-        }
-
-        let threshold = self
-            .min_bridge_activity
-            .unwrap_or_else(|| auto_bridge_threshold(&pair_activity));
-
-        // Build bridge adjacency from pairs above threshold.
-        let mut bridges: FxHashMap<EntityId, Vec<EntityId>> = FxHashMap::default();
-        for ((ea, eb), activity) in &pair_activity {
-            if *activity >= threshold {
-                bridges.entry(*ea).or_default().push(*eb);
-                bridges.entry(*eb).or_default().push(*ea);
-            }
-        }
-
-        // BFS connected components over the bridge graph.
-        let mut visited: FxHashSet<EntityId> = FxHashSet::default();
-        let mut coheres: Vec<Cohere> = Vec::new();
-
-        for &start in &active {
-            if visited.contains(&start) {
-                continue;
-            }
-            let mut component: Vec<EntityId> = Vec::new();
-            let mut queue = VecDeque::new();
-            queue.push_back(start);
-            visited.insert(start);
-            while let Some(node) = queue.pop_front() {
-                component.push(node);
-                if let Some(neighbors) = bridges.get(&node) {
-                    for &nb in neighbors {
-                        if !visited.contains(&nb) {
-                            visited.insert(nb);
-                            queue.push_back(nb);
-                        }
-                    }
-                }
-            }
-
-            if component.len() >= 2 {
-                // Strength = average bridge activity across all pairs in
-                // this cohere — a proxy for how tightly bound the group is.
-                let pair_count = component.len() * (component.len() - 1) / 2;
-                let total_activity: f32 = bridges.values().flatten().count() as f32 / 2.0; // each bridge counted twice above
-                let strength = if pair_count > 0 {
-                    (total_activity / pair_count as f32).min(1.0)
-                } else {
-                    0.0
-                };
-                let mut members = component;
-                members.sort();
-                coheres.push(Cohere {
-                    id: next_id(),
-                    members: CohereMembers::Entities(members),
-                    strength,
-                });
-            }
-            // Single-entity "clusters" are not coheres — a cluster of
-            // one is just an isolated entity.
-        }
-
-        coheres
+        clustering::cluster_default(self, entities, relationships, next_id)
     }
 }
 
@@ -211,8 +95,8 @@ impl CoherePerspective for DefaultCoherePerspective {
 mod tests {
     use super::*;
     use graph_core::{
-        BatchId, Endpoints, Entity, EntitySnapshot, InfluenceKindId, KindObservation, LocusId,
-        Relationship, RelationshipLineage, StateVector,
+        BatchId, CohereMembers, Endpoints, Entity, EntityId, EntitySnapshot, InfluenceKindId,
+        KindObservation, LocusId, Relationship, RelationshipLineage, StateVector,
     };
     use graph_world::{EntityStore, RelationshipStore};
 

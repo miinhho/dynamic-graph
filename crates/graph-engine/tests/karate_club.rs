@@ -216,7 +216,7 @@ fn make_inf_reg(decay: f32, plasticity: Option<PlasticityConfig>) -> InfluenceKi
 
 // ── Convergence helpers ───────────────────────────────────────────────────────
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 /// Canonical snapshot of the current entity partition as a sorted set of
 /// sorted member sets.  Two snapshots are equal iff the partitions are
@@ -615,7 +615,7 @@ fn convergence_based_detection() {
     let (ticks_run, converged_at) =
         run_until_convergence(&mut world, &engine, &loci_reg, &inf, &perspective, 50, 3);
 
-    let (hi_c, hi_t, off_c, off_t) = faction_accuracy(&world);
+    let (hi_c, _hi_t, off_c, _off_t) = faction_accuracy(&world);
     println!(
         "Convergence: ticks={ticks_run}  stable_since={converged_at:?}  \
          Mr.Hi {hi_c}/{} · Officer {off_c}/{}",
@@ -1345,11 +1345,11 @@ fn boundary_analysis() {
     schema.assert_fact(LocusId(0), opposed.clone(), LocusId(33));
 
     // Declare the two faction entities.
-    let mr_hi_entity = schema.declare_entity(
+    let _mr_hi_entity = schema.declare_entity(
         "Mr. Hi's faction",
         MR_HI.iter().map(|&n| LocusId(n)).collect(),
     );
-    let officer_entity = schema.declare_entity(
+    let _officer_entity = schema.declare_entity(
         "Officer's faction",
         OFFICER.iter().map(|&n| LocusId(n)).collect(),
     );

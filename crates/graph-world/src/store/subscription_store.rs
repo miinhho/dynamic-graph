@@ -33,6 +33,11 @@ use std::collections::BTreeMap;
 use graph_core::{BatchId, InfluenceKindId, LocusId, RelationshipId};
 use rustc_hash::{FxHashMap, FxHashSet};
 
+mod audit;
+mod cleanup;
+mod lookup;
+mod mutation;
+
 /// A single subscription change event recorded in the audit log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubscriptionEvent {
@@ -126,27 +131,7 @@ impl SubscriptionStore {
         rel_id: RelationshipId,
         batch: Option<BatchId>,
     ) {
-        let inserted = self
-            .by_relationship
-            .entry(rel_id)
-            .or_default()
-            .insert(subscriber);
-        self.by_locus.entry(subscriber).or_default().insert(rel_id);
-        if inserted {
-            self.generation += 1;
-            self.total_count += 1;
-            if let Some(b) = batch {
-                self.audit_log
-                    .entry(b.0)
-                    .or_default()
-                    .push(SubscriptionEvent {
-                        batch: b,
-                        subscriber,
-                        rel_id,
-                        subscribed: true,
-                    });
-            }
-        }
+        mutation::subscribe_at(self, subscriber, rel_id, batch);
     }
 
     /// Cancel a specific subscription. Idempotent.
@@ -161,29 +146,7 @@ impl SubscriptionStore {
         rel_id: RelationshipId,
         batch: Option<BatchId>,
     ) {
-        let removed = self
-            .by_relationship
-            .get_mut(&rel_id)
-            .map(|s| s.remove(&subscriber))
-            .unwrap_or(false);
-        if let Some(rels) = self.by_locus.get_mut(&subscriber) {
-            rels.remove(&rel_id);
-        }
-        if removed {
-            self.generation += 1;
-            self.total_count -= 1;
-            if let Some(b) = batch {
-                self.audit_log
-                    .entry(b.0)
-                    .or_default()
-                    .push(SubscriptionEvent {
-                        batch: b,
-                        subscriber,
-                        rel_id,
-                        subscribed: false,
-                    });
-            }
-        }
+        mutation::unsubscribe_at(self, subscriber, rel_id, batch);
     }
 
     // =========================================================================
@@ -196,29 +159,12 @@ impl SubscriptionStore {
     /// any relationship whose kind matches — including relationships that did
     /// not exist at subscription time.
     pub fn subscribe_to_kind(&mut self, subscriber: LocusId, kind: InfluenceKindId) {
-        let inserted = self.by_kind.entry(kind).or_default().insert(subscriber);
-        if inserted {
-            self.generation += 1;
-            self.kinds_by_subscriber
-                .entry(subscriber)
-                .or_default()
-                .insert(kind);
-        }
+        mutation::subscribe_to_kind(self, subscriber, kind);
     }
 
     /// Cancel an AllOfKind subscription. Idempotent.
     pub fn unsubscribe_from_kind(&mut self, subscriber: LocusId, kind: InfluenceKindId) {
-        let removed = self
-            .by_kind
-            .get_mut(&kind)
-            .map(|s| s.remove(&subscriber))
-            .unwrap_or(false);
-        if removed {
-            self.generation += 1;
-            if let Some(kinds) = self.kinds_by_subscriber.get_mut(&subscriber) {
-                kinds.remove(&kind);
-            }
-        }
+        mutation::unsubscribe_from_kind(self, subscriber, kind);
     }
 
     /// Subscribe `subscriber` to all relationships of `kind` that touch `anchor`
@@ -229,20 +175,7 @@ impl SubscriptionStore {
         anchor: LocusId,
         kind: InfluenceKindId,
     ) {
-        let key = (anchor, kind);
-        let inserted = self
-            .by_anchor_kind
-            .entry(key)
-            .or_default()
-            .insert(subscriber);
-        if inserted {
-            self.generation += 1;
-            self.anchor_kinds_by_subscriber
-                .entry(subscriber)
-                .or_default()
-                .insert(key);
-            self.kinds_by_anchor.entry(anchor).or_default().insert(kind);
-        }
+        mutation::subscribe_to_anchor_kind(self, subscriber, anchor, kind);
     }
 
     /// Cancel a TouchingLocus subscription. Idempotent.
@@ -252,29 +185,7 @@ impl SubscriptionStore {
         anchor: LocusId,
         kind: InfluenceKindId,
     ) {
-        let key = (anchor, kind);
-        let removed = self
-            .by_anchor_kind
-            .get_mut(&key)
-            .map(|s| s.remove(&subscriber))
-            .unwrap_or(false);
-        if removed {
-            self.generation += 1;
-            if let Some(set) = self.anchor_kinds_by_subscriber.get_mut(&subscriber) {
-                set.remove(&key);
-            }
-            // Clean up kinds_by_anchor if the set became empty.
-            let anchor_set_empty = self
-                .by_anchor_kind
-                .get(&key)
-                .map(|s| s.is_empty())
-                .unwrap_or(true);
-            if anchor_set_empty {
-                if let Some(kinds) = self.kinds_by_anchor.get_mut(&anchor) {
-                    kinds.remove(&kind);
-                }
-            }
-        }
+        mutation::unsubscribe_from_anchor_kind(self, subscriber, anchor, kind);
     }
 
     // =========================================================================
@@ -314,110 +225,6 @@ impl SubscriptionStore {
     }
 
     // =========================================================================
-    // Lookup — used by the engine hot path
-    // =========================================================================
-
-    /// Iterate the loci subscribed to `rel_id` via the **Specific** scope.
-    ///
-    /// Returns an empty iterator if no loci are watching this relationship.
-    pub fn subscribers(&self, rel_id: RelationshipId) -> impl Iterator<Item = LocusId> + '_ {
-        self.by_relationship
-            .get(&rel_id)
-            .into_iter()
-            .flat_map(|set| set.iter().copied())
-    }
-
-    /// `true` when at least one locus has a **Specific** subscription to `rel_id`.
-    ///
-    /// O(1). Called in the engine's inner commit loop for every relationship
-    /// change — must stay fast.
-    pub fn has_subscribers(&self, rel_id: RelationshipId) -> bool {
-        self.by_relationship
-            .get(&rel_id)
-            .map(|s| !s.is_empty())
-            .unwrap_or(false)
-    }
-
-    /// `true` when at least one locus has an **AllOfKind** subscription for `kind`.
-    pub fn has_kind_subscribers(&self, kind: InfluenceKindId) -> bool {
-        self.by_kind
-            .get(&kind)
-            .map(|s| !s.is_empty())
-            .unwrap_or(false)
-    }
-
-    /// Iterate loci subscribed to `kind` via the AllOfKind scope.
-    pub fn kind_subscribers(&self, kind: InfluenceKindId) -> impl Iterator<Item = LocusId> + '_ {
-        self.by_kind
-            .get(&kind)
-            .into_iter()
-            .flat_map(|s| s.iter().copied())
-    }
-
-    /// `true` when at least one locus watches relationships of `kind` touching `anchor`.
-    pub fn has_anchor_kind_subscribers(&self, anchor: LocusId, kind: InfluenceKindId) -> bool {
-        self.by_anchor_kind
-            .get(&(anchor, kind))
-            .map(|s| !s.is_empty())
-            .unwrap_or(false)
-    }
-
-    /// Iterate loci subscribed to the `(anchor, kind)` scope.
-    pub fn anchor_kind_subscribers(
-        &self,
-        anchor: LocusId,
-        kind: InfluenceKindId,
-    ) -> impl Iterator<Item = LocusId> + '_ {
-        self.by_anchor_kind
-            .get(&(anchor, kind))
-            .into_iter()
-            .flat_map(|s| s.iter().copied())
-    }
-
-    /// Fast check: does **any** scope have at least one subscriber for a
-    /// relationship change on (`rel_id`, `kind`, `from` → `to`)?
-    ///
-    /// Called in the engine's inner loop (line 312 equivalent). O(1).
-    pub fn has_any_subscribers(
-        &self,
-        rel_id: RelationshipId,
-        kind: InfluenceKindId,
-        from: LocusId,
-        to: LocusId,
-    ) -> bool {
-        self.has_subscribers(rel_id)
-            || self.has_kind_subscribers(kind)
-            || self.has_anchor_kind_subscribers(from, kind)
-            || (from != to && self.has_anchor_kind_subscribers(to, kind))
-    }
-
-    /// Collect the deduplicated set of all subscribers for a relationship
-    /// change on (`rel_id`, `kind`, `from` → `to`), across all three scopes.
-    ///
-    /// Allocates a `Vec` — call only when `has_any_subscribers` returned `true`.
-    pub fn collect_subscribers(
-        &self,
-        rel_id: RelationshipId,
-        kind: InfluenceKindId,
-        from: LocusId,
-        to: LocusId,
-    ) -> Vec<LocusId> {
-        let mut seen: FxHashSet<LocusId> = FxHashSet::default();
-        let mut out = Vec::new();
-        for locus in self
-            .subscribers(rel_id)
-            .chain(self.kind_subscribers(kind))
-            .chain(self.anchor_kind_subscribers(from, kind))
-            .chain(self.anchor_kind_subscribers(to, kind))
-        {
-            if seen.insert(locus) {
-                out.push(locus);
-            }
-        }
-        out
-    }
-
-    // =========================================================================
     // Cleanup — called when loci or relationships are removed
     // =========================================================================
 
@@ -454,57 +261,25 @@ impl SubscriptionStore {
     /// Call when a locus is deleted to avoid delivering notifications to a
     /// dangling ID.
     pub fn remove_locus(&mut self, locus: LocusId) {
-        let mut changed = false;
+        let specific = cleanup::remove_specific_for_locus(
+            &mut self.by_locus,
+            &mut self.by_relationship,
+            locus,
+        );
+        let kinds = cleanup::remove_kind_scopes_for_locus(
+            &mut self.kinds_by_subscriber,
+            &mut self.by_kind,
+            locus,
+        );
+        let anchor_kinds = cleanup::remove_anchor_kind_scopes_for_locus(
+            &mut self.anchor_kinds_by_subscriber,
+            &mut self.by_anchor_kind,
+            &mut self.kinds_by_anchor,
+            locus,
+        );
 
-        // Specific scope.
-        if let Some(rels) = self.by_locus.remove(&locus) {
-            if !rels.is_empty() {
-                changed = true;
-                self.total_count -= rels.len();
-            }
-            for rel_id in rels {
-                if let Some(subs) = self.by_relationship.get_mut(&rel_id) {
-                    subs.remove(&locus);
-                }
-            }
-        }
-
-        // AllOfKind scope.
-        if let Some(kinds) = self.kinds_by_subscriber.remove(&locus) {
-            if !kinds.is_empty() {
-                changed = true;
-            }
-            for kind in kinds {
-                if let Some(subs) = self.by_kind.get_mut(&kind) {
-                    subs.remove(&locus);
-                }
-            }
-        }
-
-        // TouchingLocus scope.
-        if let Some(keys) = self.anchor_kinds_by_subscriber.remove(&locus) {
-            if !keys.is_empty() {
-                changed = true;
-            }
-            for key @ (anchor, kind) in keys {
-                if let Some(subs) = self.by_anchor_kind.get_mut(&key) {
-                    subs.remove(&locus);
-                }
-                // Clean up kinds_by_anchor if set is now empty.
-                let anchor_set_empty = self
-                    .by_anchor_kind
-                    .get(&key)
-                    .map(|s| s.is_empty())
-                    .unwrap_or(true);
-                if anchor_set_empty {
-                    if let Some(ks) = self.kinds_by_anchor.get_mut(&anchor) {
-                        ks.remove(&kind);
-                    }
-                }
-            }
-        }
-
-        if changed {
+        self.total_count = self.total_count.saturating_sub(specific.removed_count);
+        if specific.changed || kinds || anchor_kinds {
             self.generation += 1;
         }
     }
@@ -516,23 +291,16 @@ impl SubscriptionStore {
     /// watched `(anchor, kind)` might still have other subscriptions. Only
     /// the entries keyed on `anchor` are cleaned.
     pub fn remove_anchor_locus(&mut self, anchor: LocusId) {
-        let Some(kinds) = self.kinds_by_anchor.remove(&anchor) else {
-            return;
-        };
-        if kinds.is_empty() {
+        if !cleanup::remove_anchor_locus_scopes(
+            &mut self.by_anchor_kind,
+            &mut self.anchor_kinds_by_subscriber,
+            &mut self.kinds_by_anchor,
+            anchor,
+        ) {
             return;
         }
+
         self.generation += 1;
-        for kind in kinds {
-            let key = (anchor, kind);
-            if let Some(subs) = self.by_anchor_kind.remove(&key) {
-                for sub in subs {
-                    if let Some(set) = self.anchor_kinds_by_subscriber.get_mut(&sub) {
-                        set.remove(&key);
-                    }
-                }
-            }
-        }
     }
 
     // =========================================================================
@@ -572,33 +340,6 @@ impl SubscriptionStore {
         self.by_relationship.iter().flat_map(|(&rel_id, subs)| {
             subs.iter().copied().map(move |locus_id| (rel_id, locus_id))
         })
-    }
-
-    // =========================================================================
-    // Audit log
-    // =========================================================================
-
-    /// All Specific-scope subscription events in `[from_batch, to_batch)`.
-    ///
-    /// O(log N + k) — N = number of distinct batch keys in the audit log,
-    /// k = number of matching events. Significantly faster than the previous
-    /// O(N-total) linear scan.
-    pub fn events_in_range(
-        &self,
-        from: BatchId,
-        to: BatchId,
-    ) -> impl Iterator<Item = &SubscriptionEvent> {
-        self.audit_log
-            .range(from.0..to.0)
-            .flat_map(|(_, events)| events.iter())
-    }
-
-    /// Discard audit log entries older than `before_batch`.
-    ///
-    /// O(log N). Call alongside `ChangeLog::trim_before_batch` to keep
-    /// `events_in_range` fast over long runs.
-    pub fn trim_audit_before(&mut self, before_batch: BatchId) {
-        self.audit_log = self.audit_log.split_off(&before_batch.0);
     }
 }
 

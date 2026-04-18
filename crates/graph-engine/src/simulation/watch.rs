@@ -50,8 +50,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use graph_core::{
-        Change, ChangeSubject, InfluenceKindId, Locus, LocusContext, LocusId, ProposedChange,
-        StateVector,
+        Change, ChangeSubject, InfluenceKindId, Locus, LocusContext, ProposedChange, StateVector,
     };
 
     use crate::simulation::SimulationBuilder;
@@ -310,10 +309,10 @@ impl Simulation {
         let mut handler_opt = Some(handler);
         self.triggers.push(TriggerEntry {
             func: Box::new(move |obs| {
-                if pred(obs) {
-                    if let Some(h) = handler_opt.take() {
-                        return h(obs);
-                    }
+                if pred(obs)
+                    && let Some(h) = handler_opt.take()
+                {
+                    return h(obs);
                 }
                 vec![]
             }),
@@ -363,10 +362,10 @@ impl Simulation {
         let mut handler_opt = Some(handler);
         self.observers.push(ObserverEntry {
             func: Box::new(move |obs| {
-                if pred(obs) {
-                    if let Some(h) = handler_opt.take() {
-                        h(obs);
-                    }
+                if pred(obs)
+                    && let Some(h) = handler_opt.take()
+                {
+                    h(obs);
                 }
             }),
             one_shot: false,

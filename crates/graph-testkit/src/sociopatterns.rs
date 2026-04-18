@@ -444,82 +444,11 @@ pub fn evaluate_next_block_prediction(
     let train_run = run_stream(profile, train_blocks, seed, plasticity);
 
     let threshold = diagnostic_threshold(&train_run.world, rank_signal);
-
-    let mut ranked: Vec<((u64, u64), f32)> = train_run
-        .world
-        .relationships()
-        .iter()
-        .filter_map(|rel| match rel.endpoints {
-            Endpoints::Symmetric { a, b } => {
-                let key = if a.0 < b.0 { (a.0, b.0) } else { (b.0, a.0) };
-                Some((key, rank_signal.score(rel)))
-            }
-            _ => None,
-        })
-        .collect();
-    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-    let ranked_candidates: Vec<(u64, u64)> = ranked
-        .iter()
-        .filter(|(_, score)| *score >= threshold)
-        .map(|(pair, _)| *pair)
-        .collect();
-
-    let mut test_pairs = BTreeSet::new();
-    for block in &full_run.event_log[train_blocks..] {
-        for event in block {
-            for i in 0..event.len() {
-                for j in (i + 1)..event.len() {
-                    let a = event[i];
-                    let b = event[j];
-                    test_pairs.insert(if a < b { (a, b) } else { (b, a) });
-                }
-            }
-        }
-    }
-
-    let possible_pairs = (profile.n_students * (profile.n_students - 1) / 2) as usize;
-    let base_rate = test_pairs.len() as f32 / possible_pairs as f32;
-
-    let topk = top_ks
-        .iter()
-        .copied()
-        .filter(|k| *k > 0)
-        .map(|k| {
-            let top = ranked_candidates
-                .iter()
-                .take(k)
-                .copied()
-                .collect::<Vec<_>>();
-            let hits = top.iter().filter(|pair| test_pairs.contains(pair)).count();
-            let precision = if top.is_empty() {
-                0.0
-            } else {
-                hits as f32 / top.len() as f32
-            };
-            let lift = if base_rate > 0.0 {
-                precision / base_rate
-            } else {
-                0.0
-            };
-            PredictionAtK {
-                k,
-                hits,
-                precision,
-                lift,
-            }
-        })
-        .collect();
-
-    let all_hits = ranked_candidates
-        .iter()
-        .filter(|pair| test_pairs.contains(pair))
-        .count();
-    let recall = if test_pairs.is_empty() {
-        0.0
-    } else {
-        all_hits as f32 / test_pairs.len() as f32
-    };
+    let ranked_candidates = ranked_candidates(&train_run.world, rank_signal, threshold);
+    let test_pairs = test_pairs_from_blocks(&full_run.event_log[train_blocks..]);
+    let base_rate = base_pair_rate(profile, test_pairs.len());
+    let topk = evaluate_topk(&ranked_candidates, &test_pairs, base_rate, top_ks);
+    let recall = recall_against_pairs(&ranked_candidates, &test_pairs);
 
     PredictionEvaluation {
         profile,
@@ -534,5 +463,115 @@ pub fn evaluate_next_block_prediction(
         recall,
         ranked_candidates,
         topk,
+    }
+}
+
+fn ranked_candidates(
+    world: &graph_world::World,
+    rank_signal: RankSignal,
+    threshold: f32,
+) -> Vec<(u64, u64)> {
+    let mut ranked: Vec<((u64, u64), f32)> = world
+        .relationships()
+        .iter()
+        .filter_map(|rel| symmetric_ranked_pair(rel, rank_signal))
+        .collect();
+    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    ranked
+        .into_iter()
+        .filter(|(_, score)| *score >= threshold)
+        .map(|(pair, _)| pair)
+        .collect()
+}
+
+fn symmetric_ranked_pair(
+    rel: &graph_core::Relationship,
+    rank_signal: RankSignal,
+) -> Option<((u64, u64), f32)> {
+    match rel.endpoints {
+        Endpoints::Symmetric { a, b } => Some((ordered_pair(a.0, b.0), rank_signal.score(rel))),
+        _ => None,
+    }
+}
+
+fn test_pairs_from_blocks(blocks: &[Vec<Vec<u64>>]) -> BTreeSet<(u64, u64)> {
+    let mut test_pairs = BTreeSet::new();
+    for block in blocks {
+        for event in block {
+            for i in 0..event.len() {
+                for j in (i + 1)..event.len() {
+                    test_pairs.insert(ordered_pair(event[i], event[j]));
+                }
+            }
+        }
+    }
+    test_pairs
+}
+
+fn ordered_pair(a: u64, b: u64) -> (u64, u64) {
+    if a < b { (a, b) } else { (b, a) }
+}
+
+fn base_pair_rate(profile: SocioPatternsProfile, test_pair_count: usize) -> f32 {
+    let possible_pairs = (profile.n_students * (profile.n_students - 1) / 2) as usize;
+    test_pair_count as f32 / possible_pairs as f32
+}
+
+fn evaluate_topk(
+    ranked_candidates: &[(u64, u64)],
+    test_pairs: &BTreeSet<(u64, u64)>,
+    base_rate: f32,
+    top_ks: &[usize],
+) -> Vec<PredictionAtK> {
+    top_ks
+        .iter()
+        .copied()
+        .filter(|k| *k > 0)
+        .map(|k| prediction_at_k(ranked_candidates, test_pairs, base_rate, k))
+        .collect()
+}
+
+fn prediction_at_k(
+    ranked_candidates: &[(u64, u64)],
+    test_pairs: &BTreeSet<(u64, u64)>,
+    base_rate: f32,
+    k: usize,
+) -> PredictionAtK {
+    let top = ranked_candidates
+        .iter()
+        .take(k)
+        .copied()
+        .collect::<Vec<_>>();
+    let hits = top.iter().filter(|pair| test_pairs.contains(pair)).count();
+    let precision = if top.is_empty() {
+        0.0
+    } else {
+        hits as f32 / top.len() as f32
+    };
+    let lift = if base_rate > 0.0 {
+        precision / base_rate
+    } else {
+        0.0
+    };
+    PredictionAtK {
+        k,
+        hits,
+        precision,
+        lift,
+    }
+}
+
+fn recall_against_pairs(
+    ranked_candidates: &[(u64, u64)],
+    test_pairs: &BTreeSet<(u64, u64)>,
+) -> f32 {
+    let all_hits = ranked_candidates
+        .iter()
+        .filter(|pair| test_pairs.contains(pair))
+        .count();
+    if test_pairs.is_empty() {
+        0.0
+    } else {
+        all_hits as f32 / test_pairs.len() as f32
     }
 }

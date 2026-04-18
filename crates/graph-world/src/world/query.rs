@@ -3,12 +3,24 @@
 //! These methods delegate to the underlying stores and provide a
 //! unified query surface for the engine and external callers.
 
+mod entity_queries;
+mod relationship_queries;
+mod temporal;
+
 use graph_core::{
     BatchId, Change, ChangeId, Entity, EntityId, EntityLayer, Locus, LocusId, Relationship,
     RelationshipId, RelationshipKindId, StateVector, TrimSummary,
 };
 use rustc_hash::FxHashSet;
 
+use self::entity_queries::{
+    entities_at_batch, entity_member_relationships, entity_members, entity_of,
+};
+use self::relationship_queries::{
+    induced_subgraph, relationships_active_above, relationships_between_of_kind,
+    relationships_for_locus_of_kind, relationships_from_of_kind, relationships_to_of_kind,
+};
+use self::temporal::{locus_state_at, relationship_state_at, relationships_at_batch};
 use super::World;
 
 impl World {
@@ -87,9 +99,7 @@ impl World {
         locus: LocusId,
         kind: RelationshipKindId,
     ) -> impl Iterator<Item = &Relationship> {
-        self.relationships
-            .relationships_for_locus(locus)
-            .filter(move |r| r.kind == kind)
+        relationships_for_locus_of_kind(self, locus, kind)
     }
 
     /// Directed outgoing relationships of a specific kind from `locus`. O(k).
@@ -98,9 +108,7 @@ impl World {
         locus: LocusId,
         kind: RelationshipKindId,
     ) -> impl Iterator<Item = &Relationship> {
-        self.relationships
-            .relationships_from(locus)
-            .filter(move |r| r.kind == kind)
+        relationships_from_of_kind(self, locus, kind)
     }
 
     /// Directed incoming relationships of a specific kind to `locus`. O(k).
@@ -109,9 +117,7 @@ impl World {
         locus: LocusId,
         kind: RelationshipKindId,
     ) -> impl Iterator<Item = &Relationship> {
-        self.relationships
-            .relationships_to(locus)
-            .filter(move |r| r.kind == kind)
+        relationships_to_of_kind(self, locus, kind)
     }
 
     /// All relationships between `a` and `b` of a specific kind
@@ -122,9 +128,7 @@ impl World {
         b: LocusId,
         kind: RelationshipKindId,
     ) -> impl Iterator<Item = &Relationship> {
-        self.relationships
-            .relationships_between(a, b)
-            .filter(move |r| r.kind == kind)
+        relationships_between_of_kind(self, a, b, kind)
     }
 
     /// All relationships whose current activity score exceeds `threshold`.
@@ -134,9 +138,7 @@ impl World {
         &self,
         threshold: f32,
     ) -> impl Iterator<Item = &Relationship> {
-        self.relationships
-            .iter()
-            .filter(move |r| r.activity() > threshold)
+        relationships_active_above(self, threshold)
     }
 
     /// All relationships whose **both** endpoints are members of `loci`
@@ -144,17 +146,7 @@ impl World {
     ///
     /// Complexity: O(Σ k_i) where k_i is the degree of locus i.
     pub fn induced_subgraph<'a>(&'a self, loci: &[LocusId]) -> Vec<&'a Relationship> {
-        let loci_set: FxHashSet<LocusId> = loci.iter().copied().collect();
-        let mut seen: FxHashSet<RelationshipId> = FxHashSet::default();
-        let mut result = Vec::new();
-        for &locus in loci {
-            for rel in self.relationships.relationships_for_locus(locus) {
-                if seen.insert(rel.id) && rel.endpoints.all_endpoints_in(&loci_set) {
-                    result.push(rel);
-                }
-            }
-        }
-        result
+        induced_subgraph(self, loci)
     }
 
     // ── Batch-range diff ─────────────────────────────────────────────────
@@ -211,10 +203,7 @@ impl World {
     /// - The locus has no recorded changes at or before `batch`.
     /// - All relevant history was trimmed from the log.
     pub fn locus_state_at(&self, locus: LocusId, batch: BatchId) -> Option<&StateVector> {
-        self.log
-            .changes_to_locus(locus)
-            .find(|c| c.batch.0 <= batch.0)
-            .map(|c| &c.after)
+        locus_state_at(self, locus, batch)
     }
 
     /// The relationship's state vector as it was at `batch`, reconstructed
@@ -227,10 +216,7 @@ impl World {
         rel: RelationshipId,
         batch: BatchId,
     ) -> Option<&StateVector> {
-        self.log
-            .changes_to_relationship(rel)
-            .find(|c| c.batch.0 <= batch.0)
-            .map(|c| &c.after)
+        relationship_state_at(self, rel, batch)
     }
 
     // ── Entity reverse lookup ────────────────────────────────────────────
@@ -242,31 +228,19 @@ impl World {
     /// maintained because entity membership changes frequently; callers that
     /// need repeated lookups should build their own index from `entities()`.
     pub fn entity_of(&self, locus: LocusId) -> Option<&Entity> {
-        self.entities
-            .active()
-            .find(|e| e.current.members.contains(&locus))
+        entity_of(self, locus)
     }
 
     // ── Entity member queries ────────────────────────────────────────────
 
     /// Loci that are currently members of `entity` (per its top layer).
     pub fn entity_members(&self, id: EntityId) -> impl Iterator<Item = &Locus> {
-        self.entities
-            .get(id)
-            .map(|e| e.current.members.as_slice())
-            .unwrap_or(&[])
-            .iter()
-            .filter_map(|&lid| self.loci.get(lid))
+        entity_members(self, id)
     }
 
     /// Relationships that are currently part of `entity` (per its top layer).
     pub fn entity_member_relationships(&self, id: EntityId) -> impl Iterator<Item = &Relationship> {
-        self.entities
-            .get(id)
-            .map(|e| e.current.member_relationships.as_slice())
-            .unwrap_or(&[])
-            .iter()
-            .filter_map(|&rid| self.relationships.get(rid))
+        entity_member_relationships(self, id)
     }
 
     /// Most recent entity layer at or before `batch`.
@@ -278,34 +252,13 @@ impl World {
 
     /// Reconstruct the entity landscape at a past batch.
     pub fn entities_at_batch(&self, batch: BatchId) -> Vec<(EntityId, &EntityLayer)> {
-        self.entities
-            .iter()
-            .filter_map(|e| {
-                self.entities
-                    .layer_at_batch(e.id, batch)
-                    .map(|layer| (e.id, layer))
-            })
-            .collect()
+        entities_at_batch(self, batch)
     }
 
     /// Count of active relationships at a past batch by scanning the
     /// change log for relationship-subject changes.
     pub fn relationships_at_batch(&self, batch: BatchId) -> FxHashSet<RelationshipId> {
-        let mut seen = FxHashSet::default();
-        for change in self.log.iter() {
-            if change.batch.0 > batch.0 {
-                continue;
-            }
-            if let graph_core::ChangeSubject::Relationship(rid) = change.subject {
-                seen.insert(rid);
-            }
-        }
-        for rel in self.relationships.iter() {
-            if rel.lineage.created_by.is_some() {
-                seen.insert(rel.id);
-            }
-        }
-        seen
+        relationships_at_batch(self, batch)
     }
 }
 
@@ -313,8 +266,8 @@ impl World {
 mod tests {
     use super::*;
     use graph_core::{
-        BatchId, Change, ChangeId, ChangeSubject, Entity, EntityId, EntitySnapshot,
-        InfluenceKindId, Locus, LocusId, LocusKindId, RelationshipId, StateVector,
+        BatchId, Change, ChangeId, ChangeSubject, Entity, EntitySnapshot, InfluenceKindId, Locus,
+        LocusId, LocusKindId, RelationshipId, StateVector,
     };
 
     fn push_locus_change(
