@@ -6,7 +6,7 @@
 mod dogfood {
     use graph_core::{
         BatchId, Endpoints, InfluenceKindId, KindObservation, Locus, LocusId, LocusKindId,
-        Relationship, RelationshipId, RelationshipLineage, StateVector,
+        Relationship, RelationshipLineage, StateVector,
     };
     use graph_world::World;
     use smallvec::smallvec;

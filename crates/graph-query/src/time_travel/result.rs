@@ -6,6 +6,7 @@ use graph_world::WorldDiff;
 ///
 /// Returned by [`crate::time_travel`].
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TimeTravelResult {
     /// The batch the caller requested to travel back to.
     pub target_batch: BatchId,

@@ -181,7 +181,9 @@ fn apply_subscription_operation(world: &mut World, operation: SubscriptionOperat
                 .unsubscribe_at(subscriber, rel_id, Some(batch_id));
         }
         SubscriptionOperation::SubscribeKind { subscriber, kind } => {
-            world.subscriptions_mut().subscribe_to_kind(subscriber, kind);
+            world
+                .subscriptions_mut()
+                .subscribe_to_kind(subscriber, kind);
         }
         SubscriptionOperation::UnsubscribeKind { subscriber, kind } => {
             world
@@ -303,7 +305,11 @@ fn apply_relationship_creation_update(
         .relationships_mut()
         .get_mut(rel_id)
         .expect("indexed id must exist");
-    if let Some(activity) = rel.state.as_mut_slice().get_mut(Relationship::ACTIVITY_SLOT) {
+    if let Some(activity) = rel
+        .state
+        .as_mut_slice()
+        .get_mut(Relationship::ACTIVITY_SLOT)
+    {
         *activity += activity_delta;
     }
     rel.lineage.change_count += 1;

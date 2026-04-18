@@ -206,7 +206,7 @@ mod storage {
         let sim2 =
             Simulation::from_storage(f.path(), loci2, influences2, SimulationConfig::default())
                 .unwrap();
-        assert_eq!(rel_count, sim2.world.relationships().len());
+        assert_eq!(rel_count, sim2.world().relationships().len());
     }
 
     #[test]
@@ -224,6 +224,6 @@ mod storage {
         let sim2 =
             Simulation::from_storage(f.path(), loci2, influences2, SimulationConfig::default())
                 .unwrap();
-        assert_eq!(final_batch, sim2.world.current_batch());
+        assert_eq!(final_batch, sim2.world().current_batch());
     }
 }

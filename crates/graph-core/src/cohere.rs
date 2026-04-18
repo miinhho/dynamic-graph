@@ -14,6 +14,7 @@ use crate::relationship::RelationshipId;
 
 /// Stable identity of a cohere cluster.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CohereId(pub u64);
 
 /// What members a cohere aggregates. A perspective can cluster entities,

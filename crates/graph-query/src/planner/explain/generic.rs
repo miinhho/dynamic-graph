@@ -42,14 +42,14 @@ fn describe_non_find_query(
     }
 }
 
-fn describe_weighted_causality_query(
-    query: &Query,
-    stats: WorldStats,
-) -> GenericQueryDescription {
+fn describe_weighted_causality_query(query: &Query, stats: WorldStats) -> GenericQueryDescription {
     match query {
         Query::CausalDirection { kind, .. } => relationship_scan(
             stats,
-            format!("causal_direction scan over relationships of kind {:?}", kind),
+            format!(
+                "causal_direction scan over relationships of kind {:?}",
+                kind
+            ),
             Some(1),
         ),
         Query::DominantCauses { kind, n, .. } => relationship_scan(

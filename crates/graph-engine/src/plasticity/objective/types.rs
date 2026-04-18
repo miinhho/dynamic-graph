@@ -5,10 +5,7 @@ use std::collections::HashSet;
 
 use graph_core::{BatchId, LocusId};
 
-use self::{
-    events::event_pairs,
-    metrics::observation_metrics,
-};
+use self::{events::event_pairs, metrics::observation_metrics};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RankedPair {

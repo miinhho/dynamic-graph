@@ -7,6 +7,7 @@ use rustc_hash::FxHashSet;
 /// look like structurally if the specified changes and all their causal
 /// descendants had never been committed.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CounterfactualDiff {
     pub removed_roots: Vec<ChangeId>,
     pub suppressed_changes: FxHashSet<ChangeId>,

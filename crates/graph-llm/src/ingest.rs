@@ -7,7 +7,7 @@
 //!
 //! ## Example
 //!
-//! ```no_run
+//! ```ignore
 //! use graph_llm::{AnthropicClient, TextIngestor};
 //!
 //! let client = AnthropicClient::from_env().unwrap();

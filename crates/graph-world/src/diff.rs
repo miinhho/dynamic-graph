@@ -66,6 +66,7 @@ use self::collect::{
 /// produce a `RelationshipDelta` — they appear in `relationships_updated`
 /// only.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RelationshipDelta {
     pub id: RelationshipId,
     /// Activity (slot 0) from the `before` state of the **first** explicit
@@ -79,6 +80,7 @@ pub struct RelationshipDelta {
 /// Summary of world state changes between `from_batch` (inclusive) and
 /// `to_batch` (exclusive).
 #[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct WorldDiff {
     /// The batch range covered: `from_batch..to_batch`.
     pub from_batch: BatchId,

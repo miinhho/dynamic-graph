@@ -33,7 +33,7 @@
 
 use graph_core::{
     Change, ChangeId, InfluenceKindId, Locus, LocusContext, LocusId, LocusProgram, ProposedChange,
-    SaturationMode, StabilizationConfig,
+    StabilizationConfig,
     inbox::{locus_signals, of_kind},
     props,
 };

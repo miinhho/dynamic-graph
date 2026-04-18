@@ -58,7 +58,7 @@ impl Simulation {
     #[cfg(feature = "storage")]
     pub fn save_world(&self) -> Result<(), graph_storage::StorageError> {
         match self.storage {
-            Some(ref s) => s.save_world(&*self.world.read().unwrap()),
+            Some(ref s) => s.save_world(&self.world.read().unwrap()),
             None => Ok(()),
         }
     }
@@ -83,7 +83,7 @@ impl Simulation {
             let world = self.world.read().unwrap();
             let current_batch = world.current_batch();
             for batch_idx in self.last_flushed_batch.0..current_batch.0 {
-                storage.commit_batch(&*world, graph_core::BatchId(batch_idx))?;
+                storage.commit_batch(&world, graph_core::BatchId(batch_idx))?;
             }
             current_batch
         };

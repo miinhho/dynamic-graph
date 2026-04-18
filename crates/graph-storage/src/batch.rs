@@ -94,11 +94,6 @@ impl Storage {
         world: &World,
         committed_batch: BatchId,
     ) -> Result<(), StorageError> {
-        let current_rel_gen = world.relationships().generation();
-        if current_rel_gen == self.last_relationship_gen.get() {
-            return Ok(());
-        }
-
         let mut table = txn.open_table(RELATIONSHIPS)?;
         let mut index = txn.open_multimap_table(REL_BY_LOCUS)?;
         for rel in world.relationships().iter() {
@@ -107,7 +102,8 @@ impl Storage {
                 insert_rel_by_locus(&mut index, rel)?;
             }
         }
-        self.last_relationship_gen.set(current_rel_gen);
+        self.last_relationship_gen
+            .set(world.relationships().generation());
         Ok(())
     }
 
@@ -117,18 +113,13 @@ impl Storage {
         world: &World,
         committed_batch: BatchId,
     ) -> Result<(), StorageError> {
-        let current_entity_gen = world.entities().generation();
-        if current_entity_gen == self.last_entity_gen.get() {
-            return Ok(());
-        }
-
         let mut table = txn.open_table(ENTITIES)?;
         for entity in world.entities().iter() {
             if entity_touched_in_batch(entity, committed_batch) {
                 write_postcard_row(&mut table, entity.id.0, entity)?;
             }
         }
-        self.last_entity_gen.set(current_entity_gen);
+        self.last_entity_gen.set(world.entities().generation());
         Ok(())
     }
 

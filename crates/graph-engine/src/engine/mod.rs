@@ -261,8 +261,12 @@ impl Engine {
         apply::record_schema_violation(self, schema_violation, kind, rel_id, state);
     }
 
-    fn record_relationship_emergence(&self, record: &EmergenceRecord, state: &mut TickState) {
-        apply::record_relationship_emergence(self, record, state);
+    fn record_relationship_emergence(
+        &self,
+        applied: apply::AppliedCrossLocusEmergence,
+        state: &mut TickState,
+    ) {
+        apply::record_relationship_emergence(self, applied, state);
     }
 
     fn record_plasticity_observation(&self, record: &EmergenceRecord, state: &mut TickState) {

@@ -509,6 +509,7 @@ dependencies = [
  "graph-world",
  "rustc-hash",
  "serde",
+ "serde_json",
  "smallvec",
 ]
 

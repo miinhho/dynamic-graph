@@ -124,7 +124,7 @@ fn relationships_of_kind_filters() {
 }
 
 fn make_world_with_entities() -> World {
-    use graph_core::{BatchId, Entity, EntitySnapshot, LocusId};
+    use graph_core::{BatchId, Entity, LocusId};
     let mut w = World::new();
     let lk = LocusKindId(1);
     w.insert_locus(Locus::new(LocusId(0), lk, StateVector::from_slice(&[0.5])));

@@ -260,7 +260,7 @@ fn all_classes(profile: SocioPatternsProfile) -> Vec<Vec<u64>> {
 }
 
 fn sample_event(profile: SocioPatternsProfile, rng: &mut Lcg, block_idx: usize) -> Vec<u64> {
-    let lunch = block_idx > 0 && block_idx % profile.lunch_every == 0;
+    let lunch = block_idx > 0 && block_idx.is_multiple_of(profile.lunch_every);
     let p_out = if lunch {
         profile.p_out_lunch
     } else {
@@ -400,7 +400,7 @@ pub fn run_stream(
     plasticity: PlasticityConfig,
 ) -> SocioPatternsRun {
     assert!(
-        profile.n_students % profile.class_size == 0,
+        profile.n_students.is_multiple_of(profile.class_size),
         "n_students must be divisible by class_size"
     );
 

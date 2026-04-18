@@ -3,7 +3,10 @@ use graph_world::World;
 
 use crate::query_api::{EntityPredicate, LocusPredicate, RelationshipPredicate};
 
-pub(super) fn graph_locus_members(world: &World, predicate: &LocusPredicate) -> Option<Vec<LocusId>> {
+pub(super) fn graph_locus_members(
+    world: &World,
+    predicate: &LocusPredicate,
+) -> Option<Vec<LocusId>> {
     use crate::traversal::{
         downstream_of, downstream_of_active, reachable_from, reachable_from_active, upstream_of,
         upstream_of_active,
@@ -31,13 +34,19 @@ pub(super) fn graph_locus_members(world: &World, predicate: &LocusPredicate) -> 
             depth,
             min_activity,
         } => Some(upstream_of_active(world, *start, *depth, *min_activity)),
-        LocusPredicate::ReachableFrom { start, depth } => Some(reachable_from(world, *start, *depth)),
+        LocusPredicate::ReachableFrom { start, depth } => {
+            Some(reachable_from(world, *start, *depth))
+        }
         LocusPredicate::DownstreamOf { start, depth } => Some(downstream_of(world, *start, *depth)),
         LocusPredicate::UpstreamOf { start, depth } => Some(upstream_of(world, *start, *depth)),
     }
 }
 
-pub(super) fn locus_predicate_matches(world: &World, id: LocusId, predicate: &LocusPredicate) -> bool {
+pub(super) fn locus_predicate_matches(
+    world: &World,
+    id: LocusId,
+    predicate: &LocusPredicate,
+) -> bool {
     match predicate {
         LocusPredicate::OfKind(kind) => world.locus(id).is_some_and(|l| l.kind == *kind),
         LocusPredicate::StateAbove { slot, min } => {
@@ -66,7 +75,11 @@ pub(super) fn locus_predicate_matches(world: &World, id: LocusId, predicate: &Lo
     }
 }
 
-pub(super) fn entity_predicate_matches(world: &World, id: EntityId, predicate: &EntityPredicate) -> bool {
+pub(super) fn entity_predicate_matches(
+    world: &World,
+    id: EntityId,
+    predicate: &EntityPredicate,
+) -> bool {
     match predicate {
         EntityPredicate::CoherenceAbove(min) => world
             .entities()

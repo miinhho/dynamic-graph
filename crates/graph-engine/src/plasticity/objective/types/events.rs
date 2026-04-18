@@ -14,9 +14,8 @@ pub(super) fn event_pairs(event_log: &[Vec<Vec<u64>>]) -> HashSet<(LocusId, Locu
 
 fn event_pair_iter(event: &[u64]) -> impl Iterator<Item = (LocusId, LocusId)> + '_ {
     (0..event.len()).flat_map(move |left| {
-        ((left + 1)..event.len()).map(move |right| {
-            canonical_pair(LocusId(event[left]), LocusId(event[right]))
-        })
+        ((left + 1)..event.len())
+            .map(move |right| canonical_pair(LocusId(event[left]), LocusId(event[right])))
     })
 }
 

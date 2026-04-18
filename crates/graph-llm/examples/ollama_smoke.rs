@@ -83,7 +83,8 @@ fn main() {
         ("dave", "NODE", props! { "name" => "dave" }),
     ]);
 
-    let world = &sim.world;
+    let world_guard = sim.world();
+    let world: &graph_world::World = &world_guard;
     let names = NameMap::from_world(world);
     println!(
         "\nWorld: {} loci, {} relationships",

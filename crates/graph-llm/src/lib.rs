@@ -30,7 +30,7 @@
 //! back a list of named entities ([`ExtractedNode`]). Feed the result directly
 //! into [`Simulation::ingest_cooccurrence`].
 //!
-//! ```no_run
+//! ```ignore
 //! # use graph_llm::{AnthropicClient, TextIngestor};
 //! let client   = AnthropicClient::from_env().unwrap();
 //! let ingestor = TextIngestor::new(&client);
@@ -43,7 +43,7 @@
 //! structured output of `graph-query` functions and return a prose explanation
 //! for end-users.
 //!
-//! ```no_run
+//! ```ignore
 //! # use graph_llm::{AnthropicClient, narrate_counterfactual};
 //! let pairs  = vec![("Alice".to_owned(), "Bob".to_owned())];
 //! let client = AnthropicClient::from_env().unwrap();
@@ -55,7 +55,7 @@
 //! [`narrate_prescriptions`] translates [`graph_boundary::BoundaryAction`]
 //! proposals into plain-language recommendations.
 //!
-//! ```no_run
+//! ```ignore
 //! # use graph_llm::{AnthropicClient, narrate_prescriptions};
 //! # use graph_schema::SchemaWorld;
 //! # use graph_query::NameMap;

@@ -19,7 +19,15 @@ pub(super) fn process_batch(
     let ta = telemetry.start();
     settle_and_advance(
         engine,
-        compute_or_empty_batch(engine, world, influence_registry, batch, computed, state, telemetry),
+        compute_or_empty_batch(
+            engine,
+            world,
+            influence_registry,
+            batch,
+            computed,
+            state,
+            telemetry,
+        ),
         SettleContext {
             world,
             loci_registry,

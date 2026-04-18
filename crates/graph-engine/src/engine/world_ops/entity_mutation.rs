@@ -84,36 +84,38 @@ fn apply_proposal(
             parents,
             cause,
         ),
-        EmergenceProposal::DepositLayer { entity, layer } => {
-            apply_state_transition_proposal(&mut runtime, StateTransitionProposal::Deposit {
-                entity,
-                layer,
-            })
-        }
-        EmergenceProposal::Dormant { entity, cause } => {
-            apply_state_transition_proposal(&mut runtime, StateTransitionProposal::Dormant {
-                entity,
-                cause,
-            })
-        }
+        EmergenceProposal::DepositLayer { entity, layer } => apply_state_transition_proposal(
+            &mut runtime,
+            StateTransitionProposal::Deposit { entity, layer },
+        ),
+        EmergenceProposal::Dormant { entity, cause } => apply_state_transition_proposal(
+            &mut runtime,
+            StateTransitionProposal::Dormant { entity, cause },
+        ),
         EmergenceProposal::Revive {
             entity,
             snapshot,
             cause,
-        } => apply_state_transition_proposal(&mut runtime, StateTransitionProposal::Revive {
-            entity,
-            snapshot,
-            cause,
-        }),
+        } => apply_state_transition_proposal(
+            &mut runtime,
+            StateTransitionProposal::Revive {
+                entity,
+                snapshot,
+                cause,
+            },
+        ),
         EmergenceProposal::Split {
             source,
             offspring,
             cause,
-        } => apply_lineage_proposal(&mut runtime, LineageProposal::Split {
-            source,
-            offspring,
-            cause,
-        }),
+        } => apply_lineage_proposal(
+            &mut runtime,
+            LineageProposal::Split {
+                source,
+                offspring,
+                cause,
+            },
+        ),
         EmergenceProposal::Merge {
             absorbed,
             into,
@@ -121,14 +123,17 @@ fn apply_proposal(
             member_relationships,
             coherence,
             cause,
-        } => apply_lineage_proposal(&mut runtime, LineageProposal::Merge {
-            absorbed,
-            into,
-            new_members,
-            member_relationships,
-            coherence,
-            cause,
-        }),
+        } => apply_lineage_proposal(
+            &mut runtime,
+            LineageProposal::Merge {
+                absorbed,
+                into,
+                new_members,
+                member_relationships,
+                coherence,
+                cause,
+            },
+        ),
     }
 }
 

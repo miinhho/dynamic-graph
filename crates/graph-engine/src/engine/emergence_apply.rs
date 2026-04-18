@@ -27,7 +27,9 @@ pub(super) fn apply_emergence(
     };
 
     match resolution {
-        EmergenceResolution::Update { rel_id } => apply_emergence_update(store, rel_id, update_context),
+        EmergenceResolution::Update { rel_id } => {
+            apply_emergence_update(store, rel_id, update_context)
+        }
         EmergenceResolution::Create {
             endpoints,
             kind: rel_kind,
@@ -174,7 +176,9 @@ fn apply_resolved_slot_decay(
     resolved_slots: &[graph_core::RelationshipSlotDef],
 ) {
     for (index, slot_def) in resolved_slots.iter().enumerate() {
-        if let Some(factor) = slot_def.decay && let Some(value) = slots.get_mut(2 + index) {
+        if let Some(factor) = slot_def.decay
+            && let Some(value) = slots.get_mut(2 + index)
+        {
             *value *= pow_decay(factor, delta);
         }
     }

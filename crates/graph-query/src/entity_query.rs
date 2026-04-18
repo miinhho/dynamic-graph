@@ -119,7 +119,7 @@ mod tests {
     use super::*;
     use graph_core::{
         BatchId, Cohere, CohereId, CohereMembers, Entity, EntityId, EntitySnapshot, EntityStatus,
-        InfluenceKindId, Locus, LocusId, LocusKindId, StateVector,
+        Locus, LocusId, LocusKindId, StateVector,
     };
     use graph_world::World;
 
