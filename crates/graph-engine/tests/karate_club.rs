@@ -1394,3 +1394,113 @@ fn boundary_analysis() {
 
     println!("\n  ✓ Boundary assertions passed");
 }
+
+// ── Coherence autocorrelation spike ──────────────────────────────────────────
+
+/// Measure coherence autocorrelation for entities that emerge during the
+/// convergence run.
+///
+/// This is a diagnostic spike to answer: "does the entity coherence series
+/// have enough autocorrelation structure to make Ψ computation worthwhile?"
+///
+/// Interpretation guide:
+///   acf(1) > 0.5  →  strong persistence, proceed to Ψ spike
+///   acf(1) 0.2–0.5 →  weak signal, marginal
+///   acf(1) < 0.2  →  coherence is noise here, Ψ not useful
+#[test]
+fn coherence_autocorrelation_spike() {
+    use graph_query::{coherence_autocorrelation, coherence_stable_series, psi_scalar};
+
+    let mut world = World::new();
+    let inf = make_inf_reg(
+        0.98,
+        Some(PlasticityConfig {
+            learning_rate: 0.1,
+            max_weight: 10.0,
+            weight_decay: 0.99,
+            stdp: false,
+            ..Default::default()
+        }),
+    );
+    populate_world(&mut world);
+
+    let mut loci_reg = LocusKindRegistry::new();
+    loci_reg.insert(MEMBER_KIND, Box::new(SpreadProgram));
+
+    let engine      = Engine::new(EngineConfig { max_batches_per_tick: 3 });
+    let perspective = DefaultEmergencePerspective::default();
+
+    // Run 30 ticks with recognize_entities every tick so entities accumulate layers.
+    for _ in 0..30 {
+        let stimuli = vec![
+            ProposedChange::new(ChangeSubject::Locus(LocusId(0)),  SOCIAL_KIND, StateVector::from_slice(&[1.0])),
+            ProposedChange::new(ChangeSubject::Locus(LocusId(33)), SOCIAL_KIND, StateVector::from_slice(&[1.0])),
+        ];
+        engine.tick(&mut world, &loci_reg, &inf, stimuli);
+        engine.recognize_entities(&mut world, &inf, &perspective);
+    }
+
+    println!("\n=== Coherence Autocorrelation Spike (karate club, 30 ticks) ===");
+
+    let entities: Vec<_> = world.entities().iter().collect();
+    let mut any_sufficient = false;
+
+    for entity in &entities {
+        let series = coherence_stable_series(&world, entity.id);
+        let n = series.len();
+        let acf1 = coherence_autocorrelation(&world, entity.id, 1);
+        let acf2 = coherence_autocorrelation(&world, entity.id, 2);
+
+        let dominant = if entity.current.members.contains(&LocusId(0)) {
+            "Mr.Hi"
+        } else if entity.current.members.contains(&LocusId(33)) {
+            "Officer"
+        } else {
+            "other"
+        };
+
+        println!(
+            "  [{dominant:8}] id={:?}  members={:2}  stable_window={n:2}  \
+             coh_now={:.3}  acf(1)={:>7}  acf(2)={:>7}",
+            entity.id,
+            entity.current.members.len(),
+            entity.current.coherence,
+            acf1.map(|v| format!("{v:+.3}")).unwrap_or("  None".to_string()),
+            acf2.map(|v| format!("{v:+.3}")).unwrap_or("  None".to_string()),
+        );
+
+        if acf1.map(|v| v > 0.5).unwrap_or(false) {
+            any_sufficient = true;
+        }
+    }
+
+    println!(
+        "\n  Ψ spike warranted: {}",
+        if any_sufficient { "YES — at least one entity has acf(1) > 0.5" }
+        else              { "NO  — coherence series lacks persistence" }
+    );
+
+    println!("\n=== Ψ (Emergence Capacity) ===");
+    println!("  Ψ > 0 → entity coherence predicts its own future MORE than");
+    println!("          the sum of individual locus predictions → causal emergence");
+    println!("  Ψ ≤ 0 → no detectable synergistic emergence at this grain\n");
+
+    for entity in &entities {
+        let dominant = if entity.current.members.contains(&LocusId(0)) { "Mr.Hi  " }
+                       else if entity.current.members.contains(&LocusId(33)) { "Officer" }
+                       else { "other  " };
+
+        match psi_scalar(&world, entity.id) {
+            Some(r) => println!(
+                "  [{dominant}] id={:?}  Ψ={:+.4}  \
+                 i_self={:.4}  i_components={:.4}  \
+                 n_samples={}  n_loci={}  → {}",
+                entity.id,
+                r.psi, r.i_self, r.i_sum_components,
+                r.n_samples, r.n_components,
+                if r.psi > 0.0 { "EMERGENT" } else { "not emergent" },
+            ),
+            None => println!("  [{dominant}] id={:?}  Ψ=None (insufficient data)", entity.id),
+        }
+    }
+}

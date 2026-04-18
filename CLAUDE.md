@@ -48,7 +48,10 @@ Entities and relationships are **emergent, not declared**. The user registers lo
 | `graph-world` | In-memory stores: `ChangeLog`, `LocusStore`, `RelationshipStore`, `EntityStore`, `CohereStore`, `SubscriptionStore`, `World` facade, `WorldDiff` |
 | `graph-engine` | Batch loop, kind registries (`LocusKindRegistry`, `InfluenceKindRegistry`), regime classifier, emergence/cohere perspectives, adaptive guard rail |
 | `graph-storage` | Persistent storage via `redb`: `Storage::open`, `open_and_migrate`, `save_world`, `load_world`, `commit_batch`, cold→hot promotion |
-| `graph-query` | Read-only query surface: structural traversal, state/property filters, causal log queries |
+| `graph-query` | Read-only query surface: structural traversal, state/property filters, causal log queries, centrality, counterfactual replay, time-travel, emergence metrics |
+| `graph-schema` | **Static declaration layer** (contrast to emergent world). `DeclaredFact`, `DeclaredEntity`, `DeclarationStore` (internal version counter), `SchemaWorld`. Point-in-time queries, no decay. |
+| `graph-boundary` | **Tension analysis** between declared (schema) and observed (world) structure. Four quadrants: Confirmed / Ghost / Shadow / Null. `analyze_boundary`, `prescribe_updates`, `layer_tension`. |
+| `graph-llm` | LLM-assisted ingestion + causal narration. `GraphLlm` facade + free functions (`configure_*`, `TextIngestor`, `narrate_counterfactual`, `narrate_entity_deviations`, `narrate_prescriptions`, `answer_with_graph`). Anthropic/Ollama/Mock backends. |
 | `graph-tx` | *(removed)* — `ChangeLog` in graph-world covers this role |
 | `graph-testkit` | Test programs, canonical world fixtures, assertions, deterministic LCG generators |
 
