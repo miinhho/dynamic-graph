@@ -1,8 +1,6 @@
 use rustc_hash::FxHashMap;
 
-use graph_core::{
-    BatchId, ChangeId, InfluenceKindId, LocusId, ProposedChange, RelationshipId, StateVector,
-};
+use graph_core::{BatchId, ChangeId, InfluenceKindId, LocusId, ProposedChange, RelationshipId};
 use graph_world::World;
 
 use super::batch::{
@@ -38,7 +36,6 @@ pub(super) struct EmergenceRecord {
     pub(super) rel_id: RelationshipId,
     pub(super) trigger_id: ChangeId,
     pub(super) is_new: bool,
-    pub(super) emerged_state: Option<StateVector>,
     pub(super) pre_signal: f32,
     pub(super) pred_batch: BatchId,
     pub(super) is_feedback: bool,

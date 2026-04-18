@@ -245,6 +245,59 @@ fn bench_filter(c: &mut Criterion) {
     g.finish();
 }
 
+fn bench_filtered_pipeline(c: &mut Criterion) {
+    let mut g = c.benchmark_group("filtered_pipeline");
+    g.measurement_time(Duration::from_secs(5));
+
+    let world = dense_directed(200, 42);
+    let full_scan = Query::FindRelationships {
+        predicates: vec![
+            RelationshipPredicate::OfKind(RK),
+            RelationshipPredicate::ActivityAbove(0.3),
+            RelationshipPredicate::StrengthAbove(0.6),
+            RelationshipPredicate::CreatedInRange {
+                from: BatchId(0),
+                to: BatchId(0),
+            },
+            RelationshipPredicate::MinChangeCount(1),
+        ],
+        sort_by: Some(RelSort::StrengthDesc),
+        limit: Some(100),
+    };
+    let touching_seed = Query::FindRelationships {
+        predicates: vec![
+            RelationshipPredicate::Touching(LocusId(0)),
+            RelationshipPredicate::ActivityAbove(0.3),
+            RelationshipPredicate::StrengthAbove(0.6),
+            RelationshipPredicate::MinChangeCount(1),
+        ],
+        sort_by: Some(RelSort::StrengthDesc),
+        limit: Some(100),
+    };
+    let seeded_no_sort = Query::FindRelationships {
+        predicates: vec![
+            RelationshipPredicate::Touching(LocusId(0)),
+            RelationshipPredicate::ActivityAbove(0.3),
+            RelationshipPredicate::StrengthAbove(0.6),
+            RelationshipPredicate::MinChangeCount(1),
+        ],
+        sort_by: None,
+        limit: Some(100),
+    };
+
+    g.bench_function("full_scan/sort_strength/limit=100", |b| {
+        b.iter(|| execute(black_box(&world), black_box(&full_scan)))
+    });
+    g.bench_function("touching_seed/sort_strength/limit=100", |b| {
+        b.iter(|| execute(black_box(&world), black_box(&touching_seed)))
+    });
+    g.bench_function("touching_seed/no_sort/limit=100", |b| {
+        b.iter(|| execute(black_box(&world), black_box(&seeded_no_sort)))
+    });
+
+    g.finish();
+}
+
 // ─── Optimizer: DirectLookup vs single-locus seed ────────────────────────────
 
 /// Dense graph where every pair (from, to) has exactly one directed RK edge.
@@ -592,6 +645,7 @@ criterion_group!(
     bench_centrality,
     bench_community,
     bench_filter,
+    bench_filtered_pipeline,
     bench_direct_lookup,
     bench_lazy_limit,
     bench_active_traversal,

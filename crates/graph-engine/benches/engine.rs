@@ -137,6 +137,45 @@ fn bench_simulation_step_steady(c: &mut Criterion) {
     group.finish();
 }
 
+/// Cold emerge vs warm update on a high-fan-in topology.
+///
+/// `cold_emerge` stresses relationship creation and structural apply.
+/// `warm_update` replays the same stimulus after relationships exist, which
+/// makes batch compute/apply and relationship update paths dominant.
+fn bench_batch_hot_path(c: &mut Criterion) {
+    let mut group = c.benchmark_group("batch_hot_path");
+    group.sample_size(20);
+
+    group.bench_function("fan_in_64x512_d128/cold_emerge", |b| {
+        b.iter_batched(
+            || {
+                let (world, loci, influences) = fan_in_world(64, 512, 128, 0.9);
+                Simulation::new(world, loci, influences)
+            },
+            |mut sim| sim.step(vec![stimulus(1.0)]),
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("fan_in_64x512_d128/warm_update", |b| {
+        b.iter_batched(
+            || {
+                let (world, loci, influences) = fan_in_world(64, 512, 128, 0.9);
+                let mut sim = Simulation::new(world, loci, influences);
+                sim.step(vec![stimulus(1.0)]);
+                for _ in 0..3 {
+                    sim.step(vec![]);
+                }
+                sim
+            },
+            |mut sim| sim.step(vec![stimulus(1.0)]),
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.finish();
+}
+
 // ── causal ancestry walk ─────────────────────────────────────────────────
 
 /// Cost of `causal_ancestors(last_change)` as DAG depth grows.
@@ -1039,6 +1078,7 @@ criterion_group!(
     bench_star_large,
     bench_fan_in,
     bench_fan_in_large,
+    bench_batch_hot_path,
     bench_domain_parallel,
     bench_large_scale_star,
     bench_simulation_step_steady,

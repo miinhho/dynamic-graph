@@ -1,28 +1,113 @@
-use graph_core::EntityId;
+use graph_core::{EntityId, RelationshipId};
 use graph_world::World;
 
-use crate::query_api::{
-    EntitySort, LocusSort, LocusSummary, RelSort, RelationshipSummary,
-};
+use crate::query_api::{EntitySort, LocusSort, LocusSummary, RelSort};
 
-pub(super) fn sort_relationship_summaries(
-    mut summaries: Vec<RelationshipSummary>,
+pub(super) fn sort_relationship_ids(
+    world: &World,
+    ids: Vec<RelationshipId>,
     sort: &RelSort,
     limit: Option<usize>,
-) -> Vec<RelationshipSummary> {
+) -> Vec<RelationshipId> {
     match sort {
-        RelSort::ActivityDesc => summaries.sort_unstable_by(compare_activity_desc),
-        RelSort::StrengthDesc => summaries.sort_unstable_by(compare_strength_desc),
-        RelSort::WeightDesc => summaries.sort_unstable_by(compare_weight_desc),
-        RelSort::ChangeCountDesc => {
-            summaries.sort_unstable_by(|a, b| b.change_count.cmp(&a.change_count))
-        }
-        RelSort::CreatedBatchAsc => summaries.sort_unstable_by_key(|s| s.created_batch.0),
+        RelSort::ActivityDesc => sort_relationship_ids_by_f32(
+            world,
+            ids,
+            limit,
+            |relationship| relationship.activity(),
+            true,
+        ),
+        RelSort::StrengthDesc => sort_relationship_ids_by_f32(
+            world,
+            ids,
+            limit,
+            |relationship| relationship.strength(),
+            true,
+        ),
+        RelSort::WeightDesc => sort_relationship_ids_by_f32(
+            world,
+            ids,
+            limit,
+            |relationship| relationship.weight(),
+            true,
+        ),
+        RelSort::ChangeCountDesc => sort_relationship_ids_by_u64(
+            world,
+            ids,
+            limit,
+            |relationship| relationship.lineage.change_count,
+            true,
+        ),
+        RelSort::CreatedBatchAsc => sort_relationship_ids_by_u64(
+            world,
+            ids,
+            limit,
+            |relationship| relationship.created_batch.0,
+            false,
+        ),
     }
+}
+
+fn sort_relationship_ids_by_f32<F>(
+    world: &World,
+    ids: Vec<RelationshipId>,
+    limit: Option<usize>,
+    score: F,
+    descending: bool,
+) -> Vec<RelationshipId>
+where
+    F: Fn(&graph_core::Relationship) -> f32,
+{
+    let mut keyed: Vec<(RelationshipId, f32)> = ids
+        .into_iter()
+        .filter_map(|id| {
+            world
+                .relationships()
+                .get(id)
+                .map(|relationship| (id, score(relationship)))
+        })
+        .collect();
+    if descending {
+        keyed.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+    } else {
+        keyed.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+    }
+    truncate_keyed(&mut keyed, limit);
+    keyed.into_iter().map(|(id, _)| id).collect()
+}
+
+fn sort_relationship_ids_by_u64<F>(
+    world: &World,
+    ids: Vec<RelationshipId>,
+    limit: Option<usize>,
+    score: F,
+    descending: bool,
+) -> Vec<RelationshipId>
+where
+    F: Fn(&graph_core::Relationship) -> u64,
+{
+    let mut keyed: Vec<(RelationshipId, u64)> = ids
+        .into_iter()
+        .filter_map(|id| {
+            world
+                .relationships()
+                .get(id)
+                .map(|relationship| (id, score(relationship)))
+        })
+        .collect();
+    if descending {
+        keyed.sort_unstable_by_key(|(_, value)| std::cmp::Reverse(*value));
+    } else {
+        keyed.sort_unstable_by_key(|(_, value)| *value);
+    }
+    truncate_keyed(&mut keyed, limit);
+    keyed.into_iter().map(|(id, _)| id).collect()
+}
+
+fn truncate_keyed<T>(items: &mut Vec<T>, limit: Option<usize>) {
     if let Some(n) = limit {
-        summaries.truncate(n);
+        items.truncate(n);
     }
-    summaries
 }
 
 pub(super) fn sort_loci_summaries(
@@ -66,24 +151,12 @@ pub(super) fn sort_entity_ids(
     ids
 }
 
-fn compare_activity_desc(a: &RelationshipSummary, b: &RelationshipSummary) -> std::cmp::Ordering {
-    b.activity.total_cmp(&a.activity)
-}
-
-fn compare_strength_desc(a: &RelationshipSummary, b: &RelationshipSummary) -> std::cmp::Ordering {
-    relationship_strength(b).total_cmp(&relationship_strength(a))
-}
-
-fn compare_weight_desc(a: &RelationshipSummary, b: &RelationshipSummary) -> std::cmp::Ordering {
-    b.weight.total_cmp(&a.weight)
-}
-
-fn relationship_strength(summary: &RelationshipSummary) -> f32 {
-    summary.activity + summary.weight
-}
-
 fn locus_sort_value(summary: &LocusSummary, slot: usize) -> f32 {
-    summary.state.get(slot).copied().unwrap_or(f32::NEG_INFINITY)
+    summary
+        .state
+        .get(slot)
+        .copied()
+        .unwrap_or(f32::NEG_INFINITY)
 }
 
 fn entity_coherence(world: &World, id: EntityId) -> f32 {

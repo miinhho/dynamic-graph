@@ -11,7 +11,7 @@ use self::{
     predicates::{
         entity_predicate_matches, graph_locus_members, locus_predicate_matches, rel_pred_matches,
     },
-    sorting::{sort_entity_ids, sort_loci_summaries, sort_relationship_summaries},
+    sorting::{sort_entity_ids, sort_loci_summaries, sort_relationship_ids},
 };
 use super::{
     EntityPredicate, LocusPredicate, LocusSummary, Query, QueryResult, RelSort,
@@ -95,15 +95,22 @@ pub(super) fn find_relationship_summaries(
     use crate::planner::plan_rel_predicates;
 
     let plan = plan_rel_predicates(predicates);
-    let filtered =
-        filtered_relationship_summaries(world, &plan.seed_locus, &plan.predicates_ordered);
 
     match sort_by {
-        None => match limit {
-            Some(n) => filtered.take(n).collect(),
-            None => filtered.collect(),
-        },
-        Some(sort) => sort_relationship_summaries(filtered.collect(), sort, limit),
+        None => {
+            let filtered =
+                filtered_relationship_summaries(world, &plan.seed_locus, &plan.predicates_ordered);
+            match limit {
+                Some(n) => filtered.take(n).collect(),
+                None => filtered.collect(),
+            }
+        }
+        Some(sort) => {
+            let filtered_ids =
+                filtered_relationship_ids(world, &plan.seed_locus, &plan.predicates_ordered);
+            let sorted_ids = sort_relationship_ids(world, filtered_ids, sort, limit);
+            project_relationship_summaries(world, sorted_ids, None)
+        }
     }
 }
 
@@ -121,6 +128,38 @@ fn filtered_relationship_summaries<'a>(
                 .all(|predicate| rel_pred_matches(relationship, predicate))
         })
         .map(rel_to_summary)
+}
+
+fn filtered_relationship_ids(
+    world: &World,
+    seed_locus: &Option<crate::planner::SeedKind>,
+    predicates_ordered: &[&RelationshipPredicate],
+) -> Vec<graph_core::RelationshipId> {
+    relationship_candidates(world, seed_locus)
+        .into_iter()
+        .filter_map(|id| world.relationships().get(id))
+        .filter(|relationship| {
+            predicates_ordered
+                .iter()
+                .all(|predicate| rel_pred_matches(relationship, predicate))
+        })
+        .map(|relationship| relationship.id)
+        .collect()
+}
+
+fn project_relationship_summaries(
+    world: &World,
+    ids: Vec<graph_core::RelationshipId>,
+    limit: Option<usize>,
+) -> Vec<RelationshipSummary> {
+    let iter = ids
+        .into_iter()
+        .filter_map(|id| world.relationships().get(id))
+        .map(rel_to_summary);
+    match limit {
+        Some(n) => iter.take(n).collect(),
+        None => iter.collect(),
+    }
 }
 
 pub(super) fn find_entities_inner(world: &World, predicates: &[EntityPredicate]) -> Vec<EntityId> {
@@ -166,7 +205,9 @@ fn retain_loci_matching(
     candidates: Vec<LocusId>,
     predicate: &LocusPredicate,
 ) -> Vec<LocusId> {
-    retain_matching(candidates, |id| locus_predicate_matches(world, id, predicate))
+    retain_matching(candidates, |id| {
+        locus_predicate_matches(world, id, predicate)
+    })
 }
 
 fn apply_entity_predicate(
@@ -174,7 +215,9 @@ fn apply_entity_predicate(
     candidates: Vec<EntityId>,
     predicate: &EntityPredicate,
 ) -> Vec<EntityId> {
-    retain_matching(candidates, |id| entity_predicate_matches(world, id, predicate))
+    retain_matching(candidates, |id| {
+        entity_predicate_matches(world, id, predicate)
+    })
 }
 
 fn retain_matching<T, F>(mut candidates: Vec<T>, mut predicate: F) -> Vec<T>
@@ -193,7 +236,6 @@ fn project_locus_summary(world: &World, id: LocusId) -> Option<LocusSummary> {
         state: locus.state.as_slice().to_vec(),
     })
 }
-
 
 fn limit_items<T>(mut items: Vec<T>, limit: Option<usize>) -> Vec<T> {
     if let Some(n) = limit {

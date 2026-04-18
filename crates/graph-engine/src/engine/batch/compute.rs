@@ -112,11 +112,7 @@ fn build_locus_change(id: ChangeId, batch: BatchId, c: ComputedLocusChange) -> B
     }
 }
 
-fn build_relationship_change(
-    id: ChangeId,
-    batch: BatchId,
-    c: ComputedRelChange,
-) -> BuiltRelChange {
+fn build_relationship_change(id: ChangeId, batch: BatchId, c: ComputedRelChange) -> BuiltRelChange {
     let change = Change {
         id,
         subject: ChangeSubject::Relationship(c.rel_id),
@@ -183,33 +179,38 @@ fn compute_locus_change(
     let Some(locus) = world.locus(locus_id) else {
         return ComputedChange::Elided;
     };
-    let before = locus.state.clone();
+    let before = &locus.state;
+    let to_kind = locus.kind;
     let kind_cfg = influence_registry.get(kind);
-    let resolved_slots = influence_registry.resolved_extra_slots(kind);
-    let cross_locus_pairs = cross_locus_predecessors(world, &predecessors, locus_id);
-    let stabilized_after = stabilize_locus_after(kind_cfg, &before, proposed.after);
+    let cross_locus_pairs = if predecessors.is_empty() {
+        Vec::new()
+    } else {
+        cross_locus_predecessors(world, &predecessors, locus_id)
+    };
+    let stabilized_after = stabilize_locus_after(kind_cfg, before, proposed.after);
     if !predecessors.is_empty()
         && cross_locus_pairs.is_empty()
-        && stabilized_after == before
+        && stabilized_after == *before
         && proposed.metadata.is_none()
         && proposed.property_patch.is_none()
     {
         return ComputedChange::Elided;
     }
-    let locus_effect = locus_change_effect(
+    let resolved_slots = influence_registry.resolved_extra_slots(kind);
+    let inputs = LocusChangeEffectInputs {
         world,
         locus_id,
+        to_kind,
         kind,
         kind_cfg,
-        &resolved_slots,
-        &stabilized_after,
-        cross_locus_pairs,
-    );
+        resolved_slots: &resolved_slots,
+    };
+    let locus_effect = locus_change_effect(inputs, &stabilized_after, cross_locus_pairs);
     ComputedChange::Locus(ComputedLocusChange {
         locus_id,
         kind,
         predecessors,
-        before,
+        before: before.clone(),
         after: stabilized_after,
         wall_time: proposed.wall_time,
         metadata: proposed.metadata,
@@ -223,6 +224,7 @@ fn compute_locus_change(
 
 struct CrossLocusPredecessor {
     from_locus: LocusId,
+    from_kind: graph_core::LocusKindId,
     pre_signal: f32,
     pred_batch: BatchId,
     pred_change_id: ChangeId,
@@ -234,6 +236,15 @@ struct LocusChangeEffect {
     post_signal: f32,
 }
 
+struct LocusChangeEffectInputs<'a> {
+    world: &'a World,
+    locus_id: LocusId,
+    to_kind: graph_core::LocusKindId,
+    kind: InfluenceKindId,
+    kind_cfg: Option<&'a crate::registry::InfluenceKindConfig>,
+    resolved_slots: &'a [RelationshipSlotDef],
+}
+
 fn cross_locus_predecessors(
     world: &World,
     predecessors: &[ChangeId],
@@ -243,11 +254,11 @@ fn cross_locus_predecessors(
         .iter()
         .filter_map(|pid| world.log().get(*pid))
         .filter_map(|pred| match pred.subject {
-            ChangeSubject::Locus(predecessor_locus)
-                if predecessor_locus != locus_id && world.locus(predecessor_locus).is_some() =>
-            {
+            ChangeSubject::Locus(predecessor_locus) if predecessor_locus != locus_id => {
+                let from_kind = world.locus(predecessor_locus)?.kind;
                 Some(CrossLocusPredecessor {
                     from_locus: predecessor_locus,
+                    from_kind,
                     pre_signal: pred.after.as_slice().first().copied().unwrap_or(0.0),
                     pred_batch: pred.batch,
                     pred_change_id: pred.id,
@@ -270,24 +281,22 @@ fn stabilize_locus_after(
 }
 
 fn locus_change_effect(
-    world: &World,
-    locus_id: LocusId,
-    kind: InfluenceKindId,
-    kind_cfg: Option<&crate::registry::InfluenceKindConfig>,
-    resolved_slots: &[RelationshipSlotDef],
+    inputs: LocusChangeEffectInputs<'_>,
     stabilized_after: &StateVector,
     cross_locus_pairs: Vec<CrossLocusPredecessor>,
 ) -> LocusChangeEffect {
     LocusChangeEffect {
         cross_locus_preds: cross_locus_predictions(
-            world,
-            locus_id,
-            kind,
-            kind_cfg,
-            resolved_slots,
+            inputs.world,
+            inputs.locus_id,
+            inputs.to_kind,
+            inputs.kind,
+            inputs.kind_cfg,
+            inputs.resolved_slots,
             cross_locus_pairs,
         ),
-        plasticity_active: kind_cfg
+        plasticity_active: inputs
+            .kind_cfg
             .map(|cfg| cfg.plasticity.is_active())
             .unwrap_or(false),
         post_signal: stabilized_after.as_slice().first().copied().unwrap_or(0.0),
@@ -297,6 +306,7 @@ fn locus_change_effect(
 fn cross_locus_predictions(
     world: &World,
     locus_id: LocusId,
+    to_kind: graph_core::LocusKindId,
     kind: InfluenceKindId,
     kind_cfg: Option<&crate::registry::InfluenceKindConfig>,
     resolved_slots: &[RelationshipSlotDef],
@@ -311,10 +321,9 @@ fn cross_locus_predictions(
             pred_change_id: predecessor.pred_change_id,
             is_feedback: false,
             schema_violation: cross_locus_schema_violation(
-                world,
                 kind_cfg,
-                predecessor.from_locus,
-                locus_id,
+                predecessor.from_kind,
+                to_kind,
             ),
             emergence: resolve_emergence(
                 world,
@@ -330,17 +339,14 @@ fn cross_locus_predictions(
 }
 
 fn cross_locus_schema_violation(
-    world: &World,
     kind_cfg: Option<&crate::registry::InfluenceKindConfig>,
-    from_locus: LocusId,
-    to_locus: LocusId,
+    from_kind: graph_core::LocusKindId,
+    to_kind: graph_core::LocusKindId,
 ) -> Option<(graph_core::LocusKindId, graph_core::LocusKindId)> {
     let cfg = kind_cfg?;
     if cfg.applies_between.is_empty() {
         return None;
     }
-    let from_kind = world.locus(from_locus).map(|l| l.kind)?;
-    let to_kind = world.locus(to_locus).map(|l| l.kind)?;
     (!cfg.allows_endpoint_kinds(from_kind, to_kind)).then_some((from_kind, to_kind))
 }
 

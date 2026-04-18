@@ -1,5 +1,4 @@
 use super::*;
-use rustc_hash::FxHashMap;
 
 pub(super) fn apply_built_changes(
     engine: &Engine,
@@ -99,17 +98,13 @@ pub(super) fn preapply_locus_state(
     telemetry: &mut TickTelemetry,
 ) {
     let t_al0 = telemetry.start();
-    let mut final_locus_states: FxHashMap<LocusId, &StateVector> = FxHashMap::default();
     let mut n_potential_new_rels: usize = 0;
     for change in built {
         if let BuiltChange::Locus(c) = change {
-            final_locus_states.insert(c.locus_id, &c.after);
+            if let Some(locus) = world.locus_mut(c.locus_id) {
+                locus.state = c.after.clone();
+            }
             n_potential_new_rels += c.cross_locus_preds.len();
-        }
-    }
-    for (locus_id, final_state) in final_locus_states {
-        if let Some(locus) = world.locus_mut(locus_id) {
-            locus.state = final_state.clone();
         }
     }
     if n_potential_new_rels > 0 {
@@ -228,8 +223,9 @@ pub(super) fn apply_locus_property_patch(
     }
 }
 
-struct AppliedCrossLocusEmergence {
+pub(super) struct AppliedCrossLocusEmergence {
     record: EmergenceRecord,
+    new_emerged_state: Option<StateVector>,
     schema_violation: Option<(graph_core::LocusKindId, graph_core::LocusKindId)>,
 }
 
@@ -239,26 +235,40 @@ pub(super) fn apply_cross_locus_emergence(
     cross_locus_preds: Vec<batch::CrossLocusPred>,
 ) {
     let kind_cfg = context.influence_registry.get(context.kind);
+    context.state.acc.events.reserve(cross_locus_preds.len());
+    if context.plasticity_active {
+        context
+            .state
+            .acc
+            .plasticity_obs
+            .reserve(cross_locus_preds.len());
+    }
+    context
+        .state
+        .acc
+        .new_emerged_rels
+        .reserve(cross_locus_preds.len());
     for pred in cross_locus_preds {
         let Some(applied) = apply_cross_locus_prediction(context, kind_cfg, pred) else {
             continue;
         };
+        let record = &applied.record;
         engine.record_schema_violation(
             applied.schema_violation,
             context.kind,
-            applied.record.rel_id,
+            record.rel_id,
             context.state,
         );
-        engine.record_relationship_emergence(&applied.record, context.state);
-        engine.record_plasticity_observation(&applied.record, context.state);
+        engine.record_plasticity_observation(record, context.state);
         engine.record_batch_kind_touch(
-            applied.record.from_locus,
+            record.from_locus,
             context.locus_id,
             context.kind,
-            applied.record.rel_id,
+            record.rel_id,
             kind_cfg,
             context.state,
         );
+        engine.record_relationship_emergence(applied, context.state);
     }
 }
 
@@ -276,7 +286,7 @@ fn apply_cross_locus_prediction(
         emergence,
         ..
     } = pred;
-    let (rel_id, is_new, emerged_state) = emergence_apply::apply_emergence(
+    let (rel_id, is_new, new_emerged_state) = emergence_apply::apply_emergence(
         context.world.relationships_mut(),
         emergence,
         context.trigger_id,
@@ -295,7 +305,6 @@ fn apply_cross_locus_prediction(
             rel_id,
             trigger_id: context.trigger_id,
             is_new,
-            emerged_state,
             pre_signal,
             pred_batch,
             is_feedback,
@@ -303,6 +312,7 @@ fn apply_cross_locus_prediction(
             post_signal: context.post_signal,
             post_locus: context.locus_id,
         },
+        new_emerged_state,
         schema_violation,
     })
 }
@@ -326,9 +336,10 @@ pub(super) fn record_schema_violation(
 
 pub(super) fn record_relationship_emergence(
     _engine: &Engine,
-    record: &EmergenceRecord,
+    applied: AppliedCrossLocusEmergence,
     state: &mut TickState,
 ) {
+    let record = applied.record;
     if !record.is_new {
         return;
     }
@@ -343,10 +354,8 @@ pub(super) fn record_relationship_emergence(
         record.rel_id,
         record.trigger_id,
         record.kind,
-        record
-            .emerged_state
-            .as_ref()
-            .cloned()
+        applied
+            .new_emerged_state
             .expect("new relationship must have initial state"),
     ));
 }
