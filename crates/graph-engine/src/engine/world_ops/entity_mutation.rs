@@ -84,17 +84,86 @@ fn apply_proposal(
             parents,
             cause,
         ),
-        EmergenceProposal::DepositLayer { entity, layer } => apply_deposit_layer_proposal(
+        EmergenceProposal::DepositLayer { entity, layer } => {
+            apply_state_transition_proposal(&mut runtime, StateTransitionProposal::Deposit {
+                entity,
+                layer,
+            })
+        }
+        EmergenceProposal::Dormant { entity, cause } => {
+            apply_state_transition_proposal(&mut runtime, StateTransitionProposal::Dormant {
+                entity,
+                cause,
+            })
+        }
+        EmergenceProposal::Revive {
+            entity,
+            snapshot,
+            cause,
+        } => apply_state_transition_proposal(&mut runtime, StateTransitionProposal::Revive {
+            entity,
+            snapshot,
+            cause,
+        }),
+        EmergenceProposal::Split {
+            source,
+            offspring,
+            cause,
+        } => apply_lineage_proposal(&mut runtime, LineageProposal::Split {
+            source,
+            offspring,
+            cause,
+        }),
+        EmergenceProposal::Merge {
+            absorbed,
+            into,
+            new_members,
+            member_relationships,
+            coherence,
+            cause,
+        } => apply_lineage_proposal(&mut runtime, LineageProposal::Merge {
+            absorbed,
+            into,
+            new_members,
+            member_relationships,
+            coherence,
+            cause,
+        }),
+    }
+}
+
+enum StateTransitionProposal {
+    Deposit {
+        entity: graph_core::EntityId,
+        layer: EntityLayer,
+    },
+    Dormant {
+        entity: graph_core::EntityId,
+        cause: LifecycleCause,
+    },
+    Revive {
+        entity: graph_core::EntityId,
+        snapshot: EntitySnapshot,
+        cause: LifecycleCause,
+    },
+}
+
+fn apply_state_transition_proposal(
+    runtime: &mut ProposalRuntime<'_>,
+    proposal: StateTransitionProposal,
+) {
+    match proposal {
+        StateTransitionProposal::Deposit { entity, layer } => apply_deposit_layer_proposal(
             runtime.world,
             runtime.batch,
             runtime.events,
             entity,
             layer,
         ),
-        EmergenceProposal::Dormant { entity, cause } => {
+        StateTransitionProposal::Dormant { entity, cause } => {
             apply_dormant_proposal(runtime.world, runtime.batch, runtime.events, entity, cause)
         }
-        EmergenceProposal::Revive {
+        StateTransitionProposal::Revive {
             entity,
             snapshot,
             cause,
@@ -106,7 +175,28 @@ fn apply_proposal(
             snapshot,
             cause,
         ),
-        EmergenceProposal::Split {
+    }
+}
+
+enum LineageProposal {
+    Split {
+        source: graph_core::EntityId,
+        offspring: Vec<(Vec<graph_core::LocusId>, Vec<RelationshipId>, f32)>,
+        cause: LifecycleCause,
+    },
+    Merge {
+        absorbed: Vec<graph_core::EntityId>,
+        into: graph_core::EntityId,
+        new_members: Vec<graph_core::LocusId>,
+        member_relationships: Vec<RelationshipId>,
+        coherence: f32,
+        cause: LifecycleCause,
+    },
+}
+
+fn apply_lineage_proposal(runtime: &mut ProposalRuntime<'_>, proposal: LineageProposal) {
+    match proposal {
+        LineageProposal::Split {
             source,
             offspring,
             cause,
@@ -118,7 +208,7 @@ fn apply_proposal(
             offspring,
             cause,
         ),
-        EmergenceProposal::Merge {
+        LineageProposal::Merge {
             absorbed,
             into,
             new_members,
@@ -126,7 +216,7 @@ fn apply_proposal(
             coherence,
             cause,
         } => apply_merge_proposal(
-            &mut runtime,
+            runtime,
             absorbed,
             into,
             new_members,

@@ -1,40 +1,73 @@
-use graph_core::{EndpointKey, Endpoints, EntityId, LocusId, RelationshipId};
+mod candidates;
+mod predicates;
+mod sorting;
+
+use graph_core::{EntityId, LocusId};
 use graph_world::World;
 use rustc_hash::FxHashSet;
 
+use self::{
+    candidates::relationship_candidates,
+    predicates::{
+        entity_predicate_matches, graph_locus_members, locus_predicate_matches, rel_pred_matches,
+    },
+    sorting::{sort_entity_ids, sort_loci_summaries, sort_relationship_summaries},
+};
 use super::{
-    EntityPredicate, EntitySort, LocusPredicate, LocusSort, LocusSummary, Query, QueryResult,
-    RelSort, RelationshipPredicate, RelationshipSummary, rel_to_summary,
+    EntityPredicate, LocusPredicate, LocusSummary, Query, QueryResult, RelSort,
+    RelationshipPredicate, RelationshipSummary, rel_to_summary,
 };
 
 pub(super) fn execute_filtered_lookup(world: &World, query: &Query) -> Option<QueryResult> {
     match query {
-        Query::FindLoci {
-            predicates,
-            sort_by,
-            limit,
-        } => {
-            let summaries =
-                sort_loci_summaries(world, find_loci_summaries(world, predicates), sort_by);
-            Some(QueryResult::LocusSummaries(limit_items(summaries, *limit)))
-        }
-        Query::FindRelationships {
-            predicates,
-            sort_by,
-            limit,
-        } => Some(QueryResult::RelationshipSummaries(
-            find_relationship_summaries(world, predicates, sort_by.as_ref(), *limit),
-        )),
-        Query::FindEntities {
-            predicates,
-            sort_by,
-            limit,
-        } => {
-            let ids = sort_entity_ids(world, find_entities_inner(world, predicates), sort_by);
-            Some(QueryResult::Entities(limit_items(ids, *limit)))
-        }
+        Query::FindLoci { .. } => execute_find_loci(world, query),
+        Query::FindRelationships { .. } => execute_find_relationships(world, query),
+        Query::FindEntities { .. } => execute_find_entities(world, query),
         _ => None,
     }
+}
+
+fn execute_find_loci(world: &World, query: &Query) -> Option<QueryResult> {
+    let Query::FindLoci {
+        predicates,
+        sort_by,
+        limit,
+    } = query
+    else {
+        return None;
+    };
+
+    let summaries = sort_loci_summaries(world, find_loci_summaries(world, predicates), sort_by);
+    Some(QueryResult::LocusSummaries(limit_items(summaries, *limit)))
+}
+
+fn execute_find_relationships(world: &World, query: &Query) -> Option<QueryResult> {
+    let Query::FindRelationships {
+        predicates,
+        sort_by,
+        limit,
+    } = query
+    else {
+        return None;
+    };
+
+    Some(QueryResult::RelationshipSummaries(
+        find_relationship_summaries(world, predicates, sort_by.as_ref(), *limit),
+    ))
+}
+
+fn execute_find_entities(world: &World, query: &Query) -> Option<QueryResult> {
+    let Query::FindEntities {
+        predicates,
+        sort_by,
+        limit,
+    } = query
+    else {
+        return None;
+    };
+
+    let ids = sort_entity_ids(world, find_entities_inner(world, predicates), sort_by);
+    Some(QueryResult::Entities(limit_items(ids, *limit)))
 }
 
 pub(super) fn find_loci_summaries(
@@ -42,97 +75,14 @@ pub(super) fn find_loci_summaries(
     predicates: &[LocusPredicate],
 ) -> Vec<LocusSummary> {
     use crate::planner::plan_loci_predicates;
-    use crate::traversal::{
-        downstream_of, downstream_of_active, reachable_from, reachable_from_active, upstream_of,
-        upstream_of_active,
-    };
 
-    let mut candidates: Vec<LocusId> = world.loci().iter().map(|l| l.id).collect();
-    for pred in plan_loci_predicates(predicates) {
-        match pred {
-            LocusPredicate::OfKind(kind) => {
-                candidates.retain(|&id| world.locus(id).is_some_and(|l| l.kind == *kind));
-            }
-            LocusPredicate::StateAbove { slot, min } => {
-                candidates.retain(|&id| {
-                    world
-                        .locus(id)
-                        .and_then(|l| l.state.as_slice().get(*slot).copied())
-                        .is_some_and(|v| v >= *min)
-                });
-            }
-            LocusPredicate::StateBelow { slot, max } => {
-                candidates.retain(|&id| {
-                    world
-                        .locus(id)
-                        .and_then(|l| l.state.as_slice().get(*slot).copied())
-                        .is_some_and(|v| v <= *max)
-                });
-            }
-            LocusPredicate::StrPropertyEq { key, value } => {
-                candidates.retain(|&id| {
-                    world
-                        .properties()
-                        .get(id)
-                        .and_then(|p| p.get_str(key))
-                        .is_some_and(|v| v == value.as_str())
-                });
-            }
-            LocusPredicate::F64PropertyAbove { key, min } => {
-                candidates.retain(|&id| {
-                    world
-                        .properties()
-                        .get(id)
-                        .and_then(|p| p.get_f64(key))
-                        .is_some_and(|v| v >= *min)
-                });
-            }
-            LocusPredicate::MinDegree(min) => candidates.retain(|&id| world.degree(id) >= *min),
-            LocusPredicate::ReachableFromActive {
-                start,
-                depth,
-                min_activity,
-            } => retain_in_set(
-                &mut candidates,
-                reachable_from_active(world, *start, *depth, *min_activity),
-            ),
-            LocusPredicate::DownstreamOfActive {
-                start,
-                depth,
-                min_activity,
-            } => retain_in_set(
-                &mut candidates,
-                downstream_of_active(world, *start, *depth, *min_activity),
-            ),
-            LocusPredicate::UpstreamOfActive {
-                start,
-                depth,
-                min_activity,
-            } => retain_in_set(
-                &mut candidates,
-                upstream_of_active(world, *start, *depth, *min_activity),
-            ),
-            LocusPredicate::ReachableFrom { start, depth } => {
-                retain_in_set(&mut candidates, reachable_from(world, *start, *depth))
-            }
-            LocusPredicate::DownstreamOf { start, depth } => {
-                retain_in_set(&mut candidates, downstream_of(world, *start, *depth))
-            }
-            LocusPredicate::UpstreamOf { start, depth } => {
-                retain_in_set(&mut candidates, upstream_of(world, *start, *depth))
-            }
-        }
-    }
-
-    candidates
-        .into_iter()
-        .filter_map(|id| {
-            world.locus(id).map(|l| LocusSummary {
-                id: l.id,
-                kind: l.kind,
-                state: l.state.as_slice().to_vec(),
-            })
+    plan_loci_predicates(predicates)
+        .iter()
+        .fold(seed_locus_candidates(world), |candidates, predicate| {
+            apply_locus_predicate(world, candidates, predicate)
         })
+        .into_iter()
+        .filter_map(|id| project_locus_summary(world, id))
         .collect()
 }
 
@@ -145,15 +95,8 @@ pub(super) fn find_relationship_summaries(
     use crate::planner::plan_rel_predicates;
 
     let plan = plan_rel_predicates(predicates);
-    let candidates = relationship_candidates(world, &plan.seed_locus);
-    let filtered = candidates.into_iter().filter_map(|id| {
-        world.relationships().get(id).and_then(|r| {
-            plan.predicates_ordered
-                .iter()
-                .all(|pred| rel_pred_matches(r, pred))
-                .then(|| rel_to_summary(r))
-        })
-    });
+    let filtered =
+        filtered_relationship_summaries(world, &plan.seed_locus, &plan.predicates_ordered);
 
     match sort_by {
         None => match limit {
@@ -164,37 +107,28 @@ pub(super) fn find_relationship_summaries(
     }
 }
 
+fn filtered_relationship_summaries<'a>(
+    world: &'a World,
+    seed_locus: &'a Option<crate::planner::SeedKind>,
+    predicates_ordered: &'a [&'a RelationshipPredicate],
+) -> impl Iterator<Item = RelationshipSummary> + 'a {
+    relationship_candidates(world, seed_locus)
+        .into_iter()
+        .filter_map(|id| world.relationships().get(id))
+        .filter(|relationship| {
+            predicates_ordered
+                .iter()
+                .all(|predicate| rel_pred_matches(relationship, predicate))
+        })
+        .map(rel_to_summary)
+}
+
 pub(super) fn find_entities_inner(world: &World, predicates: &[EntityPredicate]) -> Vec<EntityId> {
-    let mut candidates: Vec<EntityId> = world.entities().active().map(|e| e.id).collect();
-    for pred in predicates {
-        match pred {
-            EntityPredicate::CoherenceAbove(min) => {
-                candidates.retain(|&id| {
-                    world
-                        .entities()
-                        .get(id)
-                        .is_some_and(|e| e.current.coherence >= *min)
-                });
-            }
-            EntityPredicate::HasMember(locus) => {
-                candidates.retain(|&id| {
-                    world
-                        .entities()
-                        .get(id)
-                        .is_some_and(|e| e.current.members.contains(locus))
-                });
-            }
-            EntityPredicate::MinMembers(min) => {
-                candidates.retain(|&id| {
-                    world
-                        .entities()
-                        .get(id)
-                        .is_some_and(|e| e.current.members.len() >= *min)
-                });
-            }
-        }
-    }
-    candidates
+    predicates
+        .iter()
+        .fold(seed_entity_candidates(world), |candidates, predicate| {
+            apply_entity_predicate(world, candidates, predicate)
+        })
 }
 
 fn retain_in_set(candidates: &mut Vec<LocusId>, members: Vec<LocusId>) {
@@ -202,151 +136,64 @@ fn retain_in_set(candidates: &mut Vec<LocusId>, members: Vec<LocusId>) {
     candidates.retain(|id| set.contains(id));
 }
 
-fn relationship_candidates(
+fn seed_locus_candidates(world: &World) -> Vec<LocusId> {
+    world.loci().iter().map(|l| l.id).collect()
+}
+
+fn seed_entity_candidates(world: &World) -> Vec<EntityId> {
+    world.entities().active().map(|e| e.id).collect()
+}
+
+fn apply_locus_predicate(
     world: &World,
-    seed: &Option<crate::planner::SeedKind>,
-) -> Vec<RelationshipId> {
-    use crate::planner::SeedKind;
-
-    match seed {
-        Some(SeedKind::DirectLookup { from, to, kind }) => {
-            let key = EndpointKey::Directed(*from, *to);
-            world
-                .relationships()
-                .lookup(&key, *kind)
-                .map(|id| vec![id])
-                .unwrap_or_default()
-        }
-        Some(SeedKind::Between { a, b }) => {
-            world.relationships_between(*a, *b).map(|r| r.id).collect()
-        }
-        Some(SeedKind::From(locus)) => world
-            .relationships_for_locus(*locus)
-            .filter(|r| matches!(r.endpoints, Endpoints::Directed { from, .. } if from == *locus))
-            .map(|r| r.id)
-            .collect(),
-        Some(SeedKind::To(locus)) => world
-            .relationships_for_locus(*locus)
-            .filter(|r| matches!(r.endpoints, Endpoints::Directed { to, .. } if to == *locus))
-            .map(|r| r.id)
-            .collect(),
-        Some(SeedKind::Touching(locus)) => world
-            .relationships_for_locus(*locus)
-            .map(|r| r.id)
-            .collect(),
-        None => world.relationships().iter().map(|r| r.id).collect(),
+    candidates: Vec<LocusId>,
+    predicate: &LocusPredicate,
+) -> Vec<LocusId> {
+    if let Some(members) = graph_locus_members(world, predicate) {
+        return retain_members(candidates, members);
     }
+
+    retain_loci_matching(world, candidates, predicate)
 }
 
-fn rel_pred_matches(r: &graph_core::Relationship, pred: &RelationshipPredicate) -> bool {
-    match pred {
-        RelationshipPredicate::OfKind(kind) => r.kind == *kind,
-        RelationshipPredicate::From(locus) => {
-            matches!(r.endpoints, Endpoints::Directed { from, .. } if from == *locus)
-        }
-        RelationshipPredicate::To(locus) => {
-            matches!(r.endpoints, Endpoints::Directed { to, .. } if to == *locus)
-        }
-        RelationshipPredicate::Touching(locus) => r.endpoints.involves(*locus),
-        RelationshipPredicate::ActivityAbove(min) => r.activity() > *min,
-        RelationshipPredicate::StrengthAbove(min) => r.strength() > *min,
-        RelationshipPredicate::SlotAbove { slot, min } => {
-            r.state.as_slice().get(*slot).is_some_and(|&v| v >= *min)
-        }
-        RelationshipPredicate::CreatedInRange { from, to } => {
-            r.created_batch >= *from && r.created_batch <= *to
-        }
-        RelationshipPredicate::OlderThan {
-            current_batch,
-            min_batches,
-        } => r.age_in_batches(*current_batch) >= *min_batches,
-        RelationshipPredicate::MinChangeCount(min) => r.lineage.change_count >= *min,
-    }
+fn retain_members(mut candidates: Vec<LocusId>, members: Vec<LocusId>) -> Vec<LocusId> {
+    retain_in_set(&mut candidates, members);
+    candidates
 }
 
-fn sort_relationship_summaries(
-    mut summaries: Vec<RelationshipSummary>,
-    sort: &RelSort,
-    limit: Option<usize>,
-) -> Vec<RelationshipSummary> {
-    match sort {
-        RelSort::ActivityDesc => {
-            summaries.sort_unstable_by(|a, b| b.activity.total_cmp(&a.activity))
-        }
-        RelSort::StrengthDesc => summaries
-            .sort_unstable_by(|a, b| (b.activity + b.weight).total_cmp(&(a.activity + a.weight))),
-        RelSort::WeightDesc => summaries.sort_unstable_by(|a, b| b.weight.total_cmp(&a.weight)),
-        RelSort::ChangeCountDesc => {
-            summaries.sort_unstable_by(|a, b| b.change_count.cmp(&a.change_count))
-        }
-        RelSort::CreatedBatchAsc => summaries.sort_unstable_by_key(|s| s.created_batch.0),
-    }
-    if let Some(n) = limit {
-        summaries.truncate(n);
-    }
-    summaries
-}
-
-fn sort_loci_summaries(
+fn retain_loci_matching(
     world: &World,
-    mut summaries: Vec<LocusSummary>,
-    sort_by: &Option<LocusSort>,
-) -> Vec<LocusSummary> {
-    if let Some(sort) = sort_by {
-        match sort {
-            LocusSort::StateDesc(slot) => {
-                summaries.sort_unstable_by(|a, b| {
-                    let va = a.state.get(*slot).copied().unwrap_or(f32::NEG_INFINITY);
-                    let vb = b.state.get(*slot).copied().unwrap_or(f32::NEG_INFINITY);
-                    vb.total_cmp(&va)
-                });
-            }
-            LocusSort::DegreeDesc => {
-                summaries
-                    .sort_unstable_by_key(|summary| std::cmp::Reverse(world.degree(summary.id)));
-            }
-        }
-    }
-    summaries
+    candidates: Vec<LocusId>,
+    predicate: &LocusPredicate,
+) -> Vec<LocusId> {
+    retain_matching(candidates, |id| locus_predicate_matches(world, id, predicate))
 }
 
-fn sort_entity_ids(
+fn apply_entity_predicate(
     world: &World,
-    mut ids: Vec<EntityId>,
-    sort_by: &Option<EntitySort>,
+    candidates: Vec<EntityId>,
+    predicate: &EntityPredicate,
 ) -> Vec<EntityId> {
-    if let Some(sort) = sort_by {
-        match sort {
-            EntitySort::CoherenceDesc => {
-                ids.sort_unstable_by(|a, b| {
-                    let ca = world
-                        .entities()
-                        .get(*a)
-                        .map(|entity| entity.current.coherence)
-                        .unwrap_or(0.0);
-                    let cb = world
-                        .entities()
-                        .get(*b)
-                        .map(|entity| entity.current.coherence)
-                        .unwrap_or(0.0);
-                    cb.total_cmp(&ca)
-                });
-            }
-            EntitySort::MemberCountDesc => {
-                ids.sort_unstable_by_key(|id| {
-                    std::cmp::Reverse(
-                        world
-                            .entities()
-                            .get(*id)
-                            .map(|entity| entity.current.members.len())
-                            .unwrap_or(0),
-                    )
-                });
-            }
-        }
-    }
-    ids
+    retain_matching(candidates, |id| entity_predicate_matches(world, id, predicate))
 }
+
+fn retain_matching<T, F>(mut candidates: Vec<T>, mut predicate: F) -> Vec<T>
+where
+    F: FnMut(T) -> bool,
+    T: Copy,
+{
+    candidates.retain(|candidate| predicate(*candidate));
+    candidates
+}
+
+fn project_locus_summary(world: &World, id: LocusId) -> Option<LocusSummary> {
+    world.locus(id).map(|locus| LocusSummary {
+        id: locus.id,
+        kind: locus.kind,
+        state: locus.state.as_slice().to_vec(),
+    })
+}
+
 
 fn limit_items<T>(mut items: Vec<T>, limit: Option<usize>) -> Vec<T> {
     if let Some(n) = limit {

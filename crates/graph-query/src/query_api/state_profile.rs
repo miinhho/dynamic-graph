@@ -3,29 +3,45 @@ use graph_world::World;
 use super::{Query, QueryResult, RelationshipProfileResult, TrendResult};
 
 pub(super) fn execute_state_and_profile(world: &World, query: &Query) -> Option<QueryResult> {
-    use crate::*;
+    match query {
+        Query::LocusStateSlot { .. } => Some(execute_locus_state_query(world, query)),
+        Query::RelationshipProfile { .. } | Query::ActivityTrend { .. } => {
+            Some(execute_profile_query(world, query))
+        }
+        _ => None,
+    }
+}
+
+fn execute_locus_state_query(world: &World, query: &Query) -> QueryResult {
+    match query {
+        Query::LocusStateSlot { locus, slot } => QueryResult::MaybeScore(
+            world
+                .locus(*locus)
+                .and_then(|locus| locus.state.as_slice().get(*slot).copied()),
+        ),
+        _ => unreachable!("locus state dispatcher received non-locus-state query"),
+    }
+}
+
+fn execute_profile_query(world: &World, query: &Query) -> QueryResult {
+    use crate::{relationship_activity_trend, relationship_profile};
 
     match query {
-        Query::LocusStateSlot { locus, slot } => {
-            let v = world
-                .locus(*locus)
-                .and_then(|l| l.state.as_slice().get(*slot).copied());
-            Some(QueryResult::MaybeScore(v))
-        }
         Query::RelationshipProfile { from, to } => {
             let bundle = relationship_profile(world, *from, *to);
-            let profile = relationship_profile_result(bundle, *from, *to);
-            Some(QueryResult::RelationshipProfile(profile))
+            QueryResult::RelationshipProfile(relationship_profile_result(bundle, *from, *to))
         }
         Query::ActivityTrend {
             relationship,
             from_batch,
             to_batch,
-        } => {
-            let trend = relationship_activity_trend(world, *relationship, *from_batch, *to_batch);
-            Some(QueryResult::Trend(activity_trend_result(trend)))
-        }
-        _ => None,
+        } => QueryResult::Trend(activity_trend_result(relationship_activity_trend(
+            world,
+            *relationship,
+            *from_batch,
+            *to_batch,
+        ))),
+        _ => unreachable!("profile dispatcher received non-profile query"),
     }
 }
 

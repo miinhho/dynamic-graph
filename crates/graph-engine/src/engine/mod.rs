@@ -185,11 +185,11 @@ impl Engine {
         )
     }
 
-    fn settle_batch(&self, context: SettleContext<'_>, applied: AppliedBatch) -> SettledBatch {
+    fn settle_batch(&self, context: &mut SettleContext<'_>, applied: AppliedBatch) -> SettledBatch {
         apply::settle_batch(self, context, applied)
     }
 
-    fn settle_empty_batch(&self, context: SettleContext<'_>, batch: BatchId) -> SettledBatch {
+    fn settle_empty_batch(&self, context: &mut SettleContext<'_>, batch: BatchId) -> SettledBatch {
         apply::settle_empty_batch(self, context, batch)
     }
 

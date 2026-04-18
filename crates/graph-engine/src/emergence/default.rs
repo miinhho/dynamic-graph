@@ -142,7 +142,7 @@ enum EntityDecision {
     /// Entity claims this component as its continuation. Resolution (whether
     /// this becomes a `DepositLayer`, or collapses with other claimers into
     /// a `Merge`) happens in pass 2.
-    Claims,
+    Claims(usize),
 }
 
 struct CommunityIndex {
@@ -176,6 +176,13 @@ struct FlowAnalysis {
     claims_per_component: FxHashMap<usize, Vec<EntityId>>,
 }
 
+struct ComponentProposalPrep {
+    component_idx: usize,
+    coherence: f32,
+    member_rels: Vec<RelationshipId>,
+    claimers: Vec<EntityId>,
+}
+
 struct EntityBuckets {
     significant: Vec<(usize, usize)>,
     unassigned: usize,
@@ -204,19 +211,45 @@ fn analyze_entity_flows(
     existing: &EntityStore,
     locus_to_component: &FxHashMap<LocusId, usize>,
 ) -> FlowAnalysis {
-    let mut decisions: FxHashMap<EntityId, EntityDecision> = FxHashMap::default();
-    let mut claims_per_component: FxHashMap<usize, Vec<EntityId>> = FxHashMap::default();
-
-    for entity in existing.active() {
-        let buckets = bucket_entity_members(entity.current.members.as_slice(), locus_to_component);
-        let decision = decide_entity_flow(entity.id, &buckets, &mut claims_per_component);
-        decisions.insert(entity.id, decision);
-    }
+    let decisions = collect_entity_decisions(existing, locus_to_component);
+    let claims_per_component = collect_component_claims(existing, &decisions);
 
     FlowAnalysis {
         decisions,
         claims_per_component,
     }
+}
+
+fn collect_entity_decisions(
+    existing: &EntityStore,
+    locus_to_component: &FxHashMap<LocusId, usize>,
+) -> FxHashMap<EntityId, EntityDecision> {
+    existing
+        .active()
+        .map(|entity| {
+            let buckets =
+                bucket_entity_members(entity.current.members.as_slice(), locus_to_component);
+            (entity.id, decide_entity_flow(&buckets))
+        })
+        .collect()
+}
+
+fn collect_component_claims(
+    existing: &EntityStore,
+    decisions: &FxHashMap<EntityId, EntityDecision>,
+) -> FxHashMap<usize, Vec<EntityId>> {
+    let mut claims_per_component: FxHashMap<usize, Vec<EntityId>> = FxHashMap::default();
+
+    for entity in existing.active() {
+        if let Some(EntityDecision::Claims(component_idx)) = decisions.get(&entity.id) {
+            claims_per_component
+                .entry(*component_idx)
+                .or_default()
+                .push(entity.id);
+        }
+    }
+
+    claims_per_component
 }
 
 fn bucket_entity_members(
@@ -244,11 +277,7 @@ fn bucket_entity_members(
     }
 }
 
-fn decide_entity_flow(
-    entity_id: EntityId,
-    buckets: &EntityBuckets,
-    claims_per_component: &mut FxHashMap<usize, Vec<EntityId>>,
-) -> EntityDecision {
+fn decide_entity_flow(buckets: &EntityBuckets) -> EntityDecision {
     match buckets.significant.len() {
         0 => EntityDecision::Dormant,
         1 => {
@@ -256,14 +285,31 @@ fn decide_entity_flow(
             if buckets.unassigned > bucket_size {
                 EntityDecision::Dormant
             } else {
-                claims_per_component
-                    .entry(c_idx)
-                    .or_default()
-                    .push(entity_id);
-                EntityDecision::Claims
+                EntityDecision::Claims(c_idx)
             }
         }
         _ => EntityDecision::Split(buckets.significant.iter().map(|&(i, _)| i).collect()),
+    }
+}
+
+impl DefaultEmergencePerspective {
+    fn build_recognition_context<'a>(
+        &self,
+        relationships: &'a RelationshipStore,
+        existing: &'a EntityStore,
+        batch: BatchId,
+    ) -> RecognitionContext<'a> {
+        RecognitionContext {
+            batch,
+            existing,
+            relationships,
+            threshold: self.resolve_activity_threshold(relationships),
+        }
+    }
+
+    fn resolve_activity_threshold(&self, relationships: &RelationshipStore) -> f32 {
+        self.min_activity_threshold
+            .unwrap_or_else(|| auto_activity_threshold(relationships))
     }
 }
 
@@ -280,35 +326,53 @@ fn prepare_recognition(context: &RecognitionContext<'_>) -> RecognitionState {
     }
 }
 
-fn emit_component_proposals(
+fn prepare_component_proposals(
     state: &RecognitionState,
     split_offspring_components: &FxHashSet<usize>,
+    threshold: f32,
+) -> Vec<ComponentProposalPrep> {
+    state
+        .components
+        .iter()
+        .enumerate()
+        .filter(|(component_idx, _)| !split_offspring_components.contains(component_idx))
+        .map(|(component_idx, _)| {
+            let (coherence, member_rels) = community::component_stats(
+                &state.community_index.component_sets[component_idx],
+                &state.adj,
+                threshold,
+            );
+            let claimers = state
+                .flow
+                .claims_per_component
+                .get(&component_idx)
+                .cloned()
+                .unwrap_or_default();
+
+            ComponentProposalPrep {
+                component_idx,
+                coherence,
+                member_rels,
+                claimers,
+            }
+        })
+        .collect()
+}
+
+fn emit_component_proposals(
+    state: &RecognitionState,
+    prepared: &[ComponentProposalPrep],
     context: &mut ProposalContext<'_>,
     batch: BatchId,
 ) {
-    for (c_idx, members) in state.components.iter().enumerate() {
-        if split_offspring_components.contains(&c_idx) {
-            continue;
-        }
-        let claimers = state
-            .flow
-            .claims_per_component
-            .get(&c_idx)
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
-        let (coherence, member_rels) = community::component_stats(
-            &state.community_index.component_sets[c_idx],
-            &state.adj,
-            context.threshold,
-        );
-
+    for component in prepared {
         proposals::resolve_component_proposal(
             batch,
-            members,
-            &state.community_index.component_sets[c_idx],
-            claimers,
-            member_rels,
-            coherence,
+            &state.components[component.component_idx],
+            &state.community_index.component_sets[component.component_idx],
+            component.claimers.as_slice(),
+            component.member_rels.clone(),
+            component.coherence,
             context,
         );
     }
@@ -321,14 +385,7 @@ impl EmergencePerspective for DefaultEmergencePerspective {
         existing: &EntityStore,
         batch: BatchId,
     ) -> Vec<EmergenceProposal> {
-        let recognition = RecognitionContext {
-            batch,
-            existing,
-            relationships,
-            threshold: self
-                .min_activity_threshold
-                .unwrap_or_else(|| auto_activity_threshold(relationships)),
-        };
+        let recognition = self.build_recognition_context(relationships, existing, batch);
         let state = prepare_recognition(&recognition);
 
         let mut proposals: Vec<EmergenceProposal> = Vec::new();
@@ -345,10 +402,12 @@ impl EmergencePerspective for DefaultEmergencePerspective {
             &state.adj,
             &mut context,
         );
+        let component_proposals =
+            prepare_component_proposals(&state, &split_offspring_components, recognition.threshold);
 
         emit_component_proposals(
             &state,
-            &split_offspring_components,
+            &component_proposals,
             &mut context,
             recognition.batch,
         );

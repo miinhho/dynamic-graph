@@ -19,76 +19,194 @@ pub(crate) fn apply_structural_proposals(
     let mut tombstones = Vec::new();
 
     for proposal in proposals {
-        match proposal {
-            StructuralProposal::CreateRelationship {
-                endpoints,
-                kind,
-                initial_activity,
-                initial_state,
-            } => apply_create_relationship_proposal(
-                world,
-                influence_registry,
-                current_batch,
-                endpoints,
-                kind,
-                initial_activity,
-                initial_state,
-            ),
-            StructuralProposal::DeleteRelationship { rel_id } => {
-                tombstones.extend(apply_delete_relationship_proposal(world, rel_id));
-            }
-            StructuralProposal::SubscribeToRelationship { subscriber, rel_id } => {
-                world
-                    .subscriptions_mut()
-                    .subscribe_at(subscriber, rel_id, Some(batch_id));
-            }
-            StructuralProposal::UnsubscribeFromRelationship { subscriber, rel_id } => {
-                world
-                    .subscriptions_mut()
-                    .unsubscribe_at(subscriber, rel_id, Some(batch_id));
-            }
-            StructuralProposal::SubscribeToKind { subscriber, kind } => {
-                world
-                    .subscriptions_mut()
-                    .subscribe_to_kind(subscriber, kind);
-            }
-            StructuralProposal::UnsubscribeFromKind { subscriber, kind } => {
-                world
-                    .subscriptions_mut()
-                    .unsubscribe_from_kind(subscriber, kind);
-            }
-            StructuralProposal::SubscribeToAnchorKind {
-                subscriber,
-                anchor,
-                kind,
-            } => {
-                world
-                    .subscriptions_mut()
-                    .subscribe_to_anchor_kind(subscriber, anchor, kind);
-            }
-            StructuralProposal::UnsubscribeFromAnchorKind {
-                subscriber,
-                anchor,
-                kind,
-            } => {
-                world
-                    .subscriptions_mut()
-                    .unsubscribe_from_anchor_kind(subscriber, anchor, kind);
-            }
-            StructuralProposal::DeleteLocus { locus_id } => {
-                tombstones.extend(apply_delete_locus_proposal(world, locus_id));
-            }
-            StructuralProposal::CreateLocus {
-                locus_id,
-                kind,
-                state,
-                name,
-                properties,
-            } => apply_create_locus_proposal(world, locus_id, kind, state, name, properties),
-        }
+        apply_structural_proposal(
+            world,
+            proposal,
+            influence_registry,
+            current_batch,
+            batch_id,
+            &mut tombstones,
+        );
     }
 
     tombstones
+}
+
+fn apply_structural_proposal(
+    world: &mut World,
+    proposal: StructuralProposal,
+    influence_registry: &InfluenceKindRegistry,
+    current_batch: u64,
+    batch_id: BatchId,
+    tombstones: &mut Vec<PendingChange>,
+) {
+    match proposal {
+        StructuralProposal::CreateRelationship {
+            endpoints,
+            kind,
+            initial_activity,
+            initial_state,
+        } => apply_create_relationship_proposal(
+            world,
+            influence_registry,
+            current_batch,
+            endpoints,
+            kind,
+            initial_activity,
+            initial_state,
+        ),
+        StructuralProposal::DeleteRelationship { rel_id } => {
+            tombstones.extend(apply_delete_relationship_proposal(world, rel_id));
+        }
+        StructuralProposal::DeleteLocus { locus_id } => {
+            tombstones.extend(apply_delete_locus_proposal(world, locus_id));
+        }
+        StructuralProposal::CreateLocus {
+            locus_id,
+            kind,
+            state,
+            name,
+            properties,
+        } => apply_create_locus_proposal(world, locus_id, kind, state, name, properties),
+        subscription => apply_subscription_proposal(world, subscription, batch_id),
+    }
+}
+
+fn apply_subscription_proposal(world: &mut World, proposal: StructuralProposal, batch_id: BatchId) {
+    let Some(operation) = resolve_subscription_operation(proposal, batch_id) else {
+        return;
+    };
+    apply_subscription_operation(world, operation);
+}
+
+enum SubscriptionOperation {
+    SubscribeRelationship {
+        subscriber: LocusId,
+        rel_id: RelationshipId,
+        batch_id: BatchId,
+    },
+    UnsubscribeRelationship {
+        subscriber: LocusId,
+        rel_id: RelationshipId,
+        batch_id: BatchId,
+    },
+    SubscribeKind {
+        subscriber: LocusId,
+        kind: InfluenceKindId,
+    },
+    UnsubscribeKind {
+        subscriber: LocusId,
+        kind: InfluenceKindId,
+    },
+    SubscribeAnchorKind {
+        subscriber: LocusId,
+        anchor: LocusId,
+        kind: InfluenceKindId,
+    },
+    UnsubscribeAnchorKind {
+        subscriber: LocusId,
+        anchor: LocusId,
+        kind: InfluenceKindId,
+    },
+}
+
+fn resolve_subscription_operation(
+    proposal: StructuralProposal,
+    batch_id: BatchId,
+) -> Option<SubscriptionOperation> {
+    match proposal {
+        StructuralProposal::SubscribeToRelationship { subscriber, rel_id } => {
+            Some(SubscriptionOperation::SubscribeRelationship {
+                subscriber,
+                rel_id,
+                batch_id,
+            })
+        }
+        StructuralProposal::UnsubscribeFromRelationship { subscriber, rel_id } => {
+            Some(SubscriptionOperation::UnsubscribeRelationship {
+                subscriber,
+                rel_id,
+                batch_id,
+            })
+        }
+        StructuralProposal::SubscribeToKind { subscriber, kind } => {
+            Some(SubscriptionOperation::SubscribeKind { subscriber, kind })
+        }
+        StructuralProposal::UnsubscribeFromKind { subscriber, kind } => {
+            Some(SubscriptionOperation::UnsubscribeKind { subscriber, kind })
+        }
+        StructuralProposal::SubscribeToAnchorKind {
+            subscriber,
+            anchor,
+            kind,
+        } => Some(SubscriptionOperation::SubscribeAnchorKind {
+            subscriber,
+            anchor,
+            kind,
+        }),
+        StructuralProposal::UnsubscribeFromAnchorKind {
+            subscriber,
+            anchor,
+            kind,
+        } => Some(SubscriptionOperation::UnsubscribeAnchorKind {
+            subscriber,
+            anchor,
+            kind,
+        }),
+        StructuralProposal::CreateRelationship { .. }
+        | StructuralProposal::DeleteRelationship { .. }
+        | StructuralProposal::DeleteLocus { .. }
+        | StructuralProposal::CreateLocus { .. } => None,
+    }
+}
+
+fn apply_subscription_operation(world: &mut World, operation: SubscriptionOperation) {
+    match operation {
+        SubscriptionOperation::SubscribeRelationship {
+            subscriber,
+            rel_id,
+            batch_id,
+        } => {
+            world
+                .subscriptions_mut()
+                .subscribe_at(subscriber, rel_id, Some(batch_id));
+        }
+        SubscriptionOperation::UnsubscribeRelationship {
+            subscriber,
+            rel_id,
+            batch_id,
+        } => {
+            world
+                .subscriptions_mut()
+                .unsubscribe_at(subscriber, rel_id, Some(batch_id));
+        }
+        SubscriptionOperation::SubscribeKind { subscriber, kind } => {
+            world.subscriptions_mut().subscribe_to_kind(subscriber, kind);
+        }
+        SubscriptionOperation::UnsubscribeKind { subscriber, kind } => {
+            world
+                .subscriptions_mut()
+                .unsubscribe_from_kind(subscriber, kind);
+        }
+        SubscriptionOperation::SubscribeAnchorKind {
+            subscriber,
+            anchor,
+            kind,
+        } => {
+            world
+                .subscriptions_mut()
+                .subscribe_to_anchor_kind(subscriber, anchor, kind);
+        }
+        SubscriptionOperation::UnsubscribeAnchorKind {
+            subscriber,
+            anchor,
+            kind,
+        } => {
+            world
+                .subscriptions_mut()
+                .unsubscribe_from_anchor_kind(subscriber, anchor, kind);
+        }
+    }
 }
 
 fn apply_create_relationship_proposal(
@@ -100,23 +218,54 @@ fn apply_create_relationship_proposal(
     initial_activity: Option<f32>,
     initial_state: Option<StateVector>,
 ) {
+    match resolve_relationship_creation(
+        world,
+        influence_registry,
+        current_batch,
+        endpoints,
+        kind,
+        initial_activity,
+        initial_state,
+    ) {
+        RelationshipCreation::UpdateExisting {
+            rel_id,
+            activity_delta,
+        } => apply_relationship_creation_update(world, rel_id, activity_delta),
+        RelationshipCreation::CreateNew { relationship } => {
+            world.relationships_mut().insert(relationship)
+        }
+    }
+}
+
+enum RelationshipCreation {
+    UpdateExisting {
+        rel_id: RelationshipId,
+        activity_delta: f32,
+    },
+    CreateNew {
+        relationship: Relationship,
+    },
+}
+
+fn resolve_relationship_creation(
+    world: &mut World,
+    influence_registry: &InfluenceKindRegistry,
+    current_batch: u64,
+    endpoints: Endpoints,
+    kind: InfluenceKindId,
+    initial_activity: Option<f32>,
+    initial_state: Option<StateVector>,
+) -> RelationshipCreation {
     let key = endpoints.key();
-    let store = world.relationships_mut();
-    if let Some(rel_id) = store.lookup(&key, kind) {
-        let contribution = influence_registry
+    if let Some(rel_id) = world.relationships().lookup(&key, kind) {
+        let activity_delta = influence_registry
             .get(kind)
             .map(|c| c.activity_contribution)
             .unwrap_or(1.0);
-        let rel = store.get_mut(rel_id).expect("indexed id must exist");
-        if let Some(a) = rel
-            .state
-            .as_mut_slice()
-            .get_mut(Relationship::ACTIVITY_SLOT)
-        {
-            *a += contribution;
-        }
-        rel.lineage.change_count += 1;
-        return;
+        return RelationshipCreation::UpdateExisting {
+            rel_id,
+            activity_delta,
+        };
     }
 
     let state = resolve_relationship_initial_state(
@@ -125,22 +274,39 @@ fn apply_create_relationship_proposal(
         initial_activity,
         initial_state,
     );
-    let new_id = store.mint_id();
-    store.insert(Relationship {
-        id: new_id,
-        kind,
-        endpoints,
-        state,
-        lineage: RelationshipLineage {
-            created_by: None,
-            last_touched_by: None,
-            change_count: 1,
-            kinds_observed: smallvec::smallvec![KindObservation::synthetic(kind)],
+    let new_id = world.relationships_mut().mint_id();
+    RelationshipCreation::CreateNew {
+        relationship: Relationship {
+            id: new_id,
+            kind,
+            endpoints,
+            state,
+            lineage: RelationshipLineage {
+                created_by: None,
+                last_touched_by: None,
+                change_count: 1,
+                kinds_observed: smallvec::smallvec![KindObservation::synthetic(kind)],
+            },
+            created_batch: BatchId(current_batch),
+            last_decayed_batch: current_batch,
+            metadata: None,
         },
-        created_batch: BatchId(current_batch),
-        last_decayed_batch: current_batch,
-        metadata: None,
-    });
+    }
+}
+
+fn apply_relationship_creation_update(
+    world: &mut World,
+    rel_id: RelationshipId,
+    activity_delta: f32,
+) {
+    let rel = world
+        .relationships_mut()
+        .get_mut(rel_id)
+        .expect("indexed id must exist");
+    if let Some(activity) = rel.state.as_mut_slice().get_mut(Relationship::ACTIVITY_SLOT) {
+        *activity += activity_delta;
+    }
+    rel.lineage.change_count += 1;
 }
 
 fn resolve_relationship_initial_state(

@@ -8,19 +8,24 @@ pub(super) fn rank_pairs(world: &World, kind: InfluenceKindId) -> PairPrediction
         .relationships()
         .iter()
         .filter(|relationship| relationship.kind == kind)
-        .filter_map(|relationship| match relationship.endpoints {
-            Endpoints::Symmetric { a, b } => {
-                let pair = canonical_pair(a, b);
-                Some(RankedPair {
-                    pair,
-                    strength: relationship.strength(),
-                })
-            }
-            Endpoints::Directed { .. } => None,
-        })
+        .filter_map(symmetric_ranked_pair)
         .collect();
-    entries.sort_by(|left, right| right.strength.total_cmp(&left.strength));
+    sort_ranked_pairs(&mut entries);
     PairPredictionRanking { entries }
+}
+
+fn symmetric_ranked_pair(relationship: &graph_core::Relationship) -> Option<RankedPair> {
+    match relationship.endpoints {
+        Endpoints::Symmetric { a, b } => Some(RankedPair {
+            pair: canonical_pair(a, b),
+            strength: relationship.strength(),
+        }),
+        Endpoints::Directed { .. } => None,
+    }
+}
+
+fn sort_ranked_pairs(entries: &mut [RankedPair]) {
+    entries.sort_by(|left, right| right.strength.total_cmp(&left.strength));
 }
 
 fn canonical_pair(a: LocusId, b: LocusId) -> (LocusId, LocusId) {

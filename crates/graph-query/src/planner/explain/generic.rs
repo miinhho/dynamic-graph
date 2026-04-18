@@ -1,177 +1,218 @@
 use graph_world::World;
 
-use crate::planner::{CostClass, PlanStep, QueryPlan};
+use super::generic_stages::{
+    GenericQueryDescription, StageBlueprint, TraversalBlueprint, WorldStats, assemble_query_plan,
+};
+use crate::planner::{CostClass, QueryPlan};
 use crate::query_api::Query;
 
 pub(super) fn explain_non_find_query(world: &World, query: &Query) -> QueryPlan {
+    let stats = WorldStats::from_world(world);
+    let description = describe_non_find_query(query, stats, world);
+    assemble_query_plan(description)
+}
+
+fn describe_non_find_query(
+    query: &Query,
+    stats: WorldStats,
+    world: &World,
+) -> GenericQueryDescription {
     match query {
-        Query::CausalDirection { kind, .. } => relationship_scan_plan(
-            world,
-            format!(
-                "causal_direction scan over relationships of kind {:?}",
-                kind
-            ),
+        Query::CausalDirection { .. }
+        | Query::DominantCauses { .. }
+        | Query::DominantEffects { .. }
+        | Query::CausalInStrength { .. }
+        | Query::CausalOutStrength { .. }
+        | Query::FeedbackPairs { .. } => describe_weighted_causality_query(query, stats),
+        Query::GrangerScore { .. }
+        | Query::GrangerDominantCauses { .. }
+        | Query::GrangerDominantEffects { .. } => describe_granger_query(query, stats),
+        Query::TimeTravel { .. }
+        | Query::CounterfactualReplay { .. }
+        | Query::EntityTransitionCause { .. }
+        | Query::EntityUpstreamTransitions { .. }
+        | Query::EntityLayersInRange { .. } => describe_temporal_entity_query(query, stats, world),
+        Query::AllBetweenness { .. }
+        | Query::AllCloseness { .. }
+        | Query::AllConstraints { .. }
+        | Query::PageRank { .. }
+        | Query::Louvain
+        | Query::LouvainWithResolution(_) => describe_centrality_query(query, stats),
+        _ => GenericQueryDescription::Fallback(format!("{:?}", std::mem::discriminant(query))),
+    }
+}
+
+fn describe_weighted_causality_query(
+    query: &Query,
+    stats: WorldStats,
+) -> GenericQueryDescription {
+    match query {
+        Query::CausalDirection { kind, .. } => relationship_scan(
+            stats,
+            format!("causal_direction scan over relationships of kind {:?}", kind),
             Some(1),
         ),
-        Query::DominantCauses { kind, n, .. } => relationship_scan_plan(
-            world,
+        Query::DominantCauses { kind, n, .. } => relationship_scan(
+            stats,
             format!("dominant_causes scan for kind {:?}, top {}", kind, n),
             Some(*n),
         ),
-        Query::DominantEffects { kind, n, .. } => relationship_scan_plan(
-            world,
+        Query::DominantEffects { kind, n, .. } => relationship_scan(
+            stats,
             format!("dominant_effects scan for kind {:?}, top {}", kind, n),
             Some(*n),
         ),
         Query::CausalInStrength { kind, .. } | Query::CausalOutStrength { kind, .. } => {
-            relationship_scan_plan(
-                world,
+            relationship_scan(
+                stats,
                 format!("causal strength scan over relationships of kind {:?}", kind),
                 Some(1),
             )
         }
-        Query::FeedbackPairs { kind, .. } => relationship_scan_plan(
-            world,
+        Query::FeedbackPairs { kind, .. } => relationship_scan(
+            stats,
             format!("feedback_pairs scan for kind {:?} (two passes)", kind),
             None,
         ),
-        Query::GrangerScore { kind, .. } => changelog_scan_plan(
-            world,
+        _ => unreachable!("describe_weighted_causality_query called with non-causality query"),
+    }
+}
+
+fn describe_granger_query(query: &Query, stats: WorldStats) -> GenericQueryDescription {
+    match query {
+        Query::GrangerScore { kind, .. } => changelog_scan(
+            stats,
             format!("granger_score ChangeLog scan for kind {:?}", kind),
             Some(1),
         ),
-        Query::GrangerDominantCauses { kind, n, .. } => changelog_scan_plan(
-            world,
+        Query::GrangerDominantCauses { kind, n, .. } => changelog_scan(
+            stats,
             format!(
                 "granger_dominant_causes ChangeLog scan for kind {:?}, top {}",
                 kind, n
             ),
             Some(*n),
         ),
-        Query::GrangerDominantEffects { kind, n, .. } => changelog_scan_plan(
-            world,
+        Query::GrangerDominantEffects { kind, n, .. } => changelog_scan(
+            stats,
             format!(
                 "granger_dominant_effects ChangeLog scan for kind {:?}, top {}",
                 kind, n
             ),
             Some(*n),
         ),
-        Query::TimeTravel { .. } => single_scan_plan(
-            world.log().len() + world.relationships().len() + world.entities().len(),
-            "time_travel: O(changes + R + E·layers) — WorldDiff inversion",
+        _ => unreachable!("describe_granger_query called with non-granger query"),
+    }
+}
+
+fn describe_temporal_entity_query(
+    query: &Query,
+    stats: WorldStats,
+    world: &World,
+) -> GenericQueryDescription {
+    match query {
+        Query::TimeTravel { .. } => scan(
+            stats.log_entries + stats.relationships + stats.entities,
+            "time_travel: O(changes + R + E·layers) — WorldDiff inversion".to_string(),
             None,
         ),
-        Query::CounterfactualReplay { remove_changes } => single_scan_plan(
-            world.log().len() + world.relationships().len(),
-            &format!(
+        Query::CounterfactualReplay { remove_changes } => scan(
+            stats.log_entries + stats.relationships,
+            format!(
                 "counterfactual_replay: O(descendants of {} roots + R={})",
                 remove_changes.len(),
-                world.relationships().len()
+                stats.relationships
             ),
             None,
         ),
-        Query::EntityTransitionCause { .. } => single_scan_plan(
-            world.entities().len(),
-            "entity_transition_cause: O(entity layers)",
+        Query::EntityTransitionCause { .. } => scan(
+            stats.entities,
+            "entity_transition_cause: O(entity layers)".to_string(),
             None,
         ),
-        Query::EntityUpstreamTransitions { .. } => single_scan_plan(
-            world.log().len() + world.entities().len(),
-            "entity_upstream_transitions: O(ChangeLog ancestors + entity scan)",
+        Query::EntityUpstreamTransitions { .. } => scan(
+            stats.log_entries + stats.entities,
+            "entity_upstream_transitions: O(ChangeLog ancestors + entity scan)".to_string(),
             None,
         ),
-        Query::EntityLayersInRange { entity_id, .. } => single_scan_plan(
+        Query::EntityLayersInRange { entity_id, .. } => scan(
             world
                 .entities()
                 .get(*entity_id)
-                .map_or(0, |e| e.layers.len()),
-            "entity_layers_in_range: O(entity layer count)",
+                .map_or(0, |entity| entity.layers.len()),
+            "entity_layers_in_range: O(entity layer count)".to_string(),
             None,
         ),
-        Query::AllBetweenness { limit } => single_traversal_plan(
-            world.relationships().len(),
-            "Brandes betweenness centrality over all loci",
+        _ => unreachable!("describe_temporal_entity_query called with unrelated query"),
+    }
+}
+
+fn describe_centrality_query(query: &Query, stats: WorldStats) -> GenericQueryDescription {
+    match query {
+        Query::AllBetweenness { limit } => traversal(
+            stats.relationships,
+            "Brandes betweenness centrality over all loci".to_string(),
             *limit,
         ),
-        Query::AllCloseness { limit } => single_traversal_plan(
-            world.loci().len(),
-            "Harmonic closeness centrality over all loci",
+        Query::AllCloseness { limit } => traversal(
+            stats.loci,
+            "Harmonic closeness centrality over all loci".to_string(),
             *limit,
         ),
-        Query::AllConstraints { limit } => single_traversal_plan(
-            world.loci().len(),
-            "Burt structural constraint over all loci",
+        Query::AllConstraints { limit } => traversal(
+            stats.loci,
+            "Burt structural constraint over all loci".to_string(),
             *limit,
         ),
         Query::PageRank { limit, .. } => {
-            single_traversal_plan(world.loci().len(), "PageRank over all loci", *limit)
+            traversal(stats.loci, "PageRank over all loci".to_string(), *limit)
         }
-        Query::Louvain | Query::LouvainWithResolution(_) => single_traversal_plan(
-            world.relationships().len(),
-            "Louvain community detection",
+        Query::Louvain | Query::LouvainWithResolution(_) => traversal(
+            stats.relationships,
+            "Louvain community detection".to_string(),
             None,
         ),
-        _ => default_single_step_plan(query),
+        _ => unreachable!("describe_centrality_query called with non-centrality query"),
     }
 }
 
-fn relationship_scan_plan(world: &World, desc: String, limit: Option<usize>) -> QueryPlan {
-    single_scan_plan(world.relationships().len(), &desc, limit)
+fn relationship_scan(
+    stats: WorldStats,
+    description: String,
+    limit: Option<usize>,
+) -> GenericQueryDescription {
+    scan(stats.relationships, description, limit)
 }
 
-fn changelog_scan_plan(world: &World, desc: String, limit: Option<usize>) -> QueryPlan {
-    single_scan_plan(world.log().len(), &desc, limit)
+fn changelog_scan(
+    stats: WorldStats,
+    description: String,
+    limit: Option<usize>,
+) -> GenericQueryDescription {
+    scan(stats.log_entries, description, limit)
 }
 
-fn single_scan_plan(initial: usize, desc: &str, limit: Option<usize>) -> QueryPlan {
-    let est = limit.map_or(initial, |n| n.min(initial));
-    QueryPlan {
-        steps: vec![PlanStep {
-            description: desc.to_string(),
-            cost_class: CostClass::Scan,
-            estimated_output: est,
-        }],
-        estimated_candidates_initial: initial,
-        estimated_output: est,
-    }
+fn scan(
+    initial_candidates: usize,
+    description: String,
+    limit: Option<usize>,
+) -> GenericQueryDescription {
+    GenericQueryDescription::SingleStage(StageBlueprint {
+        initial_candidates,
+        description,
+        cost_class: CostClass::Scan,
+        limit,
+    })
 }
 
-fn single_traversal_plan(initial: usize, desc: &str, limit: Option<usize>) -> QueryPlan {
-    let est = limit.unwrap_or(initial);
-    let mut steps = vec![
-        PlanStep {
-            description: desc.to_string(),
-            cost_class: CostClass::Traversal,
-            estimated_output: initial,
-        },
-        PlanStep {
-            description: "sort descending".to_string(),
-            cost_class: CostClass::Scan,
-            estimated_output: initial,
-        },
-    ];
-    if let Some(n) = limit {
-        steps.push(PlanStep {
-            description: format!("limit {}", n),
-            cost_class: CostClass::Scan,
-            estimated_output: n.min(initial),
-        });
-    }
-    QueryPlan {
-        steps,
-        estimated_candidates_initial: initial,
-        estimated_output: est,
-    }
-}
-
-fn default_single_step_plan(query: &Query) -> QueryPlan {
-    QueryPlan {
-        estimated_candidates_initial: 1,
-        estimated_output: 1,
-        steps: vec![PlanStep {
-            description: format!("{:?}", std::mem::discriminant(query)),
-            cost_class: CostClass::Scan,
-            estimated_output: 1,
-        }],
-    }
+fn traversal(
+    initial_candidates: usize,
+    description: String,
+    limit: Option<usize>,
+) -> GenericQueryDescription {
+    GenericQueryDescription::Traversal(TraversalBlueprint {
+        initial_candidates,
+        description,
+        limit,
+    })
 }

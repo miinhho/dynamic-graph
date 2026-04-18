@@ -1,5 +1,6 @@
 mod find;
 mod generic;
+mod generic_stages;
 
 use graph_world::World;
 

@@ -1,3 +1,4 @@
+mod context;
 mod ranking;
 mod scoring;
 mod types;
@@ -7,6 +8,7 @@ use std::collections::HashSet;
 use graph_core::{BatchId, Change, InfluenceKindId, LocusId};
 use graph_world::World;
 
+use self::context::window_observation_context;
 pub use self::types::{
     PairObservationTargets, PairObservationWindow, PairPredictionRanking, PlasticityObservation,
     RankedPair,
@@ -71,19 +73,12 @@ impl PairPredictionObjective {
         from_batch: BatchId,
         to_batch: BatchId,
     ) -> PlasticityObservation {
-        let window = PairObservationWindow::bounded(from_batch, to_batch, self.horizon_batches);
-        let predictions = self.rank(world).top_k_pairs(self.k);
-        let observed_targets = PairObservationTargets::from_event_log(window, event_log);
-        let observed_changes = world
-            .log()
-            .iter()
-            .filter(|change| change.batch.0 >= from_batch.0 && change.batch.0 <= to_batch.0)
-            .collect::<Vec<_>>();
+        let context = window_observation_context(self, world, event_log, from_batch, to_batch);
         scoring::score_predictions(
-            &predictions,
-            observed_changes,
-            &observed_targets.pairs,
-            observed_targets.window_batches,
+            &context.predictions,
+            context.observed_changes,
+            &context.observed_targets.pairs,
+            context.observed_targets.window_batches,
             self.recall_weight,
         )
     }

@@ -7,20 +7,38 @@ pub(super) fn execute_entity_and_counterfactual(
     query: &Query,
 ) -> Option<QueryResult> {
     match query {
-        Query::EntityDeviationsSince(baseline) => Some(QueryResult::EntityDeviations(
-            entity_deviation_summaries(world, *baseline),
-        )),
-        Query::RelationshipsAbsentWithout(root_changes) => Some(
-            QueryResult::RelationshipSummaries(absent_relationship_summaries(world, root_changes)),
-        ),
-        Query::Coheres => Some(QueryResult::Coheres(coheres_to_results(
-            world.coheres().get("default").unwrap_or(&[]),
-        ))),
-        Query::CoheresNamed(key) => Some(QueryResult::Coheres(coheres_to_results(
-            world.coheres().get(key.as_str()).unwrap_or(&[]),
-        ))),
+        Query::EntityDeviationsSince(_) => Some(execute_entity_deviation_query(world, query)),
+        Query::RelationshipsAbsentWithout(_) => Some(execute_counterfactual_query(world, query)),
+        Query::Coheres | Query::CoheresNamed(_) => Some(execute_cohere_query(world, query)),
         _ => None,
     }
+}
+
+fn execute_entity_deviation_query(world: &World, query: &Query) -> QueryResult {
+    match query {
+        Query::EntityDeviationsSince(baseline) => {
+            QueryResult::EntityDeviations(entity_deviation_summaries(world, *baseline))
+        }
+        _ => unreachable!("entity deviation dispatcher received non-entity query"),
+    }
+}
+
+fn execute_counterfactual_query(world: &World, query: &Query) -> QueryResult {
+    match query {
+        Query::RelationshipsAbsentWithout(root_changes) => {
+            QueryResult::RelationshipSummaries(absent_relationship_summaries(world, root_changes))
+        }
+        _ => unreachable!("counterfactual dispatcher received non-counterfactual query"),
+    }
+}
+
+fn execute_cohere_query(world: &World, query: &Query) -> QueryResult {
+    let coheres = match query {
+        Query::Coheres => world.coheres().get("default").unwrap_or(&[]),
+        Query::CoheresNamed(key) => world.coheres().get(key.as_str()).unwrap_or(&[]),
+        _ => unreachable!("cohere dispatcher received non-cohere query"),
+    };
+    QueryResult::Coheres(coheres_to_results(coheres))
 }
 
 fn entity_deviation_summaries(

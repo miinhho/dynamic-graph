@@ -11,10 +11,7 @@ pub(super) fn score_predictions<'a, I: IntoIterator<Item = &'a Change>>(
     fallback_window_batches: u64,
     recall_weight: f32,
 ) -> PlasticityObservation {
-    let hits = predictions
-        .iter()
-        .filter(|pair| observed_pairs.contains(pair))
-        .count();
+    let hits = prediction_hits(predictions, observed_pairs);
     let window_batches = observed_window_batches(observed, fallback_window_batches);
     PlasticityObservation::from_hits(
         hits,
@@ -23,6 +20,16 @@ pub(super) fn score_predictions<'a, I: IntoIterator<Item = &'a Change>>(
         window_batches,
         recall_weight,
     )
+}
+
+fn prediction_hits(
+    predictions: &[(LocusId, LocusId)],
+    observed_pairs: &HashSet<(LocusId, LocusId)>,
+) -> usize {
+    predictions
+        .iter()
+        .filter(|pair| observed_pairs.contains(pair))
+        .count()
 }
 
 fn observed_window_batches<'a, I: IntoIterator<Item = &'a Change>>(

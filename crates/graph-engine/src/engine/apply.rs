@@ -31,7 +31,7 @@ pub(super) fn apply_built_changes(
 
 pub(super) fn settle_batch(
     engine: &Engine,
-    context: SettleContext<'_>,
+    context: &mut SettleContext<'_>,
     applied: AppliedBatch,
 ) -> SettledBatch {
     engine.dispatch_affected_loci(
@@ -56,7 +56,7 @@ pub(super) fn settle_batch(
 
 pub(super) fn settle_empty_batch(
     engine: &Engine,
-    context: SettleContext<'_>,
+    context: &mut SettleContext<'_>,
     batch: BatchId,
 ) -> SettledBatch {
     engine.dispatch_affected_loci(
@@ -156,9 +156,7 @@ pub(super) fn apply_locus_change(
     let id = change.id;
     state.acc.batch_changes.push(change);
     engine.apply_locus_property_patch(world, locus_id, property_patch);
-    let mut context = CrossLocusContext {
-        world,
-        influence_registry,
+    let inputs = CrossLocusInputs {
         batch,
         locus_id,
         kind,
@@ -166,15 +164,49 @@ pub(super) fn apply_locus_change(
         plasticity_active,
         post_signal,
         trigger_id: id,
-        state,
     };
+    let mut context = cross_locus_context(world, influence_registry, inputs, state);
     engine.apply_cross_locus_emergence(&mut context, cross_locus_preds);
+    record_committed_locus_change(state, locus_id, id);
+}
+
+struct CrossLocusInputs<'a> {
+    batch: BatchId,
+    locus_id: LocusId,
+    kind: InfluenceKindId,
+    resolved_slots: &'a [graph_core::RelationshipSlotDef],
+    plasticity_active: bool,
+    post_signal: f32,
+    trigger_id: ChangeId,
+}
+
+fn cross_locus_context<'a>(
+    world: &'a mut World,
+    influence_registry: &'a InfluenceKindRegistry,
+    inputs: CrossLocusInputs<'a>,
+    state: &'a mut TickState,
+) -> CrossLocusContext<'a> {
+    CrossLocusContext {
+        world,
+        influence_registry,
+        batch: inputs.batch,
+        locus_id: inputs.locus_id,
+        kind: inputs.kind,
+        resolved_slots: inputs.resolved_slots,
+        plasticity_active: inputs.plasticity_active,
+        post_signal: inputs.post_signal,
+        trigger_id: inputs.trigger_id,
+        state,
+    }
+}
+
+fn record_committed_locus_change(state: &mut TickState, locus_id: LocusId, change_id: ChangeId) {
     state
         .acc
         .committed_ids_by_locus
         .entry(locus_id)
         .or_default()
-        .push(id);
+        .push(change_id);
     if state.acc.affected_loci_set.insert(locus_id) {
         state.acc.affected_loci.push(locus_id);
     }
@@ -196,6 +228,11 @@ pub(super) fn apply_locus_property_patch(
     }
 }
 
+struct AppliedCrossLocusEmergence {
+    record: EmergenceRecord,
+    schema_violation: Option<(graph_core::LocusKindId, graph_core::LocusKindId)>,
+}
+
 pub(super) fn apply_cross_locus_emergence(
     engine: &Engine,
     context: &mut CrossLocusContext<'_>,
@@ -203,28 +240,54 @@ pub(super) fn apply_cross_locus_emergence(
 ) {
     let kind_cfg = context.influence_registry.get(context.kind);
     for pred in cross_locus_preds {
-        let batch::CrossLocusPred {
-            from_locus,
-            pre_signal,
-            pred_batch,
-            is_feedback,
-            schema_violation,
-            emergence,
-            ..
-        } = pred;
-        let Some((rel_id, is_new, emerged_state)) = emergence_apply::apply_emergence(
-            context.world.relationships_mut(),
-            emergence,
-            context.trigger_id,
-            context.batch,
-            context.kind,
-            pre_signal,
-            kind_cfg,
-            context.resolved_slots,
-        ) else {
+        let Some(applied) = apply_cross_locus_prediction(context, kind_cfg, pred) else {
             continue;
         };
-        let record = EmergenceRecord {
+        engine.record_schema_violation(
+            applied.schema_violation,
+            context.kind,
+            applied.record.rel_id,
+            context.state,
+        );
+        engine.record_relationship_emergence(&applied.record, context.state);
+        engine.record_plasticity_observation(&applied.record, context.state);
+        engine.record_batch_kind_touch(
+            applied.record.from_locus,
+            context.locus_id,
+            context.kind,
+            applied.record.rel_id,
+            kind_cfg,
+            context.state,
+        );
+    }
+}
+
+fn apply_cross_locus_prediction(
+    context: &mut CrossLocusContext<'_>,
+    kind_cfg: Option<&crate::registry::InfluenceKindConfig>,
+    pred: batch::CrossLocusPred,
+) -> Option<AppliedCrossLocusEmergence> {
+    let batch::CrossLocusPred {
+        from_locus,
+        pre_signal,
+        pred_batch,
+        is_feedback,
+        schema_violation,
+        emergence,
+        ..
+    } = pred;
+    let (rel_id, is_new, emerged_state) = emergence_apply::apply_emergence(
+        context.world.relationships_mut(),
+        emergence,
+        context.trigger_id,
+        context.batch,
+        context.kind,
+        pre_signal,
+        kind_cfg,
+        context.resolved_slots,
+    )?;
+    Some(AppliedCrossLocusEmergence {
+        record: EmergenceRecord {
             batch: context.batch,
             from_locus,
             to_locus: context.locus_id,
@@ -239,19 +302,9 @@ pub(super) fn apply_cross_locus_emergence(
             plasticity_active: context.plasticity_active,
             post_signal: context.post_signal,
             post_locus: context.locus_id,
-        };
-        engine.record_schema_violation(schema_violation, context.kind, rel_id, context.state);
-        engine.record_relationship_emergence(&record, context.state);
-        engine.record_plasticity_observation(&record, context.state);
-        engine.record_batch_kind_touch(
-            from_locus,
-            context.locus_id,
-            context.kind,
-            rel_id,
-            kind_cfg,
-            context.state,
-        );
-    }
+        },
+        schema_violation,
+    })
 }
 
 pub(super) fn record_schema_violation(

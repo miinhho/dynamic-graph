@@ -131,12 +131,7 @@ impl PlasticityLearners {
             return;
         };
 
-        let assessment = PlasticityAssessment::from_observation(observation);
-        let transition = PlasticityAdaptationPolicy::DEFAULT.transition(
-            state.current_scale(),
-            state.current_smoothed_signal(),
-            assessment,
-        );
+        let transition = learner_transition(state, observation);
 
         state
             .smoothed_signal
@@ -164,4 +159,15 @@ impl PlasticityLearners {
             state.reset();
         }
     }
+}
+
+fn learner_transition(
+    state: &PlasticityLearnerState,
+    observation: PlasticityObservation,
+) -> PlasticityStateTransition {
+    PlasticityAdaptationPolicy::DEFAULT.transition(
+        state.current_scale(),
+        state.current_smoothed_signal(),
+        PlasticityAssessment::from_observation(observation),
+    )
 }

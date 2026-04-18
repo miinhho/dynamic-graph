@@ -30,31 +30,20 @@ pub(super) fn render_leave_one_out_markdown(result: &LeaveOneOutResult) -> Strin
         result.drops.len()
     );
 
-    let mut sorted: Vec<&DropResult> = result.drops.iter().collect();
-    sorted.sort_by(|a, b| {
-        b.psi_pair_top3_delta
-            .abs()
-            .partial_cmp(&a.psi_pair_top3_delta.abs())
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    if !sorted.is_empty() {
-        let _ = writeln!(&mut out, "\n### Per-drop effect, top 10 by |Δ Ψ_pair_top3|");
-        let _ = writeln!(
+    let rows = sorted_drop_rows(result);
+    if !rows.is_empty() {
+        render_table(
             &mut out,
-            "\n| dropped | Ψ_corr | Ψ_pair_top3 | Δ Ψ_corr | Δ Ψ_pair_top3 |"
+            "Per-drop effect, top 10 by |Δ Ψ_pair_top3|",
+            &[
+                "dropped",
+                "Ψ_corr",
+                "Ψ_pair_top3",
+                "Δ Ψ_corr",
+                "Δ Ψ_pair_top3",
+            ],
+            &rows,
         );
-        let _ = writeln!(&mut out, "|---|---|---|---|---|");
-        for drop in sorted.iter().take(10) {
-            let _ = writeln!(
-                &mut out,
-                "| {:?} | {:+.4} | {:+.4} | {:+.4} | {:+.4} |",
-                drop.dropped,
-                drop.psi_corrected,
-                drop.psi_pair_top3,
-                drop.psi_corrected_delta,
-                drop.psi_pair_top3_delta,
-            );
-        }
     }
     out
 }
@@ -122,113 +111,56 @@ pub(super) fn render_synergy_report_markdown(report: &EmergenceSynergyReport) ->
 }
 
 fn render_scalar_section(out: &mut String, heading: &str, rows: &[EmergenceEntry]) {
-    if rows.is_empty() {
-        return;
-    }
-    let _ = writeln!(out, "\n### {heading}");
-    let _ = writeln!(out, "\n| entity | Ψ | I_self | Σ I_components | n |");
-    let _ = writeln!(out, "|---|---|---|---|---|");
-    for entry in rows.iter().take(10) {
-        let _ = writeln!(
-            out,
-            "| {:?} | {:+.4} | {:.4} | {:.4} | {} |",
-            entry.entity,
-            entry.psi.psi,
-            entry.psi.i_self,
-            entry.psi.i_sum_components,
-            entry.psi.n_samples,
-        );
-    }
+    render_table(
+        out,
+        heading,
+        &["entity", "Ψ", "I_self", "Σ I_components", "n"],
+        &scalar_rows(rows),
+    );
 }
 
 fn render_synergy_section(out: &mut String, heading: &str, rows: &[EmergenceSynergyEntry]) {
-    if rows.is_empty() {
-        return;
-    }
-    let _ = writeln!(out, "\n### {heading}");
-    let _ = writeln!(
+    render_table(
         out,
-        "\n| entity | Ψ_corr | Ψ_naive | I_self | I_joint | Σ I_i | n | comp |",
+        heading,
+        &[
+            "entity", "Ψ_corr", "Ψ_naive", "I_self", "I_joint", "Σ I_i", "n", "comp",
+        ],
+        &synergy_rows(rows),
     );
-    let _ = writeln!(out, "|---|---|---|---|---|---|---|---|");
-    for entry in rows.iter().take(10) {
-        let _ = writeln!(
-            out,
-            "| {:?} | {:+.4} | {:+.4} | {:.4} | {:.4} | {:.4} | {} | {} |",
-            entry.entity,
-            entry.psi.psi_corrected,
-            entry.psi.psi_naive,
-            entry.psi.i_self,
-            entry.psi.i_joint_components,
-            entry.psi.i_sum_components,
-            entry.psi.n_samples,
-            entry.psi.n_components,
-        );
-    }
 }
 
 fn render_top_pair_section(out: &mut String, report: &EmergenceSynergyReport) {
-    let rows: Vec<(&EmergenceSynergyEntry, &SynergyPair)> = report
-        .emergent
-        .iter()
-        .chain(report.spurious.iter())
-        .filter_map(|entry| entry.psi.top_pairs.first().map(|pair| (entry, pair)))
-        .take(10)
-        .collect();
-    if rows.is_empty() {
-        return;
-    }
-    let _ = writeln!(out, "\n### Top synergistic pair per entity, top 10");
-    let _ = writeln!(
+    render_table(
         out,
-        "\n| entity | pair (a, b) | synergy | joint_mi | redundancy | mi_a | mi_b |"
+        "Top synergistic pair per entity, top 10",
+        &[
+            "entity",
+            "pair (a, b)",
+            "synergy",
+            "joint_mi",
+            "redundancy",
+            "mi_a",
+            "mi_b",
+        ],
+        &top_pair_rows(report),
     );
-    let _ = writeln!(out, "|---|---|---|---|---|---|---|");
-    for (entry, pair) in rows {
-        let _ = writeln!(
-            out,
-            "| {:?} | {:?}, {:?} | {:+.4} | {:.4} | {:.4} | {:.4} | {:.4} |",
-            entry.entity,
-            pair.a,
-            pair.b,
-            pair.synergy,
-            pair.joint_mi,
-            pair.redundancy,
-            pair.mi_a,
-            pair.mi_b,
-        );
-    }
 }
 
 fn render_pair_grain_section(out: &mut String, report: &EmergenceSynergyReport) {
-    let rows: Vec<&EmergenceSynergyEntry> = report
-        .emergent
-        .iter()
-        .chain(report.spurious.iter())
-        .filter(|entry| entry.psi.n_pairs_evaluated > 0)
-        .take(10)
-        .collect();
-    if rows.is_empty() {
-        return;
-    }
-    let _ = writeln!(out, "\n### Pair-grain emergence (H5), top 10 measured");
-    let _ = writeln!(
+    render_table(
         out,
-        "\n| entity | Ψ_pair_top3 | Σ synergy | Σ redundancy | mean synergy | n_pairs |",
+        "Pair-grain emergence (H5), top 10 measured",
+        &[
+            "entity",
+            "Ψ_pair_top3",
+            "Σ synergy",
+            "Σ redundancy",
+            "mean synergy",
+            "n_pairs",
+        ],
+        &pair_grain_rows(report),
     );
-    let _ = writeln!(out, "|---|---|---|---|---|---|");
-    for entry in rows {
-        let _ = writeln!(
-            out,
-            "| {:?} | {:+.4} | {:+.4} | {:.4} | {:+.4} | {} |",
-            entry.entity,
-            entry.psi.psi_pair_top3,
-            entry.psi.total_pair_synergy,
-            entry.psi.total_pair_redundancy,
-            entry.psi.mean_pair_synergy,
-            entry.psi.n_pairs_evaluated,
-        );
-    }
 }
 
 fn render_unmeasured_breakdown(out: &mut String, rows: &[UnmeasuredEntry]) {
@@ -268,4 +200,122 @@ fn count_unmeasured(rows: &[UnmeasuredEntry]) -> UnmeasuredCounts {
             counts
         },
     )
+}
+
+fn render_table(out: &mut String, heading: &str, headers: &[&str], rows: &[Vec<String>]) {
+    if rows.is_empty() {
+        return;
+    }
+
+    let _ = writeln!(out, "\n### {heading}");
+    let _ = writeln!(out, "\n| {} |", headers.join(" | "));
+    let _ = writeln!(out, "|{}|", vec!["---"; headers.len()].join("|"));
+    for row in rows {
+        let _ = writeln!(out, "| {} |", row.join(" | "));
+    }
+}
+
+fn sorted_drop_rows(result: &LeaveOneOutResult) -> Vec<Vec<String>> {
+    let mut sorted: Vec<&DropResult> = result.drops.iter().collect();
+    sorted.sort_by(|a, b| {
+        b.psi_pair_top3_delta
+            .abs()
+            .partial_cmp(&a.psi_pair_top3_delta.abs())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    sorted
+        .into_iter()
+        .take(10)
+        .map(|drop| {
+            vec![
+                format!("{:?}", drop.dropped),
+                format!("{:+.4}", drop.psi_corrected),
+                format!("{:+.4}", drop.psi_pair_top3),
+                format!("{:+.4}", drop.psi_corrected_delta),
+                format!("{:+.4}", drop.psi_pair_top3_delta),
+            ]
+        })
+        .collect()
+}
+
+fn scalar_rows(rows: &[EmergenceEntry]) -> Vec<Vec<String>> {
+    rows.iter()
+        .take(10)
+        .map(|entry| {
+            vec![
+                format!("{:?}", entry.entity),
+                format!("{:+.4}", entry.psi.psi),
+                format!("{:.4}", entry.psi.i_self),
+                format!("{:.4}", entry.psi.i_sum_components),
+                entry.psi.n_samples.to_string(),
+            ]
+        })
+        .collect()
+}
+
+fn synergy_rows(rows: &[EmergenceSynergyEntry]) -> Vec<Vec<String>> {
+    rows.iter()
+        .take(10)
+        .map(|entry| {
+            vec![
+                format!("{:?}", entry.entity),
+                format!("{:+.4}", entry.psi.psi_corrected),
+                format!("{:+.4}", entry.psi.psi_naive),
+                format!("{:.4}", entry.psi.i_self),
+                format!("{:.4}", entry.psi.i_joint_components),
+                format!("{:.4}", entry.psi.i_sum_components),
+                entry.psi.n_samples.to_string(),
+                entry.psi.n_components.to_string(),
+            ]
+        })
+        .collect()
+}
+
+fn top_pair_rows(report: &EmergenceSynergyReport) -> Vec<Vec<String>> {
+    report
+        .emergent
+        .iter()
+        .chain(report.spurious.iter())
+        .filter_map(|entry| {
+            entry
+                .psi
+                .top_pairs
+                .first()
+                .map(|pair| top_pair_row(entry, pair))
+        })
+        .take(10)
+        .collect()
+}
+
+fn top_pair_row(entry: &EmergenceSynergyEntry, pair: &SynergyPair) -> Vec<String> {
+    vec![
+        format!("{:?}", entry.entity),
+        format!("{:?}, {:?}", pair.a, pair.b),
+        format!("{:+.4}", pair.synergy),
+        format!("{:.4}", pair.joint_mi),
+        format!("{:.4}", pair.redundancy),
+        format!("{:.4}", pair.mi_a),
+        format!("{:.4}", pair.mi_b),
+    ]
+}
+
+fn pair_grain_rows(report: &EmergenceSynergyReport) -> Vec<Vec<String>> {
+    report
+        .emergent
+        .iter()
+        .chain(report.spurious.iter())
+        .filter(|entry| entry.psi.n_pairs_evaluated > 0)
+        .take(10)
+        .map(|entry| {
+            vec![
+                format!("{:?}", entry.entity),
+                format!("{:+.4}", entry.psi.psi_pair_top3),
+                format!("{:+.4}", entry.psi.total_pair_synergy),
+                format!("{:.4}", entry.psi.total_pair_redundancy),
+                format!("{:+.4}", entry.psi.mean_pair_synergy),
+                entry.psi.n_pairs_evaluated.to_string(),
+            ]
+        })
+        .collect()
 }

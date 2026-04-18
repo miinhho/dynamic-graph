@@ -1,4 +1,4 @@
-use graph_core::{Cohere, CohereMembers, Endpoints, Relationship};
+use graph_core::{Cohere, CohereMembers, Endpoints, EntityId, Relationship, RelationshipId};
 
 use super::{CohereResult, RelationshipSummary};
 
@@ -21,23 +21,26 @@ pub(crate) fn rel_to_summary(r: &Relationship) -> RelationshipSummary {
 }
 
 pub(crate) fn coheres_to_results(coheres: &[Cohere]) -> Vec<CohereResult> {
-    coheres
-        .iter()
-        .map(|c| {
-            let (entity_ids, relationship_ids) = match &c.members {
-                CohereMembers::Entities(ids) => (ids.clone(), vec![]),
-                CohereMembers::Relationships(ids) => (vec![], ids.clone()),
-                CohereMembers::Mixed {
-                    entities,
-                    relationships,
-                } => (entities.clone(), relationships.clone()),
-            };
-            CohereResult {
-                id: c.id,
-                entity_ids,
-                relationship_ids,
-                strength: c.strength,
-            }
-        })
-        .collect()
+    coheres.iter().map(cohere_to_result).collect()
+}
+
+fn cohere_to_result(cohere: &Cohere) -> CohereResult {
+    let (entity_ids, relationship_ids) = cohere_member_ids(&cohere.members);
+    CohereResult {
+        id: cohere.id,
+        entity_ids,
+        relationship_ids,
+        strength: cohere.strength,
+    }
+}
+
+fn cohere_member_ids(members: &CohereMembers) -> (Vec<EntityId>, Vec<RelationshipId>) {
+    match members {
+        CohereMembers::Entities(ids) => (ids.clone(), vec![]),
+        CohereMembers::Relationships(ids) => (vec![], ids.clone()),
+        CohereMembers::Mixed {
+            entities,
+            relationships,
+        } => (entities.clone(), relationships.clone()),
+    }
 }

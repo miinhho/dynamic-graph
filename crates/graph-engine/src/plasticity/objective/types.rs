@@ -1,6 +1,14 @@
+mod events;
+mod metrics;
+
 use std::collections::HashSet;
 
 use graph_core::{BatchId, LocusId};
+
+use self::{
+    events::event_pairs,
+    metrics::observation_metrics,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RankedPair {
@@ -63,21 +71,8 @@ pub struct PairObservationTargets {
 
 impl PairObservationTargets {
     pub fn from_event_log(window: PairObservationWindow, event_log: &[Vec<Vec<u64>>]) -> Self {
-        let mut pairs = HashSet::new();
-        for block in event_log {
-            for event in block {
-                for left in 0..event.len() {
-                    for right in (left + 1)..event.len() {
-                        let a = LocusId(event[left]);
-                        let b = LocusId(event[right]);
-                        pairs.insert(if a.0 < b.0 { (a, b) } else { (b, a) });
-                    }
-                }
-            }
-        }
-
         Self {
-            pairs,
+            pairs: event_pairs(event_log),
             window_batches: window.batch_count(),
         }
     }
@@ -100,21 +95,12 @@ impl PlasticityObservation {
         window_batches: u64,
         recall_weight: f32,
     ) -> Self {
-        let precision_at_k = if k_used == 0 {
-            0.0
-        } else {
-            hits as f32 / k_used as f32
-        };
-        let recall = if observed_pair_count == 0 {
-            0.0
-        } else {
-            hits as f32 / observed_pair_count as f32
-        };
+        let metrics = observation_metrics(hits, k_used, observed_pair_count, recall_weight);
 
         Self {
-            loss: (1.0 - precision_at_k) + recall_weight * (1.0 - recall),
-            precision_at_k,
-            recall,
+            loss: metrics.loss,
+            precision_at_k: metrics.precision_at_k,
+            recall: metrics.recall,
             k_used,
             window_batches,
         }
