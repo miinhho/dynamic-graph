@@ -195,9 +195,7 @@ fn static_clique_detection_tuned() {
     populate_world_static(&mut world);
 
     let engine = Engine::default();
-    let perspective = DefaultEmergencePerspective {
-        min_activity_threshold: Some(3.0),
-    };
+    let perspective = DefaultEmergencePerspective::default().with_min_activity_threshold(3.0);
     engine.recognize_entities(&mut world, &inf, &perspective);
 
     report_partition(&world);
@@ -319,9 +317,7 @@ fn dynamic_clique_emergence_tuned() {
     let (mut world, inf) = run_dynamic_events();
 
     let engine = Engine::default();
-    let perspective = DefaultEmergencePerspective {
-        min_activity_threshold: Some(5.0),
-    };
+    let perspective = DefaultEmergencePerspective::default().with_min_activity_threshold(5.0);
     engine.recognize_entities(&mut world, &inf, &perspective);
 
     report_partition(&world);

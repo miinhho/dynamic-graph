@@ -572,14 +572,8 @@ fn entity_becomes_dormant_when_relationship_decays_below_threshold() {
     let (mut world, influences) = two_locus_world_after_forwarding_tick();
     let engine = Engine::default();
     // activity = 1.0 × |0.5| = 0.5; threshold below 0.5 → emerges, above → dormant
-    let perspective = DefaultEmergencePerspective {
-        min_activity_threshold: Some(0.3),
-        ..Default::default()
-    };
-    let perspective_high = DefaultEmergencePerspective {
-        min_activity_threshold: Some(0.8),
-        ..Default::default()
-    };
+    let perspective = DefaultEmergencePerspective::default().with_min_activity_threshold(0.3);
+    let perspective_high = DefaultEmergencePerspective::default().with_min_activity_threshold(0.8);
     engine.recognize_entities(&mut world, &influences, &perspective);
     assert_eq!(world.entities().active_count(), 1);
     engine.recognize_entities(&mut world, &influences, &perspective_high);

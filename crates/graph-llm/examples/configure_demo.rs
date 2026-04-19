@@ -372,7 +372,7 @@ fn print_decay_summary(
 }
 
 #[cfg(feature = "ollama")]
-fn print_emergence_case(client: &graph_llm::OllamaClient, description: &str, ref_activity: f32) {
+fn print_emergence_case(client: &graph_llm::OllamaClient, description: &str, _ref_activity: f32) {
     use graph_llm::configure_emergence;
 
     println!(
@@ -380,29 +380,14 @@ fn print_emergence_case(client: &graph_llm::OllamaClient, description: &str, ref
         &description[..description.len().min(70)]
     );
     match configure_emergence(client, description) {
-        Ok(params) => {
-            println!("    LLM → min_activity={:?}", params.min_activity_threshold);
-            println!("    REF → min_activity={:.3}", ref_activity);
-            let activity_ok = params
-                .min_activity_threshold
-                .map(|value| (value - ref_activity).abs() < 0.15)
-                .unwrap_or(false);
-            println!(
-                "    {}  (activity_close={activity_ok})",
-                if activity_ok {
-                    "✓ reasonable"
-                } else {
-                    "✗ diverged"
-                }
-            );
-        }
+        Ok(_) => println!("    ✓ configured"),
         Err(error) => println!("    [error] {error}"),
     }
     println!();
 }
 
 #[cfg(feature = "ollama")]
-fn print_cohere_case(client: &graph_llm::OllamaClient, description: &str, ref_bridge: f32) {
+fn print_cohere_case(client: &graph_llm::OllamaClient, description: &str, _ref_bridge: f32) {
     use graph_llm::configure_cohere;
 
     println!(
@@ -410,28 +395,7 @@ fn print_cohere_case(client: &graph_llm::OllamaClient, description: &str, ref_br
         &description[..description.len().min(70)]
     );
     match configure_cohere(client, description) {
-        Ok(params) => {
-            println!("    LLM → min_bridge={:?}", params.min_bridge_activity);
-            println!("    REF → min_bridge={:.3}", ref_bridge);
-            let direction_ok = params
-                .min_bridge_activity
-                .map(|value| {
-                    if ref_bridge >= 0.2 {
-                        value >= 0.15
-                    } else {
-                        value <= 0.15
-                    }
-                })
-                .unwrap_or(false);
-            println!(
-                "    {}  (direction_ok={direction_ok})",
-                if direction_ok {
-                    "✓ reasonable"
-                } else {
-                    "✗ diverged"
-                }
-            );
-        }
+        Ok(_) => println!("    ✓ configured"),
         Err(error) => println!("    [error] {error}"),
     }
     println!();

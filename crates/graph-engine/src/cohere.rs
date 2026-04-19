@@ -64,7 +64,7 @@ pub struct DefaultCoherePerspective {
     /// threshold. Robust across sparse/dense regimes and scale-free.
     /// Setting `Some(x)` pins the threshold and bypasses the median
     /// computation.
-    pub min_bridge_activity: Option<f32>,
+    min_bridge_activity: Option<f32>,
 }
 
 impl Default for DefaultCoherePerspective {
@@ -73,6 +73,22 @@ impl Default for DefaultCoherePerspective {
             name: "default".to_string(),
             min_bridge_activity: None,
         }
+    }
+}
+
+impl DefaultCoherePerspective {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            min_bridge_activity: None,
+        }
+    }
+
+    /// Override the distribution-based auto-threshold. Only use when the
+    /// auto heuristic picks the wrong bridge cut for your domain.
+    pub fn with_min_bridge_activity(mut self, threshold: f32) -> Self {
+        self.min_bridge_activity = Some(threshold);
+        self
     }
 }
 

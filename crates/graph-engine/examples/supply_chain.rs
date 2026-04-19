@@ -531,10 +531,7 @@ fn main() {
 
     // ── Entity recognition ─────────────────────────────────────────────────────
 
-    let ep = DefaultEmergencePerspective {
-        min_activity_threshold: Some(0.01),
-        ..Default::default()
-    };
+    let ep = DefaultEmergencePerspective::default();
     sim.recognize_entities(&ep);
     {
         let wg = sim.world();
@@ -554,10 +551,7 @@ fn main() {
 
     // ── Cohere clusters ────────────────────────────────────────────────────────
 
-    let cp = DefaultCoherePerspective {
-        min_bridge_activity: Some(0.01),
-        ..Default::default()
-    };
+    let cp = DefaultCoherePerspective::default();
     sim.extract_cohere(&cp);
     {
         let coheres_guard = sim.world();

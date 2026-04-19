@@ -368,13 +368,8 @@ fn main() {
     // NameMap is built once from PropertyStore (all neurons have "name" set).
     let names = NameMap::from_world(&*sim.world());
 
-    let ep = DefaultEmergencePerspective {
-        min_activity_threshold: Some(0.05),
-    };
-    let cp = DefaultCoherePerspective {
-        min_bridge_activity: Some(0.03),
-        ..Default::default()
-    };
+    let ep = DefaultEmergencePerspective::default();
+    let cp = DefaultCoherePerspective::default();
 
     // ── Round 1: Touch stimulation ────────────────────────────────────────
     println!("\n--- Round 1: Posterior touch (PLM, PVD) ---");

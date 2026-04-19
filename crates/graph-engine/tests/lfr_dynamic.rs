@@ -550,9 +550,8 @@ fn planted_layout_is_disjoint_and_complete() {
 /// transition test is meaningful.
 #[test]
 fn planted_born_detected() {
-    let perspective = DefaultEmergencePerspective {
-        min_activity_threshold: Some(ACTIVITY_THRESHOLD),
-    };
+    let perspective =
+        DefaultEmergencePerspective::default().with_min_activity_threshold(ACTIVITY_THRESHOLD);
     let (world, phase_ends) = run_phases(&[&[A, B, C, D]], &perspective);
 
     let detected = collect_transitions(&world);
@@ -597,9 +596,8 @@ fn planted_born_detected() {
 /// with 2 offspring.
 #[test]
 fn planted_split_detected() {
-    let perspective = DefaultEmergencePerspective {
-        min_activity_threshold: Some(ACTIVITY_THRESHOLD),
-    };
+    let perspective =
+        DefaultEmergencePerspective::default().with_min_activity_threshold(ACTIVITY_THRESHOLD);
     let (world, phase_ends) = run_phases(&[&[A], &[A1, A2]], &perspective);
 
     let detected = collect_transitions(&world);
@@ -631,9 +629,8 @@ fn planted_split_detected() {
 /// community. The engine should deposit a `Merged` layer.
 #[test]
 fn planted_merge_detected() {
-    let perspective = DefaultEmergencePerspective {
-        min_activity_threshold: Some(ACTIVITY_THRESHOLD),
-    };
+    let perspective =
+        DefaultEmergencePerspective::default().with_min_activity_threshold(ACTIVITY_THRESHOLD);
     let (world, phase_ends) = run_phases(&[&[C, D], &[CD]], &perspective);
 
     let detected = collect_transitions(&world);
@@ -671,9 +668,8 @@ fn planted_merge_detected() {
 /// activity decays below threshold; the engine should mark B dormant.
 #[test]
 fn planted_dormant_detected() {
-    let perspective = DefaultEmergencePerspective {
-        min_activity_threshold: Some(ACTIVITY_THRESHOLD),
-    };
+    let perspective =
+        DefaultEmergencePerspective::default().with_min_activity_threshold(ACTIVITY_THRESHOLD);
     let (world, phase_ends) = run_phases(&[&[A, B], &[A]], &perspective);
 
     let detected = collect_transitions(&world);
@@ -725,9 +721,8 @@ fn planted_dormant_detected() {
 /// transitions recover at precision 1.0 / recall 1.0.
 #[test]
 fn composite_greene_protocol_tuned() {
-    let perspective = DefaultEmergencePerspective {
-        min_activity_threshold: Some(ACTIVITY_THRESHOLD),
-    };
+    let perspective =
+        DefaultEmergencePerspective::default().with_min_activity_threshold(ACTIVITY_THRESHOLD);
     let (world, phase_ends) = run_phases(
         &[
             &[A, B, C, D],      // phase 0: seed

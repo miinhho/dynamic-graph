@@ -452,13 +452,8 @@ fn build_simulation() -> (Simulation, u128) {
 
 fn build_perspectives() -> Perspectives {
     Perspectives {
-        emergence: DefaultEmergencePerspective {
-            min_activity_threshold: Some(0.25),
-        },
-        cohere: DefaultCoherePerspective {
-            min_bridge_activity: Some(0.15),
-            ..Default::default()
-        },
+        emergence: DefaultEmergencePerspective::default(),
+        cohere: DefaultCoherePerspective::default(),
     }
 }
 

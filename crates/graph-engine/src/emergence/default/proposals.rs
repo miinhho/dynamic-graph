@@ -123,11 +123,7 @@ pub(super) fn resolve_component_proposal(
         [] => match apply_exclusivity_filter(members, &empty_set(), member_rels, context) {
             ExclusivityOutcome::Collapsed => return,
             ExclusivityOutcome::Unchanged(rels) => (members.to_vec(), None, rels),
-            ExclusivityOutcome::Filtered {
-                members,
-                set,
-                rels,
-            } => (members, Some(set), rels),
+            ExclusivityOutcome::Filtered { members, set, rels } => (members, Some(set), rels),
         },
         &[entity] => {
             let protected: FxHashSet<LocusId> = context
@@ -138,11 +134,7 @@ pub(super) fn resolve_component_proposal(
             match apply_exclusivity_filter(members, &protected, member_rels, context) {
                 ExclusivityOutcome::Collapsed => return,
                 ExclusivityOutcome::Unchanged(rels) => (members.to_vec(), None, rels),
-                ExclusivityOutcome::Filtered {
-                    members,
-                    set,
-                    rels,
-                } => (members, Some(set), rels),
+                ExclusivityOutcome::Filtered { members, set, rels } => (members, Some(set), rels),
             }
         }
         _ => (members.to_vec(), None, member_rels),
@@ -206,7 +198,8 @@ fn apply_exclusivity_filter(
         return ExclusivityOutcome::Unchanged(member_rels);
     }
 
-    let filtered_members: Vec<LocusId> = members.iter().copied().filter(|l| !is_foreign(l)).collect();
+    let filtered_members: Vec<LocusId> =
+        members.iter().copied().filter(|l| !is_foreign(l)).collect();
     if filtered_members.len() < MIN_SIGNIFICANT_BUCKET {
         EXCLUSIVITY_COLLAPSED.fetch_add(1, Ordering::Relaxed);
         return ExclusivityOutcome::Collapsed;

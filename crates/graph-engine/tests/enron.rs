@@ -112,7 +112,9 @@ impl LocusProgram for EmailProgram {
                 continue;
             };
             for val in ids {
-                let PropertyValue::Int(id) = val else { continue };
+                let PropertyValue::Int(id) = val else {
+                    continue;
+                };
                 let other = *id as u64;
                 if other == locus.id.0 {
                     continue;
@@ -158,7 +160,9 @@ fn insert_employees(world: &mut World) {
 }
 
 fn make_inf_reg() -> InfluenceKindRegistry {
-    let cfg = InfluenceKindConfig::new("email").with_decay(DECAY).with_symmetric(true);
+    let cfg = InfluenceKindConfig::new("email")
+        .with_decay(DECAY)
+        .with_symmetric(true);
     let mut reg = InfluenceKindRegistry::new();
     reg.insert(EMAIL, cfg);
     reg
@@ -264,11 +268,19 @@ fn collect_transitions(world: &World) -> Vec<DetectedTransition> {
                 LayerTransition::Split { offspring } => (TransitionKind::Split, offspring.clone()),
                 LayerTransition::Merged { absorbed } => (TransitionKind::Merge, absorbed.clone()),
                 LayerTransition::BecameDormant => (TransitionKind::Dormant, vec![]),
-                LayerTransition::MembershipDelta { .. } => (TransitionKind::MembershipDelta, vec![]),
+                LayerTransition::MembershipDelta { .. } => {
+                    (TransitionKind::MembershipDelta, vec![])
+                }
                 LayerTransition::CoherenceShift { .. } => (TransitionKind::CoherenceShift, vec![]),
                 LayerTransition::Revived => (TransitionKind::Revived, vec![]),
             };
-            all.push(DetectedTransition { entity: e.id, batch: layer.batch, kind, members, related });
+            all.push(DetectedTransition {
+                entity: e.id,
+                batch: layer.batch,
+                kind,
+                members,
+                related,
+            });
         }
     }
     all.sort_by_key(|t| (t.batch.0, t.entity.0));
@@ -293,7 +305,11 @@ fn effective_members(world: &World, t: &DetectedTransition) -> BTreeSet<u64> {
 fn jaccard(a: &BTreeSet<u64>, b: &BTreeSet<u64>) -> f32 {
     let inter = a.intersection(b).count();
     let union = a.len() + b.len() - inter;
-    if union == 0 { 1.0 } else { inter as f32 / union as f32 }
+    if union == 0 {
+        1.0
+    } else {
+        inter as f32 / union as f32
+    }
 }
 
 fn set(xs: &[u64]) -> BTreeSet<u64> {
@@ -320,10 +336,18 @@ struct Score {
 
 impl Score {
     fn precision(&self) -> f32 {
-        if self.detected == 0 { 0.0 } else { self.tp as f32 / self.detected as f32 }
+        if self.detected == 0 {
+            0.0
+        } else {
+            self.tp as f32 / self.detected as f32
+        }
     }
     fn recall(&self) -> f32 {
-        if self.planted == 0 { 1.0 } else { self.tp as f32 / self.planted as f32 }
+        if self.planted == 0 {
+            1.0
+        } else {
+            self.tp as f32 / self.planted as f32
+        }
     }
 }
 
@@ -336,8 +360,11 @@ fn score_transitions(
 
     let mut by_kind: HashMap<TransitionKind, Score> = HashMap::new();
     for k in [
-        TransitionKind::Born, TransitionKind::Split, TransitionKind::Merge,
-        TransitionKind::Dormant, TransitionKind::Revived,
+        TransitionKind::Born,
+        TransitionKind::Split,
+        TransitionKind::Merge,
+        TransitionKind::Dormant,
+        TransitionKind::Revived,
     ] {
         by_kind.insert(k, Score::default());
     }
@@ -357,21 +384,31 @@ fn score_transitions(
     for p in planted {
         let mut best: Option<(usize, i64, f32)> = None;
         for (i, d) in detected.iter().enumerate() {
-            if consumed[i] || d.kind != p.kind { continue; }
+            if consumed[i] || d.kind != p.kind {
+                continue;
+            }
             let dt = (d.batch.0 as i64 - p.batch.0 as i64).abs();
-            if dt as u64 > MATCH_WINDOW { continue; }
+            if dt as u64 > MATCH_WINDOW {
+                continue;
+            }
             let d_members = effective_members(world, d);
             let score = jaccard(&p.members, &d_members);
-            if score < MEMBER_JACCARD_MIN { continue; }
+            if score < MEMBER_JACCARD_MIN {
+                continue;
+            }
             let better = match best {
                 None => true,
                 Some((_, b_dt, b_score)) => dt < b_dt || (dt == b_dt && score > b_score),
             };
-            if better { best = Some((i, dt, score)); }
+            if better {
+                best = Some((i, dt, score));
+            }
         }
         if let Some((i, _, _)) = best {
             consumed[i] = true;
-            if let Some(s) = by_kind.get_mut(&p.kind) { s.tp += 1; }
+            if let Some(s) = by_kind.get_mut(&p.kind) {
+                s.tp += 1;
+            }
         }
     }
     by_kind
@@ -402,13 +439,21 @@ fn report(
         "kind", "planted", "detected", "tp", "precision", "recall"
     );
     for k in [
-        TransitionKind::Born, TransitionKind::Split, TransitionKind::Merge,
-        TransitionKind::Dormant, TransitionKind::Revived,
+        TransitionKind::Born,
+        TransitionKind::Split,
+        TransitionKind::Merge,
+        TransitionKind::Dormant,
+        TransitionKind::Revived,
     ] {
         if let Some(s) = scores.get(&k) {
             println!(
                 "{:<18} {:>8} {:>8} {:>8} {:>10.2} {:>10.2}",
-                format!("{k:?}"), s.planted, s.detected, s.tp, s.precision(), s.recall(),
+                format!("{k:?}"),
+                s.planted,
+                s.detected,
+                s.tp,
+                s.precision(),
+                s.recall(),
             );
         }
     }
@@ -424,7 +469,9 @@ fn initial_departments_are_recognized() {
     insert_employees(&mut world);
     let inf = make_inf_reg();
     let loci_reg = make_loci_reg();
-    let engine = Engine::new(EngineConfig { max_batches_per_tick: 3 });
+    let engine = Engine::new(EngineConfig {
+        max_batches_per_tick: 3,
+    });
     let perspective = DefaultEmergencePerspective::default();
 
     let active: Vec<Vec<u64>> = (0..N_DEPTS).map(dept).collect();
@@ -444,11 +491,7 @@ fn initial_departments_are_recognized() {
     report("initial_departments_are_recognized", &scores, &detected);
 
     let born = scores.get(&TransitionKind::Born).unwrap();
-    assert!(
-        born.tp >= 5,
-        "expected ≥5/6 depts Born (tp={})",
-        born.tp
-    );
+    assert!(born.tp >= 5, "expected ≥5/6 depts Born (tp={})", born.tp);
     assert!(
         born.precision() >= 0.70,
         "too many spurious Born events (precision={:.2})",
@@ -464,20 +507,43 @@ fn merge_ef_detected() {
     insert_employees(&mut world);
     let inf = make_inf_reg();
     let loci_reg = make_loci_reg();
-    let engine = Engine::new(EngineConfig { max_batches_per_tick: 3 });
+    let engine = Engine::new(EngineConfig {
+        max_batches_per_tick: 3,
+    });
     let perspective = DefaultEmergencePerspective::default();
 
     let active0: Vec<Vec<u64>> = (0..N_DEPTS).map(dept).collect();
     let p0 = run_phase(&mut world, &engine, &loci_reg, &inf, &perspective, &active0);
 
-    let active1 = vec![dept(DEPT_A), dept(DEPT_B), dept(DEPT_C), dept(DEPT_D), dept_ef()];
+    let active1 = vec![
+        dept(DEPT_A),
+        dept(DEPT_B),
+        dept(DEPT_C),
+        dept(DEPT_D),
+        dept_ef(),
+    ];
     let p1 = run_phase(&mut world, &engine, &loci_reg, &inf, &perspective, &active1);
 
     let detected = collect_transitions(&world);
     let planted = vec![
-        PlantedEvent { kind: TransitionKind::Born, batch: p0, members: set(&dept(DEPT_E)), label: "E born" },
-        PlantedEvent { kind: TransitionKind::Born, batch: p0, members: set(&dept(DEPT_F)), label: "F born" },
-        PlantedEvent { kind: TransitionKind::Merge, batch: p1, members: set(&dept_ef()), label: "E+F → EF" },
+        PlantedEvent {
+            kind: TransitionKind::Born,
+            batch: p0,
+            members: set(&dept(DEPT_E)),
+            label: "E born",
+        },
+        PlantedEvent {
+            kind: TransitionKind::Born,
+            batch: p0,
+            members: set(&dept(DEPT_F)),
+            label: "F born",
+        },
+        PlantedEvent {
+            kind: TransitionKind::Merge,
+            batch: p1,
+            members: set(&dept_ef()),
+            label: "E+F → EF",
+        },
     ];
     let scores = score_transitions(&world, &detected, &planted);
     report("merge_ef_detected", &scores, &detected);
@@ -494,13 +560,33 @@ fn dormant_ef_detected() {
     insert_employees(&mut world);
     let inf = make_inf_reg();
     let loci_reg = make_loci_reg();
-    let engine = Engine::new(EngineConfig { max_batches_per_tick: 3 });
+    let engine = Engine::new(EngineConfig {
+        max_batches_per_tick: 3,
+    });
     let perspective = DefaultEmergencePerspective::default();
 
-    run_phase(&mut world, &engine, &loci_reg, &inf, &perspective,
-        &(0..N_DEPTS).map(dept).collect::<Vec<_>>());
-    run_phase(&mut world, &engine, &loci_reg, &inf, &perspective,
-        &vec![dept(DEPT_A), dept(DEPT_B), dept(DEPT_C), dept(DEPT_D), dept_ef()]);
+    run_phase(
+        &mut world,
+        &engine,
+        &loci_reg,
+        &inf,
+        &perspective,
+        &(0..N_DEPTS).map(dept).collect::<Vec<_>>(),
+    );
+    run_phase(
+        &mut world,
+        &engine,
+        &loci_reg,
+        &inf,
+        &perspective,
+        &vec![
+            dept(DEPT_A),
+            dept(DEPT_B),
+            dept(DEPT_C),
+            dept(DEPT_D),
+            dept_ef(),
+        ],
+    );
 
     let active2 = vec![dept(DEPT_A), dept(DEPT_B), dept(DEPT_C), dept(DEPT_D)];
     let p2 = run_phase(&mut world, &engine, &loci_reg, &inf, &perspective, &active2);
@@ -516,7 +602,11 @@ fn dormant_ef_detected() {
     report("dormant_ef_detected", &scores, &detected);
 
     let dormant = scores.get(&TransitionKind::Dormant).unwrap();
-    assert_eq!(dormant.tp, 1, "EF must go dormant after silence (tp={})", dormant.tp);
+    assert_eq!(
+        dormant.tp, 1,
+        "EF must go dormant after silence (tp={})",
+        dormant.tp
+    );
 }
 
 // ── Isolated: Revived (EF comes back) ────────────────────────────────────────
@@ -530,17 +620,49 @@ fn revived_ef_detected() {
     insert_employees(&mut world);
     let inf = make_inf_reg();
     let loci_reg = make_loci_reg();
-    let engine = Engine::new(EngineConfig { max_batches_per_tick: 3 });
+    let engine = Engine::new(EngineConfig {
+        max_batches_per_tick: 3,
+    });
     let perspective = DefaultEmergencePerspective::default();
 
-    run_phase(&mut world, &engine, &loci_reg, &inf, &perspective,
-        &(0..N_DEPTS).map(dept).collect::<Vec<_>>());
-    run_phase(&mut world, &engine, &loci_reg, &inf, &perspective,
-        &vec![dept(DEPT_A), dept(DEPT_B), dept(DEPT_C), dept(DEPT_D), dept_ef()]);
-    run_phase(&mut world, &engine, &loci_reg, &inf, &perspective,
-        &vec![dept(DEPT_A), dept(DEPT_B), dept(DEPT_C), dept(DEPT_D)]);
-    run_phase(&mut world, &engine, &loci_reg, &inf, &perspective,
-        &vec![dept(DEPT_A), dept(DEPT_B), dept(DEPT_C)]);
+    run_phase(
+        &mut world,
+        &engine,
+        &loci_reg,
+        &inf,
+        &perspective,
+        &(0..N_DEPTS).map(dept).collect::<Vec<_>>(),
+    );
+    run_phase(
+        &mut world,
+        &engine,
+        &loci_reg,
+        &inf,
+        &perspective,
+        &vec![
+            dept(DEPT_A),
+            dept(DEPT_B),
+            dept(DEPT_C),
+            dept(DEPT_D),
+            dept_ef(),
+        ],
+    );
+    run_phase(
+        &mut world,
+        &engine,
+        &loci_reg,
+        &inf,
+        &perspective,
+        &vec![dept(DEPT_A), dept(DEPT_B), dept(DEPT_C), dept(DEPT_D)],
+    );
+    run_phase(
+        &mut world,
+        &engine,
+        &loci_reg,
+        &inf,
+        &perspective,
+        &vec![dept(DEPT_A), dept(DEPT_B), dept(DEPT_C)],
+    );
 
     let active4 = vec![dept(DEPT_A), dept(DEPT_B), dept(DEPT_C), dept_ef()];
     let p4 = run_phase(&mut world, &engine, &loci_reg, &inf, &perspective, &active4);
@@ -571,32 +693,120 @@ fn full_enron_protocol() {
     insert_employees(&mut world);
     let inf = make_inf_reg();
     let loci_reg = make_loci_reg();
-    let engine = Engine::new(EngineConfig { max_batches_per_tick: 3 });
+    let engine = Engine::new(EngineConfig {
+        max_batches_per_tick: 3,
+    });
     let perspective = DefaultEmergencePerspective::default();
 
-    let p0 = run_phase(&mut world, &engine, &loci_reg, &inf, &perspective,
-        &(0..N_DEPTS).map(dept).collect::<Vec<_>>());
-    let p1 = run_phase(&mut world, &engine, &loci_reg, &inf, &perspective,
-        &vec![dept(DEPT_A), dept(DEPT_B), dept(DEPT_C), dept(DEPT_D), dept_ef()]);
-    let p2 = run_phase(&mut world, &engine, &loci_reg, &inf, &perspective,
-        &vec![dept(DEPT_A), dept(DEPT_B), dept(DEPT_C), dept(DEPT_D)]);
-    let p3 = run_phase(&mut world, &engine, &loci_reg, &inf, &perspective,
-        &vec![dept(DEPT_A), dept(DEPT_B), dept(DEPT_C)]);
-    let p4 = run_phase(&mut world, &engine, &loci_reg, &inf, &perspective,
-        &vec![dept(DEPT_A), dept(DEPT_B), dept(DEPT_C), dept_ef()]);
+    let p0 = run_phase(
+        &mut world,
+        &engine,
+        &loci_reg,
+        &inf,
+        &perspective,
+        &(0..N_DEPTS).map(dept).collect::<Vec<_>>(),
+    );
+    let p1 = run_phase(
+        &mut world,
+        &engine,
+        &loci_reg,
+        &inf,
+        &perspective,
+        &vec![
+            dept(DEPT_A),
+            dept(DEPT_B),
+            dept(DEPT_C),
+            dept(DEPT_D),
+            dept_ef(),
+        ],
+    );
+    let p2 = run_phase(
+        &mut world,
+        &engine,
+        &loci_reg,
+        &inf,
+        &perspective,
+        &vec![dept(DEPT_A), dept(DEPT_B), dept(DEPT_C), dept(DEPT_D)],
+    );
+    let p3 = run_phase(
+        &mut world,
+        &engine,
+        &loci_reg,
+        &inf,
+        &perspective,
+        &vec![dept(DEPT_A), dept(DEPT_B), dept(DEPT_C)],
+    );
+    let p4 = run_phase(
+        &mut world,
+        &engine,
+        &loci_reg,
+        &inf,
+        &perspective,
+        &vec![dept(DEPT_A), dept(DEPT_B), dept(DEPT_C), dept_ef()],
+    );
 
     let detected = collect_transitions(&world);
     let planted = vec![
-        PlantedEvent { kind: TransitionKind::Born, batch: p0, members: set(&dept(DEPT_A)), label: "A" },
-        PlantedEvent { kind: TransitionKind::Born, batch: p0, members: set(&dept(DEPT_B)), label: "B" },
-        PlantedEvent { kind: TransitionKind::Born, batch: p0, members: set(&dept(DEPT_C)), label: "C" },
-        PlantedEvent { kind: TransitionKind::Born, batch: p0, members: set(&dept(DEPT_D)), label: "D" },
-        PlantedEvent { kind: TransitionKind::Born, batch: p0, members: set(&dept(DEPT_E)), label: "E" },
-        PlantedEvent { kind: TransitionKind::Born, batch: p0, members: set(&dept(DEPT_F)), label: "F" },
-        PlantedEvent { kind: TransitionKind::Merge, batch: p1, members: set(&dept_ef()), label: "E+F→EF" },
-        PlantedEvent { kind: TransitionKind::Dormant, batch: p2, members: set(&dept_ef()), label: "EF dormant" },
-        PlantedEvent { kind: TransitionKind::Dormant, batch: p3, members: set(&dept(DEPT_D)), label: "D dormant" },
-        PlantedEvent { kind: TransitionKind::Revived, batch: p4, members: set(&dept_ef()), label: "EF revived" },
+        PlantedEvent {
+            kind: TransitionKind::Born,
+            batch: p0,
+            members: set(&dept(DEPT_A)),
+            label: "A",
+        },
+        PlantedEvent {
+            kind: TransitionKind::Born,
+            batch: p0,
+            members: set(&dept(DEPT_B)),
+            label: "B",
+        },
+        PlantedEvent {
+            kind: TransitionKind::Born,
+            batch: p0,
+            members: set(&dept(DEPT_C)),
+            label: "C",
+        },
+        PlantedEvent {
+            kind: TransitionKind::Born,
+            batch: p0,
+            members: set(&dept(DEPT_D)),
+            label: "D",
+        },
+        PlantedEvent {
+            kind: TransitionKind::Born,
+            batch: p0,
+            members: set(&dept(DEPT_E)),
+            label: "E",
+        },
+        PlantedEvent {
+            kind: TransitionKind::Born,
+            batch: p0,
+            members: set(&dept(DEPT_F)),
+            label: "F",
+        },
+        PlantedEvent {
+            kind: TransitionKind::Merge,
+            batch: p1,
+            members: set(&dept_ef()),
+            label: "E+F→EF",
+        },
+        PlantedEvent {
+            kind: TransitionKind::Dormant,
+            batch: p2,
+            members: set(&dept_ef()),
+            label: "EF dormant",
+        },
+        PlantedEvent {
+            kind: TransitionKind::Dormant,
+            batch: p3,
+            members: set(&dept(DEPT_D)),
+            label: "D dormant",
+        },
+        PlantedEvent {
+            kind: TransitionKind::Revived,
+            batch: p4,
+            members: set(&dept_ef()),
+            label: "EF revived",
+        },
     ];
 
     let scores = score_transitions(&world, &detected, &planted);
@@ -604,7 +814,11 @@ fn full_enron_protocol() {
 
     let born = scores.get(&TransitionKind::Born).unwrap();
     assert!(born.tp >= 5, "Born tp={} (need ≥5/6)", born.tp);
-    assert!(born.precision() >= 0.70, "Born precision={:.2}", born.precision());
+    assert!(
+        born.precision() >= 0.70,
+        "Born precision={:.2}",
+        born.precision()
+    );
 
     let merge = scores.get(&TransitionKind::Merge).unwrap();
     assert_eq!(merge.tp, 1, "E+F→EF merge tp={}", merge.tp);
@@ -613,7 +827,11 @@ fn full_enron_protocol() {
     assert!(dormant.tp >= 1, "EF must go dormant (tp={})", dormant.tp);
 
     let revived = scores.get(&TransitionKind::Revived).unwrap();
-    assert!(revived.tp >= 1, "EF revival must be detected (tp={})", revived.tp);
+    assert!(
+        revived.tp >= 1,
+        "EF revival must be detected (tp={})",
+        revived.tp
+    );
 
     // CoherenceShift expected 0 — closes Finding 2a
     let (_, cs, _) = noise_counts(&detected);
@@ -632,17 +850,49 @@ fn next_phase_prediction_accuracy() {
     insert_employees(&mut train_world);
     let inf = make_inf_reg();
     let loci_reg = make_loci_reg();
-    let engine = Engine::new(EngineConfig { max_batches_per_tick: 3 });
+    let engine = Engine::new(EngineConfig {
+        max_batches_per_tick: 3,
+    });
     let perspective = DefaultEmergencePerspective::default();
 
-    run_phase(&mut train_world, &engine, &loci_reg, &inf, &perspective,
-        &(0..N_DEPTS).map(dept).collect::<Vec<_>>());
-    run_phase(&mut train_world, &engine, &loci_reg, &inf, &perspective,
-        &vec![dept(DEPT_A), dept(DEPT_B), dept(DEPT_C), dept(DEPT_D), dept_ef()]);
-    run_phase(&mut train_world, &engine, &loci_reg, &inf, &perspective,
-        &vec![dept(DEPT_A), dept(DEPT_B), dept(DEPT_C), dept(DEPT_D)]);
-    run_phase(&mut train_world, &engine, &loci_reg, &inf, &perspective,
-        &vec![dept(DEPT_A), dept(DEPT_B), dept(DEPT_C)]);
+    run_phase(
+        &mut train_world,
+        &engine,
+        &loci_reg,
+        &inf,
+        &perspective,
+        &(0..N_DEPTS).map(dept).collect::<Vec<_>>(),
+    );
+    run_phase(
+        &mut train_world,
+        &engine,
+        &loci_reg,
+        &inf,
+        &perspective,
+        &vec![
+            dept(DEPT_A),
+            dept(DEPT_B),
+            dept(DEPT_C),
+            dept(DEPT_D),
+            dept_ef(),
+        ],
+    );
+    run_phase(
+        &mut train_world,
+        &engine,
+        &loci_reg,
+        &inf,
+        &perspective,
+        &vec![dept(DEPT_A), dept(DEPT_B), dept(DEPT_C), dept(DEPT_D)],
+    );
+    run_phase(
+        &mut train_world,
+        &engine,
+        &loci_reg,
+        &inf,
+        &perspective,
+        &vec![dept(DEPT_A), dept(DEPT_B), dept(DEPT_C)],
+    );
 
     // Rank pairs by activity
     let mut ranked: Vec<((u64, u64), f32)> = train_world
@@ -680,16 +930,28 @@ fn next_phase_prediction_accuracy() {
     println!(
         "\n── next_phase_prediction_accuracy ──\n\
          ranked pairs: {}  test pairs: {} / {} (base {base_rate:.4})",
-        candidates.len(), test_pairs.len(), n_possible
+        candidates.len(),
+        test_pairs.len(),
+        n_possible
     );
 
     for &k in &[20usize, 50, 100] {
         let top: Vec<_> = candidates.iter().take(k).copied().collect();
-        if top.is_empty() { println!("  k={k}: no candidates"); continue; }
+        if top.is_empty() {
+            println!("  k={k}: no candidates");
+            continue;
+        }
         let hits = top.iter().filter(|p| test_pairs.contains(p)).count();
         let precision = hits as f32 / top.len() as f32;
-        let lift = if base_rate > 0.0 { precision / base_rate } else { 0.0 };
-        println!("  precision@{k:<3} = {precision:.3}  (hits {hits}/{},  lift {lift:.2}×)", top.len());
+        let lift = if base_rate > 0.0 {
+            precision / base_rate
+        } else {
+            0.0
+        };
+        println!(
+            "  precision@{k:<3} = {precision:.3}  (hits {hits}/{},  lift {lift:.2}×)",
+            top.len()
+        );
     }
 
     let top20: Vec<_> = candidates.iter().take(20).copied().collect();

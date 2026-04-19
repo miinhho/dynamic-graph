@@ -22,8 +22,8 @@
 //! baseline numbers are known.
 
 use graph_core::{
-    ChangeSubject, EntityStatus, InfluenceKindId, LayerTransition, Locus, LocusContext,
-    LocusId, LocusKindId, LocusProgram, Properties, PropertyValue, ProposedChange, StateVector,
+    ChangeSubject, EntityStatus, InfluenceKindId, LayerTransition, Locus, LocusContext, LocusId,
+    LocusKindId, LocusProgram, Properties, PropertyValue, ProposedChange, StateVector,
 };
 use graph_engine::{
     DefaultEmergencePerspective, Engine, EngineConfig, InfluenceKindConfig, InfluenceKindRegistry,
@@ -55,10 +55,16 @@ impl LocusProgram for EmailProgram {
             if change.subject != ChangeSubject::Locus(locus.id) {
                 continue;
             }
-            let Some(meta) = change.metadata.as_ref() else { continue };
-            let Some(PropertyValue::List(ids)) = meta.get("co_members") else { continue };
+            let Some(meta) = change.metadata.as_ref() else {
+                continue;
+            };
+            let Some(PropertyValue::List(ids)) = meta.get("co_members") else {
+                continue;
+            };
             for val in ids {
-                let PropertyValue::Int(id) = val else { continue };
+                let PropertyValue::Int(id) = val else {
+                    continue;
+                };
                 let other = *id as u64;
                 if other == locus.id.0 {
                     continue;
@@ -138,7 +144,10 @@ fn batch_stimuli(pairs: &BTreeSet<(u64, u64)>) -> Vec<ProposedChange> {
     let mut out = Vec::with_capacity(pairs.len() * 2);
     for &(u, v) in pairs {
         let mut meta_u = Properties::new();
-        meta_u.set("co_members", PropertyValue::List(vec![PropertyValue::Int(v as i64)]));
+        meta_u.set(
+            "co_members",
+            PropertyValue::List(vec![PropertyValue::Int(v as i64)]),
+        );
         out.push(
             ProposedChange::new(
                 ChangeSubject::Locus(LocusId(u)),
@@ -149,7 +158,10 @@ fn batch_stimuli(pairs: &BTreeSet<(u64, u64)>) -> Vec<ProposedChange> {
         );
 
         let mut meta_v = Properties::new();
-        meta_v.set("co_members", PropertyValue::List(vec![PropertyValue::Int(u as i64)]));
+        meta_v.set(
+            "co_members",
+            PropertyValue::List(vec![PropertyValue::Int(u as i64)]),
+        );
         out.push(
             ProposedChange::new(
                 ChangeSubject::Locus(LocusId(v)),
@@ -282,7 +294,11 @@ fn eu_email_temporal_partition_quality() {
     // Build world
     let mut world = World::new();
     for &node in &nodes {
-        world.insert_locus(Locus::new(LocusId(node), PERSON_KIND, StateVector::zeros(1)));
+        world.insert_locus(Locus::new(
+            LocusId(node),
+            PERSON_KIND,
+            StateVector::zeros(1),
+        ));
     }
 
     let cfg = InfluenceKindConfig::new("email")
@@ -294,7 +310,9 @@ fn eu_email_temporal_partition_quality() {
     let mut loci_reg = LocusKindRegistry::new();
     loci_reg.insert(PERSON_KIND, Box::new(EmailProgram));
 
-    let engine = Engine::new(EngineConfig { max_batches_per_tick: 3 });
+    let engine = Engine::new(EngineConfig {
+        max_batches_per_tick: 3,
+    });
     let perspective = DefaultEmergencePerspective::default();
 
     // Stream weekly batches
@@ -329,7 +347,11 @@ fn eu_email_temporal_partition_quality() {
             if active > n_nodes * 5 {
                 println!(
                     "  WARNING week {:>3}: entity explosion — {} active > 5×{} nodes  rels={} median_act={:.4}",
-                    week + 1, active, n_nodes, rel_count, median_act
+                    week + 1,
+                    active,
+                    n_nodes,
+                    rel_count,
+                    median_act
                 );
             }
             entity_snapshots.push((week + 1, active, rel_count, median_act));
@@ -377,10 +399,20 @@ fn eu_email_temporal_partition_quality() {
 
     // Report
     println!("\n── Entity count checkpoints ──");
-    println!("  {:>5}  {:>8}  {:>9}  {:>10}", "week", "active", "rels", "median_act");
+    println!(
+        "  {:>5}  {:>8}  {:>9}  {:>10}",
+        "week", "active", "rels", "median_act"
+    );
     for &(week, count, rels, med) in &entity_snapshots {
-        let flag = if count > n_nodes * 5 { "  !! explosion" } else { "" };
-        println!("  {:>5}  {:>8}  {:>9}  {:>10.4}{}", week, count, rels, med, flag);
+        let flag = if count > n_nodes * 5 {
+            "  !! explosion"
+        } else {
+            ""
+        };
+        println!(
+            "  {:>5}  {:>8}  {:>9}  {:>10.4}{}",
+            week, count, rels, med, flag
+        );
     }
 
     println!("\n── Lifecycle events (all time) ──");
@@ -413,7 +445,11 @@ fn eu_email_temporal_partition_quality() {
     );
 
     // Loose discovery assertion — tighten after baseline established
-    assert!(lc.born >= 1, "no entities emerged from {} real email edges", edges.len());
+    assert!(
+        lc.born >= 1,
+        "no entities emerged from {} real email edges",
+        edges.len()
+    );
 }
 
 /// Comparison run with a fixed `min_activity_threshold = 0.3`.
@@ -446,7 +482,11 @@ fn eu_email_fixed_threshold_comparison() {
 
     let mut world = World::new();
     for &node in &nodes {
-        world.insert_locus(Locus::new(LocusId(node), PERSON_KIND, StateVector::zeros(1)));
+        world.insert_locus(Locus::new(
+            LocusId(node),
+            PERSON_KIND,
+            StateVector::zeros(1),
+        ));
     }
 
     let cfg = InfluenceKindConfig::new("email")
@@ -458,9 +498,11 @@ fn eu_email_fixed_threshold_comparison() {
     let mut loci_reg = LocusKindRegistry::new();
     loci_reg.insert(PERSON_KIND, Box::new(EmailProgram));
 
-    let engine = Engine::new(EngineConfig { max_batches_per_tick: 3 });
-    let perspective = DefaultEmergencePerspective::default()
-        .with_min_activity_threshold(FIXED_THRESHOLD);
+    let engine = Engine::new(EngineConfig {
+        max_batches_per_tick: 3,
+    });
+    let perspective =
+        DefaultEmergencePerspective::default().with_min_activity_threshold(FIXED_THRESHOLD);
 
     println!("\n═══ EU Email Fixed Threshold (min_activity={FIXED_THRESHOLD}) ═══");
     println!("  nodes: {}  threshold: {}", n_nodes, FIXED_THRESHOLD);
@@ -515,25 +557,42 @@ fn eu_email_fixed_threshold_comparison() {
     let lc = count_lifecycle(&world);
 
     println!("\n── Fixed-threshold results ──");
-    println!("  Active entities: {}  (nodes: {}  ratio: {:.1}×)",
-             n_active, n_nodes, n_active as f64 / n_nodes as f64);
-    println!("  Nodes in entities: {}  Ground-truth depts: {}",
-             pred_labels.len(), n_depts_observed);
+    println!(
+        "  Active entities: {}  (nodes: {}  ratio: {:.1}×)",
+        n_active,
+        n_nodes,
+        n_active as f64 / n_nodes as f64
+    );
+    println!(
+        "  Nodes in entities: {}  Ground-truth depts: {}",
+        pred_labels.len(),
+        n_depts_observed
+    );
     println!("  NMI(engine | dept_labels): {:.4}", nmi_score);
-    println!("  Born: {}  Dormant: {}  Revived: {}", lc.born, lc.dormant, lc.revived);
+    println!(
+        "  Born: {}  Dormant: {}  Revived: {}",
+        lc.born, lc.dormant, lc.revived
+    );
 
     // Diagnosis: if fixed threshold still explodes, auto-threshold is NOT the cause.
     // The likely culprit is activity decay collapsing the graph to isolated vertices.
     let explosion = n_active > n_nodes * 5;
     if explosion {
-        println!("  DIAGNOSIS: explosion persists with fixed threshold={}.", FIXED_THRESHOLD);
+        println!(
+            "  DIAGNOSIS: explosion persists with fixed threshold={}.",
+            FIXED_THRESHOLD
+        );
         println!("             Auto-threshold is NOT the root cause.");
-        println!("             Hypothesis: DECAY=0.5 (half-life 1 week) collapses all relationships");
+        println!(
+            "             Hypothesis: DECAY=0.5 (half-life 1 week) collapses all relationships"
+        );
         println!("             to ~0 by week 50 → no edges survive threshold → 986 singleton");
         println!("             communities per recognize call → cumulative Born explosion.");
         println!("             Next: run eu_email_slow_decay (DECAY=0.9) to confirm.");
     } else {
-        println!("  DIAGNOSIS: fixed threshold → sane entity count. Auto-threshold root cause confirmed.");
+        println!(
+            "  DIAGNOSIS: fixed threshold → sane entity count. Auto-threshold root cause confirmed."
+        );
     }
 
     assert!(lc.born >= 1, "no entities emerged");
@@ -572,7 +631,11 @@ fn eu_email_slow_decay() {
 
     let mut world = World::new();
     for &node in &nodes {
-        world.insert_locus(Locus::new(LocusId(node), PERSON_KIND, StateVector::zeros(1)));
+        world.insert_locus(Locus::new(
+            LocusId(node),
+            PERSON_KIND,
+            StateVector::zeros(1),
+        ));
     }
 
     let cfg = InfluenceKindConfig::new("email")
@@ -584,7 +647,9 @@ fn eu_email_slow_decay() {
     let mut loci_reg = LocusKindRegistry::new();
     loci_reg.insert(PERSON_KIND, Box::new(EmailProgram));
 
-    let engine = Engine::new(EngineConfig { max_batches_per_tick: 3 });
+    let engine = Engine::new(EngineConfig {
+        max_batches_per_tick: 3,
+    });
     let perspective = DefaultEmergencePerspective::default();
 
     println!("\n═══ EU Email Slow Decay (DECAY={SLOW_DECAY}, auto-threshold) ═══");
@@ -657,31 +722,74 @@ fn eu_email_slow_decay() {
     let lc = count_lifecycle(&world);
 
     println!("\n── Slow-decay entity checkpoints ──");
-    println!("  {:>5}  {:>8}  {:>9}  {:>10}", "week", "active", "rels", "median_act");
+    println!(
+        "  {:>5}  {:>8}  {:>9}  {:>10}",
+        "week", "active", "rels", "median_act"
+    );
     for &(week, count, rels, med) in &snapshots {
-        let flag = if count > n_nodes * 5 { "  !! explosion" } else { "" };
-        println!("  {:>5}  {:>8}  {:>9}  {:>10.4}{}", week, count, rels, med, flag);
+        let flag = if count > n_nodes * 5 {
+            "  !! explosion"
+        } else {
+            ""
+        };
+        println!(
+            "  {:>5}  {:>8}  {:>9}  {:>10.4}{}",
+            week, count, rels, med, flag
+        );
     }
 
     println!("\n── Slow-decay final results ──");
-    println!("  Active entities: {}  (nodes: {}  ratio: {:.1}×)",
-             n_active, n_nodes, n_active as f64 / n_nodes as f64);
-    println!("  Nodes in entities: {}  Ground-truth depts: {}",
-             pred_labels.len(), n_depts_observed);
+    println!(
+        "  Active entities: {}  (nodes: {}  ratio: {:.1}×)",
+        n_active,
+        n_nodes,
+        n_active as f64 / n_nodes as f64
+    );
+    println!(
+        "  Nodes in entities: {}  Ground-truth depts: {}",
+        pred_labels.len(),
+        n_depts_observed
+    );
     println!("  NMI(engine | dept_labels): {:.4}", nmi_score);
-    println!("  Born: {}  Split: {}  Merge: {}  Dormant: {}  Revived: {}  MemberDelta: {}  CoherShift: {}",
-             lc.born, lc.split, lc.merge, lc.dormant, lc.revived, lc.membership_delta, lc.coherence_shift);
-    println!("  Born/Dormant ratio: {:.1}×  Born/Split ratio: {:.1}×",
-             if lc.dormant > 0 { lc.born as f64 / lc.dormant as f64 } else { f64::INFINITY },
-             if lc.split > 0 { lc.born as f64 / lc.split as f64 } else { f64::INFINITY });
+    println!(
+        "  Born: {}  Split: {}  Merge: {}  Dormant: {}  Revived: {}  MemberDelta: {}  CoherShift: {}",
+        lc.born,
+        lc.split,
+        lc.merge,
+        lc.dormant,
+        lc.revived,
+        lc.membership_delta,
+        lc.coherence_shift
+    );
+    println!(
+        "  Born/Dormant ratio: {:.1}×  Born/Split ratio: {:.1}×",
+        if lc.dormant > 0 {
+            lc.born as f64 / lc.dormant as f64
+        } else {
+            f64::INFINITY
+        },
+        if lc.split > 0 {
+            lc.born as f64 / lc.split as f64
+        } else {
+            f64::INFINITY
+        }
+    );
 
     let explosion = n_active > n_nodes * 5;
     if !explosion {
-        println!("\n  FINDING: DECAY=0.9 yields sane entity count ({} ≤ 5×{}).", n_active, n_nodes);
+        println!(
+            "\n  FINDING: DECAY=0.9 yields sane entity count ({} ≤ 5×{}).",
+            n_active, n_nodes
+        );
         println!("           DECAY must match data temporal cadence.");
-        println!("           NMI={:.4}  (compare: DECAY=0.5 → 0.1002)", nmi_score);
+        println!(
+            "           NMI={:.4}  (compare: DECAY=0.5 → 0.1002)",
+            nmi_score
+        );
     } else {
-        println!("\n  WARNING: explosion persists even at DECAY=0.9. Further investigation needed.");
+        println!(
+            "\n  WARNING: explosion persists even at DECAY=0.9. Further investigation needed."
+        );
     }
 
     assert!(lc.born >= 1, "no entities emerged");

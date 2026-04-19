@@ -569,10 +569,7 @@ fn main() {
 
     // ── Entity emergence ───────────────────────────────────────────────────────
 
-    let ep = DefaultEmergencePerspective {
-        min_activity_threshold: Some(0.01),
-        ..Default::default()
-    };
+    let ep = DefaultEmergencePerspective::default();
     engine.recognize_entities(&mut world, &influences, &ep);
 
     println!(
@@ -591,10 +588,7 @@ fn main() {
 
     // ── Cohere clusters ────────────────────────────────────────────────────────
 
-    let cp = DefaultCoherePerspective {
-        min_bridge_activity: Some(0.01),
-        ..Default::default()
-    };
+    let cp = DefaultCoherePerspective::default();
     engine.extract_cohere(&mut world, &influences, &cp);
     let coheres = world.coheres().get("default").unwrap_or(&[]);
     println!("\n--- Coheres ({}) ---", coheres.len());

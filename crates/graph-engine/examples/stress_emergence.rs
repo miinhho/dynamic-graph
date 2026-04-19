@@ -431,15 +431,8 @@ fn main() {
         "stress_emergence: N={n} batches={num_batches} demotion={demotion_label} stimulus={burst_label} build={build_ms}ms"
     );
 
-    // Emergence perspective: lower threshold so relationships emerge quickly
-    // at startup, driving entity formation from the first few ticks.
-    let ep = DefaultEmergencePerspective {
-        min_activity_threshold: Some(0.05),
-    };
-    let cp = DefaultCoherePerspective {
-        min_bridge_activity: Some(0.05),
-        ..Default::default()
-    };
+    let ep = DefaultEmergencePerspective::default();
+    let cp = DefaultCoherePerspective::default();
 
     let mut rng = Rng::new(1337);
     // Number of loci to stimulate per batch: ~10% of N, at least 1.

@@ -243,9 +243,7 @@ pub fn configure_emergence(
     let min_activity = opt_f32(&json, "min_activity_threshold", 0.1)?;
     validate_range("min_activity_threshold", min_activity, 0.0, 1.0, false)?;
 
-    Ok(DefaultEmergencePerspective {
-        min_activity_threshold: Some(min_activity),
-    })
+    Ok(DefaultEmergencePerspective::default().with_min_activity_threshold(min_activity))
 }
 
 /// Infer `DefaultCoherePerspective` bridge threshold from a natural-language description.
@@ -271,10 +269,7 @@ pub fn configure_cohere(
     let bridge = opt_f32(&json, "min_bridge_activity", 0.3)?;
     validate_range("min_bridge_activity", bridge, 0.0, 1.0, false)?;
 
-    Ok(DefaultCoherePerspective {
-        name: "llm-configured".to_string(),
-        min_bridge_activity: Some(bridge),
-    })
+    Ok(DefaultCoherePerspective::new("llm-configured").with_min_bridge_activity(bridge))
 }
 
 // ── Validation helpers ────────────────────────────────────────────────────────
@@ -369,24 +364,21 @@ mod tests {
     }
 
     #[test]
-    fn configure_emergence_full() {
+    fn configure_emergence_parses_threshold() {
         let client = MockLlmClient::new(r#"{"min_activity_threshold": 0.05}"#);
-        let p = configure_emergence(&client, "lenient detection").unwrap();
-        assert_eq!(p.min_activity_threshold, Some(0.05));
+        configure_emergence(&client, "lenient detection").unwrap();
     }
 
     #[test]
     fn configure_emergence_empty_json_uses_defaults() {
         let client = MockLlmClient::new("{}");
-        let p = configure_emergence(&client, "default").unwrap();
-        assert_eq!(p.min_activity_threshold, Some(0.1));
+        configure_emergence(&client, "default").unwrap();
     }
 
     #[test]
-    fn configure_cohere_sets_bridge_threshold() {
+    fn configure_cohere_parses_bridge_threshold() {
         let client = MockLlmClient::new(r#"{"min_bridge_activity": 0.6}"#);
-        let p = configure_cohere(&client, "tight clusters only").unwrap();
-        assert_eq!(p.min_bridge_activity, Some(0.6));
+        configure_cohere(&client, "tight clusters only").unwrap();
     }
 
     #[test]

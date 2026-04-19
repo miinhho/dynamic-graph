@@ -31,8 +31,8 @@
 //! NMI is not computed. Discovery run: no precision assertions yet.
 
 use graph_core::{
-    ChangeSubject, EntityStatus, InfluenceKindId, LayerTransition, Locus, LocusContext,
-    LocusId, LocusKindId, LocusProgram, Properties, PropertyValue, ProposedChange, StateVector,
+    ChangeSubject, EntityStatus, InfluenceKindId, LayerTransition, Locus, LocusContext, LocusId,
+    LocusKindId, LocusProgram, Properties, PropertyValue, ProposedChange, StateVector,
 };
 use graph_engine::{
     DefaultEmergencePerspective, Engine, EngineConfig, InfluenceKindConfig, InfluenceKindRegistry,
@@ -83,10 +83,16 @@ impl LocusProgram for CitesProgram {
             if change.subject != ChangeSubject::Locus(locus.id) {
                 continue;
             }
-            let Some(meta) = change.metadata.as_ref() else { continue };
-            let Some(PropertyValue::List(ids)) = meta.get("co_cited") else { continue };
+            let Some(meta) = change.metadata.as_ref() else {
+                continue;
+            };
+            let Some(PropertyValue::List(ids)) = meta.get("co_cited") else {
+                continue;
+            };
             for val in ids {
-                let PropertyValue::Int(id) = val else { continue };
+                let PropertyValue::Int(id) = val else {
+                    continue;
+                };
                 let other = *id as u64;
                 if other == locus.id.0 {
                     continue;
@@ -196,7 +202,10 @@ fn batch_stimuli(pairs: &BTreeSet<(u64, u64)>) -> Vec<ProposedChange> {
     let mut out = Vec::with_capacity(pairs.len() * 2);
     for &(u, v) in pairs {
         let mut meta_u = Properties::new();
-        meta_u.set("co_cited", PropertyValue::List(vec![PropertyValue::Int(v as i64)]));
+        meta_u.set(
+            "co_cited",
+            PropertyValue::List(vec![PropertyValue::Int(v as i64)]),
+        );
         out.push(
             ProposedChange::new(
                 ChangeSubject::Locus(LocusId(u)),
@@ -207,7 +216,10 @@ fn batch_stimuli(pairs: &BTreeSet<(u64, u64)>) -> Vec<ProposedChange> {
         );
 
         let mut meta_v = Properties::new();
-        meta_v.set("co_cited", PropertyValue::List(vec![PropertyValue::Int(u as i64)]));
+        meta_v.set(
+            "co_cited",
+            PropertyValue::List(vec![PropertyValue::Int(u as i64)]),
+        );
         out.push(
             ProposedChange::new(
                 ChangeSubject::Locus(LocusId(v)),
@@ -302,7 +314,11 @@ fn run_scenario(label: &str, decay: f32, threshold: Option<f32>) {
         buckets.len(),
         nonempty,
         total_pairs,
-        if nonempty > 0 { total_pairs as f64 / nonempty as f64 } else { 0.0 },
+        if nonempty > 0 {
+            total_pairs as f64 / nonempty as f64
+        } else {
+            0.0
+        },
     );
     println!(
         "  dropped edges — no-date citer: {}  self-citation: {}",
@@ -324,7 +340,9 @@ fn run_scenario(label: &str, decay: f32, threshold: Option<f32>) {
     let mut loci_reg = LocusKindRegistry::new();
     loci_reg.insert(PAPER_KIND, Box::new(CitesProgram));
 
-    let engine = Engine::new(EngineConfig { max_batches_per_tick: 3 });
+    let engine = Engine::new(EngineConfig {
+        max_batches_per_tick: 3,
+    });
     let perspective = match threshold {
         None => DefaultEmergencePerspective::default(),
         Some(t) => DefaultEmergencePerspective::default().with_min_activity_threshold(t),
@@ -450,7 +468,10 @@ fn run_scenario(label: &str, decay: f32, threshold: Option<f32>) {
     let n_active = active_entities.len();
 
     // Entity-size distribution
-    let sizes: Vec<usize> = active_entities.iter().map(|e| e.current.members.len()).collect();
+    let sizes: Vec<usize> = active_entities
+        .iter()
+        .map(|e| e.current.members.len())
+        .collect();
     let mut size_hist: BTreeMap<usize, usize> = BTreeMap::new();
     for &s in &sizes {
         *size_hist.entry(s).or_insert(0) += 1;
@@ -473,7 +494,11 @@ fn run_scenario(label: &str, decay: f32, threshold: Option<f32>) {
         "month", "active", "comps", "rels", "median_act", "Δidem"
     );
     for &(month, count, rels, med, comps, delta) in &snapshots {
-        let flag = if count > n_nodes * 5 { "  !! explosion" } else { "" };
+        let flag = if count > n_nodes * 5 {
+            "  !! explosion"
+        } else {
+            ""
+        };
         println!(
             "  {:>5}  {:>8}  {:>7}  {:>9}  {:>10.4}  {:>+6}{}",
             month, count, comps, rels, med, delta, flag
@@ -483,7 +508,9 @@ fn run_scenario(label: &str, decay: f32, threshold: Option<f32>) {
     println!("\n── Final snapshot ──");
     println!(
         "  Active entities: {}  (nodes: {}  ratio: {:.2}×)",
-        n_active, n_nodes, n_active as f64 / n_nodes as f64
+        n_active,
+        n_nodes,
+        n_active as f64 / n_nodes as f64
     );
     println!(
         "  Entity members: total={} median_size={} max_size={}",
@@ -515,7 +542,11 @@ fn run_scenario(label: &str, decay: f32, threshold: Option<f32>) {
     println!("  CoherenceShift:  {}", lc.coherence_shift);
     println!(
         "  Born/Split:      {:.2}×  Born/(Split+Dormant): {:.2}×",
-        if lc.split > 0 { lc.born as f64 / lc.split as f64 } else { f64::INFINITY },
+        if lc.split > 0 {
+            lc.born as f64 / lc.split as f64
+        } else {
+            f64::INFINITY
+        },
         if lc.split + lc.dormant > 0 {
             lc.born as f64 / (lc.split + lc.dormant) as f64
         } else {
@@ -523,7 +554,11 @@ fn run_scenario(label: &str, decay: f32, threshold: Option<f32>) {
         },
     );
 
-    assert!(lc.born >= 1, "no entities emerged from {} citations", edges.len());
+    assert!(
+        lc.born >= 1,
+        "no entities emerged from {} citations",
+        edges.len()
+    );
 }
 
 /// Primary oracle run: DECAY=0.9, auto-threshold. Matches the EU email

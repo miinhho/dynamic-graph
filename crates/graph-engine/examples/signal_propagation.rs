@@ -291,11 +291,7 @@ fn main() {
 
     // ── Entity recognition ────────────────────────────────────────────────────
 
-    // Lower threshold so freshly-decayed activities are still visible.
-    let ep = DefaultEmergencePerspective {
-        min_activity_threshold: Some(0.01),
-        ..Default::default()
-    };
+    let ep = DefaultEmergencePerspective::default();
     engine.recognize_entities(&mut world, &influences, &ep);
 
     println!(
@@ -315,10 +311,7 @@ fn main() {
 
     // ── Cohere extraction ─────────────────────────────────────────────────────
 
-    let cp = DefaultCoherePerspective {
-        min_bridge_activity: Some(0.01),
-        ..Default::default()
-    };
+    let cp = DefaultCoherePerspective::default();
     engine.extract_cohere(&mut world, &influences, &cp);
 
     let coheres = world.coheres().get("default").unwrap_or(&[]);

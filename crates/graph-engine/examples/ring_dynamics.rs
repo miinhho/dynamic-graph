@@ -167,10 +167,7 @@ fn main() {
 
     // ── Phase 6: entity recognition and cohere ────────────────────────────────
 
-    let ep = DefaultEmergencePerspective {
-        min_activity_threshold: Some(0.05),
-        ..Default::default()
-    };
+    let ep = DefaultEmergencePerspective::default();
     sim.recognize_entities(&ep);
 
     {
@@ -206,10 +203,7 @@ fn main() {
     }
     println!();
 
-    let cp = DefaultCoherePerspective {
-        min_bridge_activity: Some(0.01),
-        ..Default::default()
-    };
+    let cp = DefaultCoherePerspective::default();
     sim.extract_cohere(&cp);
     let coheres_guard = sim.world();
     let coheres = coheres_guard.coheres().get("default").unwrap_or(&[]);
