@@ -7,223 +7,209 @@
 
 ---
 
-## 1. Motivation
+## 1. Headline
 
-EU email (`docs/eu-email-finding.md`) exposed a **dynamic-temporal**
-failure mode: community membership churns faster than entity tracking
-can match, producing Born floods on highly variable weekly data.
+HEP-PH exposed a latent bug: `recognize_entities` was **not idempotent**.
+A single pass generated proposals that a second pass over the same world
+state collapsed via late Merge. The unconverged residue accumulated
+across ticks and produced super-linear entity growth (37,815 active
+entities at month 48 on 10K nodes).
 
-HEP-PH tests the opposite end of the engine's contract: citations are
-**accumulative** (once paper A cites paper B, that link is permanent),
-so physics subfield structure is expected to evolve gradually. This run
-checks whether the engine **excels on its designed contract** at a scale
-35× larger than EU email.
+Wrapping `recognize_entities` in a fixpoint loop (max 8 passes per tick)
+closed the gap. Full 122-month corpus now converges to **716 active
+entities on 30,566 papers (ratio 0.02×)**. Every `LayerTransition` variant
+fires on real data.
 
 ---
 
 ## 2. Scale guard
 
-To avoid OOM at full window (34K papers × 122 months can produce
-hundreds of thousands of entities), the test accepts env vars:
+The test accepts env vars to bound runs during investigation:
 
 - `HEP_PH_MAX_MONTHS` (default 24) — time window
 - `HEP_PH_MAX_ENTITIES` (default 50,000) — early-abort guard
 
-Runs are split into a **contract region** (24 months) and a **stress
-region** (60 months) for comparison.
+Three scenarios: `hep_ph_slow_decay_auto` (DECAY=0.9),
+`hep_ph_fast_decay_auto` (0.5), `hep_ph_very_slow_decay_auto` (0.98).
 
 ---
 
-## 3. Results — 24-month window (contract region)
+## 3. Full 122-month run (final state)
 
-Three DECAY settings, all with auto-threshold (`min_activity_threshold: None`):
+DECAY=0.9, auto-threshold, 30,566 papers × 346,849 citations × 122
+monthly batches.
 
-| DECAY | Half-life | Active | Ratio | Born | Split | Merge | Dormant | Revived | MembershipΔ | CoherenceShift |
-|-------|-----------|--------|-------|------|-------|-------|---------|---------|-------------|----------------|
-| 0.50  | 1 month   | 294    | 0.18× | 364  | 26    | 39    | **23**  | **4**   | 60          | 20             |
-| 0.90  | 7 months  | 256    | 0.15× | 310  | 29    | 31    | 7       | 0       | 66          | 36             |
-| 0.98  | 34 months | 252    | 0.15× | 305  | 30    | 30    | 7       | 0       | 62          | 36             |
+### Trajectory
 
-Workload at 24 months: 1,674 papers, 3,279 citation edges, 23 non-empty batches.
+| Month | Active | Components | Rels      | median_act | passes | Δidempotent |
+|-------|--------|------------|-----------|------------|--------|-------------|
+| 6     | 13     | 13         | 25        | 1.80       | 2      | +0          |
+| 30    | 277    | 277        | 7,251     | 2.32       | 4      | +0          |
+| 60    | 437    | 437        | 61,574    | 1.07       | 4      | +0          |
+| 90    | 610    | 610        | 175,395   | 0.19       | **8**  | +0          |
+| 120   | 700    | 700        | 339,507   | 0.04       | 4      | +0          |
+| 122   | 716    | 716        | 346,849   | 0.03       | 3      | +0          |
 
-### 3a — Engine contract holds
+`Active == Components` throughout — one-to-one correspondence between
+detected subfield community and entity. `Δidempotent=+0` at every
+checkpoint — calling `recognize_entities` a second time with no new
+stimuli has no effect.
 
-All three configs produce `active/node ratio` ≤ 0.18×. Compare EU email
-(the failure case): `active/node = 14.8×` at 115 weeks.
+`passes=8` (fixpoint ceiling) was hit once, at month 90, during the most
+rapid density growth. This confirms `MAX_FIXPOINT_PASSES=8` is tight but
+adequate; the loop converged on subsequent checkpoints in 3–4 passes.
 
-This is the first real-dataset confirmation that the engine's
-gradual-evolution assumption is not merely a design abstraction — on
-accumulative temporal data, entity count stays **below** node count
-(entities represent multi-paper subfields).
+### Lifecycle (all-time totals)
 
-### 3b — First natural exercise of MembershipDelta and CoherenceShift
+| Transition        | Count  | Notes |
+|-------------------|--------|-------|
+| Born              | 14,810 | new subfields |
+| Split             | 2,775  | subfield branching |
+| Merge             | 13,884 | subfield consolidation — ≈ Born count |
+| BecameDormant     | 132    | subfields that faded |
+| **Revived**       | **4**  | first natural fire outside Enron planted data |
+| MembershipDelta   | 1,052  | gradual member drift |
+| CoherenceShift    | 1,388  | coherence recomputations |
 
-Both transitions were flagged as "dead weight" in Finding 2a (LFR):
-`MembershipDelta` fired ≤ 1× across 6 LFR tests; `CoherenceShift` never
-fired. Enron fired `CoherenceShift = 1` (Finding 3) on the 5-phase chain.
+All seven `LayerTransition` variants fire naturally. Finding 2a's "dead
+weight" concern (LFR: `MembershipDelta=1`, `CoherenceShift=0`,
+`Revived=0`) is definitively withdrawn.
 
-HEP-PH fires them at scale in every 24-month run:
+### Structural properties
 
-- `MembershipDelta`: 60–66 events (entity members drift as new citations
-  reshape subfield overlap)
-- `CoherenceShift`: 20–36 events (entity coherence gate triggered by
-  accumulation of strong intra-subfield citations)
-
-**Implication**: both transitions were suspected of being vestigial.
-HEP-PH confirms they fire on real accumulative data. Do not demote.
-
-### 3c — Revived first natural exercise outside Enron
-
-LFR: 0 Revived. Enron synthetic: 1 Revived (planted phase-4). HEP-PH
-DECAY=0.5: **4 Revived** — the first uncurated dataset where the
-transition fires on its own. Mechanism: short half-life (1 month) lets
-entities fall Dormant, and strong future citation bursts re-match.
-
-### 3d — Auto-threshold confirmed on sixth dataset class (accumulative)
-
-Auto-threshold picks a sensible cut across all three DECAY values.
-Median activity spans 0.01 (fast decay) to 5.38 (very slow), yet the
-gap-detector identifies a workable threshold in each regime. The Ω2
-demotion (`min_activity_threshold` → private) is not affected.
+- **Entity size distribution**: median 7 papers, max 4,205 (a single
+  large subfield — consistent with known HEP-PH structure: 1–2
+  mega-subfields plus hundreds of niches).
+- **Entity count is sub-linear in node count**: ratio drops from 0.43×
+  at month 6 to 0.02× at month 122. Accumulative citations strengthen
+  cohesion faster than new subfields form, exactly as designed.
 
 ---
 
-## 4. Results — 60-month window (stress region)
+## 4. Root cause (what we actually found)
 
-Two DECAY settings, auto-threshold. Both hit the
-`HEP_PH_MAX_ENTITIES=30000` guard before completing the window.
+### 4a — Investigation sequence
 
-| DECAY | Active@month 48 | Ratio | Born | Split | Merge | Dormant | Entity members |
-|-------|-----------------|-------|------|-------|-------|---------|----------------|
-| 0.50  | 45,814          | 4.40× | 55,558 | 9,225 | 454 | 146     | 7,685,572      |
-| 0.90  | 37,815          | 3.63× | 46,829 | 8,289 | 713 | 76      | 10,831,513     |
+1. **Pre-fix (guard=30K)** aborted at month 48 with 37,815 active entities
+   on 10,408 nodes (ratio 3.63×). Born rate dominated Dormant rate.
+2. **Hypothesis: hub multi-membership**. Added single-perspective
+   exclusivity to Born path of `resolve_component_proposal`. 24m/36m
+   trajectories were within 2% of pre-fix — small positive, not the
+   fix.
+3. **Hypothesis: DepositLayer path**. Extended exclusivity to claim
+   path. Member count moved by 8 on 119,179. Still not the fix.
+4. **Diagnostic: component count + idempotency probe**. Added two
+   measurements to the test:
+   - `debug_last_component_count` reports `|state.components|` from the
+     latest `recognize`.
+   - Second `recognize_entities` call with no stimuli; compare active
+     counts.
+5. **Finding**: at month 36, first pass produced 487 active entities,
+   second pass produced 333 — Δ = −154. `recognize` was generating
+   proposals that a second pass immediately collapsed. This recurred
+   every tick, leaving accumulated unconverged residue.
 
-Workload at 60 months: 10,408 papers, 61,608 edges, 59 non-empty batches.
+### 4b — Why the first two hypotheses failed
 
-### 4a — Growth trajectory
+Exclusivity was a correct principle in the wrong location for this
+specific bug. Membership exclusivity matters when hubs genuinely sit
+across overlapping subfields. But the dominant effect was much simpler:
+the `recognize → apply → world state` round-trip produced new entities
+that themselves would then participate in claim-decisions, and the
+first-pass proposal set hadn't accounted for that. A second pass saw
+the new entities and issued Merges to unify the over-fragmented set.
 
-DECAY=0.9 checkpoint series:
+Both findings (EU email Ω4, HEP-PH 60m Ω5) were reinterpretations of
+the same non-idempotency amplification:
 
-| Month | Active | Rels | median_act |
-|-------|--------|------|------------|
-| 6     | 13     | 25     | 1.80  |
-| 12    | 56     | 202    | 1.80  |
-| 18    | 132    | 1,130  | 2.70  |
-| 24    | 256    | 3,273  | 2.39  |
-| 30    | 547    | 7,251  | 2.32  |
-| 36    | 2,072  | 12,479 | 1.94  |
-| 42    | 9,303  | 21,434 | 1.83  |
-| 48    | 37,815 | 31,742 | 1.53  |
+| Dataset    | Pre-fix active | Post-fix active | Ratio collapse |
+|------------|----------------|-----------------|----------------|
+| EU email   | 14,624 @115w   | **11 @115w**    | 1,329×         |
+| HEP-PH 60m | 37,815 @48m    | **370 @48m**    | 102×           |
+| HEP-PH 24m | 256            | 205             | 1.25×          |
 
-Active entity count is stable and sub-linear up to month 30 (547 / 4K
-nodes), then super-linear from month 36 (2,072 → 9,303 → 37,815 ≈ 4×
-per 6-month step).
+### 4c — Fix
 
-### 4b — Root cause: hub-node multi-entity membership
+`crates/graph-engine/src/engine/world_ops.rs::recognize_entities`:
 
-The striking number is `Entity members total = 10,831,513` for DECAY=0.9
-at 37,815 active entities over 10,408 underlying nodes. Average: each
-node is a member of **~1,041 active entities** (total_members / n_nodes).
+```rust
+for _ in 0..RECOGNIZE_MAX_FIXPOINT_PASSES {
+    let proposals = perspective.recognize(...);
+    if proposals.is_empty() { break; }
+    apply_proposals(world, proposals, batch);
+}
+```
 
-This is a new failure mode, distinct from EU email. After the
-`overlap_threshold` knob was removed (Phase 1 of the complexity sweep,
-`docs/complexity-audit.md`), entity-community matching became locus-flow
-based — each component's members are assigned to existing entities by
-bucket-majority, without a hard exclusivity constraint. On accumulative
-citation data:
+`MAX = 8`. On converged paths (curated benchmarks) the loop runs 1–2
+passes; on accumulative/churn data, 3–8. Budget overhead on 229-test
+regression suite: negligible (all tests still finish in milliseconds).
 
-- High-degree papers (survey articles, seminal results) accumulate
-  citations across many subfields.
-- Each subfield forms a community; the hub paper lands in the "significant
-  bucket" of each.
-- Locus-flow matcher says "this entity's members are in community X" for
-  many X simultaneously. Instead of forcing exclusivity, a new entity
-  `Born` fires for each subfield that doesn't fully overlap an existing
-  one, and the hub paper gets re-listed as a member.
-- Over time, membership count grows super-linearly in node count.
+### 4d — Exclusivity change, retained
 
-### 4c — Distinct from EU email failure mode
-
-| Property | EU email (Ω4) | HEP-PH 60m (Ω5) |
-|----------|---------------|-----------------|
-| Data character | Churn (weekly turnover) | Accumulation (permanent links) |
-| Born source | New communities vs. prior week | Hub re-labelled into new subfield |
-| Relationship count trajectory | Stable (most decay to ~0) | Monotone growth |
-| Member churn | High | Low per-entity, high cross-entity |
-| Fix lever | Activity half-life calibration | Membership exclusivity / hub cap |
-
-The two failure modes require different remediations. They should not
-be conflated into "the engine fails on real data."
+The Born-path and DepositLayer-path exclusivity filters are kept. They
+are principled (redesign.md §3.4) and neutral on curated data. The
+diagnostic counter shows them triggering on ~1–2% of full-run Born
+proposals — a small correctness delta, not a performance concern.
 
 ---
 
-## 5. Dataset queue position
+## 5. LayerTransition status (revised after HEP-PH)
 
-HEP-PH is the **sixth real dataset**, first accumulative temporal. It
-plays two roles:
+| Transition        | Pre-HEP-PH status           | HEP-PH 122m | New status |
+|-------------------|-----------------------------|-------------|------------|
+| Born              | load-bearing                | 14,810      | load-bearing |
+| Split             | load-bearing                | 2,775       | load-bearing |
+| Merge             | load-bearing                | 13,884      | load-bearing |
+| BecameDormant     | load-bearing                | 132         | load-bearing |
+| MembershipDelta   | "dead weight" (LFR: 1)      | 1,052       | **load-bearing** |
+| CoherenceShift    | "never fires" (LFR: 0)      | 1,388       | **load-bearing** |
+| Revived           | "never fires" (LFR: 0)      | 4           | **load-bearing** |
 
-1. **Contract confirmation** on its designed regime (24m, ratio 0.15×)
-2. **New failure class** identified at scale (60m, hub-membership blowup)
-
-Previous datasets tested community detection on stable snapshots
-(karate, Davis) or curated dynamic schedules (LFR, Enron). SocioPatterns
-and EU email tested temporal regimes with weekly/daily cadence. HEP-PH
-is the first to expose the **accumulation axis** as an independent
-stress vector.
+Three variants recovered from the demotion shortlist. Finding 2a
+closed. The new `CLAUDE.md` "Feature removal policy" section binds
+future demotion proposals to verify trigger conditions across all
+three diversity axes (scale × temporality × curation) before removal.
 
 ---
 
-## 6. Implications for the roadmap
+## 6. Implications for roadmap
 
-### Does not block Ω2 demotion
-`min_activity_threshold` / `min_bridge_activity` Ω2 demotion (2026-04-19)
-remains correct. Auto-threshold worked across all three DECAY values on
-HEP-PH 24m. The 60m failure is a membership-matcher issue, not a threshold
-issue.
+### Auto-threshold claim
+Still confirmed across six datasets. Auto-threshold was never the
+problem on HEP-PH; the exclusivity filter shows it correctly navigates
+DECAY ∈ {0.5, 0.9, 0.98}.
 
-### Does not invalidate `overlap_threshold` removal (Phase 1)
-Phase 1 removed `overlap_threshold` for a clear reason: karate-tuned
-constant, evidence-based. HEP-PH 60m shows the locus-flow replacement has
-an unbounded-membership edge case, but the fix is not "re-introduce
-overlap_threshold." Candidate remediations:
+### Ω2 demotion
+`min_activity_threshold` demotion to private field stays. Uncontested.
 
-- **Hub cap**: enforce per-locus max entity membership (e.g., 3–5
-  entities/locus). Over-cap forces a merge proposal.
-- **Entity identity dominance**: each locus declares a "primary"
-  entity based on dominant flow; secondary memberships are weighted
-  down and don't count towards significance.
-- **Member decay**: expire members that haven't flowed into the entity's
-  community in N batches.
-
-### Suggests two `LayerTransition` survivors
-`MembershipDelta` and `CoherenceShift` fire naturally on HEP-PH 24m. Before
-HEP-PH they were on the demotion shortlist (Finding 2a). Remove from
-shortlist.
+### Dataset queue
+HEP-PH promoted from "stress test showing new failure mode" to
+"primary contract confirmation at scale". The engine handles
+34,546-paper × 10-year accumulative citation with idempotent
+convergence and correct lifecycle tracking across all seven
+transition variants.
 
 ---
 
 ## 7. Test harness
 
-`crates/graph-engine/tests/hep_ph.rs` — three `#[ignore]` tests (require
-`data/cit-HepPh.txt` and `data/cit-HepPh-dates.txt`):
-
-- `hep_ph_slow_decay_auto` — DECAY=0.9 (default)
-- `hep_ph_fast_decay_auto` — DECAY=0.5 (first Revived)
-- `hep_ph_very_slow_decay_auto` — DECAY=0.98 (accumulation ceiling)
-
-Each test honours `HEP_PH_MAX_MONTHS` (default 24) and
-`HEP_PH_MAX_ENTITIES` (default 50,000). Recommended invocations:
+`crates/graph-engine/tests/hep_ph.rs` — three tests behind `#[ignore]`:
 
 ```bash
-# Contract region (sane)
-HEP_PH_MAX_MONTHS=24 cargo test -p graph-engine --release --test hep_ph \
+# Default (24m) — fast smoke
+cargo test -p graph-engine --release --test hep_ph \
     -- --ignored --nocapture hep_ph_slow_decay_auto
 
-# Stress region (documents failure)
-HEP_PH_MAX_MONTHS=60 HEP_PH_MAX_ENTITIES=50000 \
+# Full 122m (production oracle)
+HEP_PH_MAX_MONTHS=122 HEP_PH_MAX_ENTITIES=3000 \
   cargo test -p graph-engine --release --test hep_ph \
     -- --ignored --nocapture hep_ph_slow_decay_auto
+
+# DECAY sensitivity
+cargo test -p graph-engine --release --test hep_ph -- --ignored --nocapture
 ```
 
-Full-window (122 months) is not recommended without raising the entity
-guard; expect hundreds of thousands of entities and multi-GB RSS.
+Each run prints `(active, comps, rels, median_act, passes1, passes2,
+Δidempotent)` per checkpoint plus exclusivity counter totals. A healthy
+run has `Δidempotent=+0` at every checkpoint; any non-zero value
+indicates regression in the fixpoint wrapper.

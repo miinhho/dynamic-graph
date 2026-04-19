@@ -183,7 +183,48 @@ test to exercise `Revived`. It fires correctly in both the isolated
 
 ---
 
-## Finding 4 — EU email temporal network: entity lifecycle correct; dataset dynamics exceed engine contract
+## Finding 4 — EU email "churn" explosion was a non-idempotency amplification bug (RESOLVED)
+
+**Date**: 2026-04-19 (original discovery), **2026-04-19 (resolved via
+Finding 5 fixpoint fix)**.
+**Evidence**: `crates/graph-engine/tests/eu_email.rs`, `docs/eu-email-finding.md`
+
+The original finding classified EU email as out-of-scope ("dynamic-temporal
+data exceeds gradual-evolution contract"). After Finding 5 identified
+`recognize_entities` non-idempotency as the root cause and shipped a
+fixpoint wrapper, the same workload now converges to **11 active entities
+at week 115** (pre-fix: 14,624). Ratio 14.8× → 0.01×.
+
+### Post-fix (canonical)
+
+| Run | DECAY | Threshold | Active @115w | Ratio |
+|-----|-------|-----------|--------------|-------|
+| slow_decay | 0.9 | auto | 11 | 0.01× |
+| default (to verify) | 0.5 | auto | TBD | TBD |
+| fixed_threshold | 0.5 | 0.3 | TBD | TBD |
+
+Lifecycle now balanced: Born 177 ≈ Merge 161. Pre-fix had Born 20,484 vs
+Merge 12 — the Merge-suppression was the hallmark of the single-pass
+proposal set leaving subfield consolidation undone.
+
+### Why the original framing was wrong
+Entity-lifecycle accounting (Born − Split − Dormant ≈ observed)
+checked out, which incorrectly implied the code was correct. The
+accounting identity holds regardless of whether `recognize` converges
+on a single pass. The real bug was visible only via an idempotency
+probe (second `recognize` call on the same world collapsing 154
+entities via late Merges), which was not part of the original
+investigation.
+
+### Status
+Ω4 remains in the test tree as a non-idempotency amplifier. The
+"churn data exceeds contract" claim is withdrawn.
+
+See `docs/eu-email-finding.md` §4 for the full pre/post narrative.
+
+---
+
+## Finding 4 (ARCHIVED) — EU email temporal network: entity lifecycle correct; dataset dynamics exceed engine contract
 
 **Date**: 2026-04-19
 **Evidence**: `crates/graph-engine/tests/eu_email.rs`
@@ -245,7 +286,84 @@ Full analysis in `docs/eu-email-finding.md`.
 
 ---
 
-## Finding 5 — HEP-PH citation network: engine contract confirmed in 24m window; hub-membership failure at 60m
+## Finding 5 — `recognize_entities` non-idempotency (ROOT CAUSE + FIX)
+
+**Date**: 2026-04-19
+**Evidence**: `crates/graph-engine/tests/hep_ph.rs`,
+`crates/graph-engine/src/engine/world_ops.rs::recognize_entities`
+
+HEP-PH citation investigation exposed that the default emergence
+perspective produced a non-self-consistent proposal set on a single
+pass: calling `recognize_entities` a second time on the same world
+state collapsed up to 40% of newly Born entities via late Merge
+proposals. The residue accumulated every tick and presented as
+super-linear entity growth on two datasets.
+
+### Diagnostic evidence (HEP-PH 36m, pre-fix)
+
+| Checkpoint | Active (pass 1) | Active (pass 2) | Δidempotent |
+|-----------|-----------------|-----------------|-------------|
+| Month 18 | 131 | 127 | −4 |
+| Month 24 | 245 | 205 | −40 |
+| Month 30 | 379 | 277 | −102 |
+| Month 36 | 487 | 333 | **−154** |
+
+`Active == Components` at every checkpoint — detection layer was
+deterministic. The gap was entirely in matching: first pass Born-ed
+components that had claim-quality overlap with entities that would be
+created *by first-pass Born proposals themselves*.
+
+### Fix
+
+`recognize_entities` now iterates `perspective.recognize` →
+`apply_proposals` until `proposals.is_empty()`, capped at 8 passes.
+The cap has been hit once (HEP-PH month 90 during peak density
+growth); all other checkpoints converge in 2–4 passes.
+
+### Measured impact
+
+| Dataset | Pre-fix | Post-fix | Reduction |
+|---------|---------|----------|-----------|
+| EU email @ 115w | 14,624 | **11** | −99.92% |
+| HEP-PH 60m @ 48m | 37,815 | **370** | −99.02% |
+| HEP-PH 122m @ 122m | not reachable | **716** (30,566 nodes) | — |
+| HEP-PH 24m | 256 | 205 | −19.9% |
+| Regression suite (229 tests) | passing | passing | 0 change |
+
+### Complementary exclusivity filter (retained)
+
+The investigation route went through two exclusivity hypotheses before
+landing on idempotency. The Born-path and DepositLayer-path exclusivity
+filters are **kept** (neutral on curated data, small positive on
+accumulative) as they encode a correct principle (redesign.md §3.4 —
+"single-perspective membership exclusivity"). They fire on ~1–2% of
+Born proposals in full HEP-PH runs. They are not the primary fix.
+
+### LayerTransition survival (all 7 confirmed load-bearing)
+
+HEP-PH 122m lifecycle totals force retraction of Finding 2a:
+
+| Transition | Pre-HEP-PH status | HEP-PH 122m |
+|------------|-------------------|-------------|
+| MembershipDelta | "dead weight" (LFR: 1) | 1,052 |
+| CoherenceShift | "never fires" (LFR: 0) | 1,388 |
+| Revived | "never fires" (LFR: 0) | 4 (first natural uncurated) |
+
+Demotion shortlist for these three variants is **withdrawn**.
+
+### Policy change — evidence-based removal checklist
+
+`CLAUDE.md` now carries a binding "Feature removal policy" section
+(section added 2026-04-19). Any future demotion proposal must
+articulate the trigger condition and verify reachability across three
+diversity axes (scale × temporality × curation). Non-firing on curated
+small-scale data is not evidence of dead weight.
+
+See `docs/hep-ph-finding.md` §4 for the full investigation sequence.
+
+---
+
+## Finding 5 (ARCHIVED) — HEP-PH citation network: engine contract confirmed in 24m window; hub-membership failure at 60m
 
 **Date**: 2026-04-19
 **Evidence**: `crates/graph-engine/tests/hep_ph.rs`

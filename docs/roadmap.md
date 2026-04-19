@@ -78,39 +78,48 @@ Folds old Track H closure-remainder + new evidence loop into one program.
   Revived transition. Finding in `docs/enron-finding.md`.
   Auto-threshold confirmed across all 5 datasets (stable-community
   class). See Ω4 for the dynamic-temporal class.
-- **Ω5. HEP-PH citation network benchmark.** ✓ **Discovery run (2026-04-19)**.
-  SNAP ArXiv HEP-PH: 34,546 papers, 421,578 citation edges, 122 monthly
-  batches. First **accumulative** temporal dataset (citations permanent,
-  no churn). Split into contract region (24m window) and stress region
-  (60m window).
-  - **24m contract region**: ratio 0.15-0.18× across DECAY ∈ {0.5, 0.9,
-    0.98} — the opposite of EU email's 14.8×. All 7 LayerTransitions
-    fire naturally: `MembershipDelta` 60–66 events, `CoherenceShift`
-    20–36, **Revived 4 (DECAY=0.5)** — first uncurated-data Revived.
-    Confirms engine contract on accumulative regime.
-  - **60m stress region**: second failure mode identified (distinct from
-    Ω4). Hub-node multi-entity membership: Entity-members total =
-    10.8M for 37,815 active entities / 10,408 nodes (avg 1,041 entities
-    per node). Locus-flow matcher assigns high-citation hub papers to
-    every subfield simultaneously → Born accumulation without exclusivity.
-  - Does NOT invalidate Ω2 auto-threshold demotion; does NOT require
-    re-introducing `overlap_threshold`. Candidate remediation: hub-cap or
-    entity identity dominance. Removes `MembershipDelta`/`CoherenceShift`
-    from demotion shortlist (Finding 2a).
+- **Ω5. HEP-PH citation network benchmark + `recognize_entities` fixpoint fix.**
+  ✓ **Complete (2026-04-19)**. SNAP ArXiv HEP-PH: 34,546 papers,
+  421,578 citations, 122 monthly batches.
+  - Initial runs (pre-fix): 60m stress region showed active/node ratio
+    3.63× and 37,815 active entities at month 48 — ABORT. Two hypotheses
+    (hub-exclusivity on Born path, then DepositLayer path) tested; small
+    positive but not the fix.
+  - **Diagnostic breakthrough**: component-count probe (`Active ==
+    Components` throughout) + idempotency probe (Δ=−154 at month 36)
+    isolated `recognize_entities` as non-idempotent. Advisor-identified
+    branch: "recognize itself is non-idempotent."
+  - **Fix shipped**: `recognize_entities` wrapped in fixpoint loop
+    (max 8 passes, proposals.is_empty() termination) in
+    `crates/graph-engine/src/engine/world_ops.rs`.
+  - **Post-fix results on 122m full corpus**: 716 active entities on
+    30,566 nodes, ratio **0.02×**. Δidempotent=+0 at every checkpoint.
+    All 7 LayerTransitions fire naturally: Born 14,810, Split 2,775,
+    Merge 13,884, BecameDormant 132, Revived 4 (first natural uncurated
+    fire), MembershipDelta 1,052, CoherenceShift 1,388.
+  - **Implication for Finding 2a**: `MembershipDelta` / `CoherenceShift`
+    / `Revived` demotion shortlist withdrawn. All 7 variants confirmed
+    load-bearing.
+  - **Ω4 reinterpreted**: same bug amplified EU email explosion.
+    Post-fix EU email: 14,624 → 11 active entities at week 115. The
+    "dynamic-temporal exceeds contract" claim is retracted.
+  - Complementary single-perspective exclusivity (Born + DepositLayer)
+    retained — encodes redesign.md §3.4 correctly; ~1–2% fire rate.
+  - CLAUDE.md "Feature removal policy" section added to prevent the
+    Finding 2a misclassification from recurring.
   - Finding in `docs/hep-ph-finding.md`.
-- **Ω4. EU email temporal benchmark.** ✓ **Discovery run (2026-04-19)**.
-  986 nodes, 332,334 edges, 115 weekly batches, 42 department labels.
-  Entity lifecycle code confirmed correct (Split → Dormant verified in
-  `entity_mutation.rs:460–483`; accounting: Born 20,484 − Split 5,850 −
-  Dormant 1 = active 14,633 ≈ observed 14,624). Root cause of active-
-  entity explosion is **dataset dynamics**, not a code defect: EU email
-  community structure changes week-to-week faster than entity tracking can
-  match, producing constant Born floods. NMI=0.1002 vs 42 departments.
-  DECAY tuning is a partial lever (0.9 → 14,624 vs 0.5 → 87,626) but not
-  a fix. Auto-threshold not the cause (fixed-threshold experiment confirms).
-  Finding in `docs/eu-email-finding.md`. No knob change warranted; the
-  failure mode reveals an engine contract assumption (gradual community
-  evolution) that highly dynamic temporal datasets violate.
+- **Ω4. EU email temporal benchmark.** ✓ **Complete (2026-04-19)**,
+  **revised after Ω5**. 986 nodes, 332,334 edges, 115 weekly batches,
+  42 department labels. Pre-fix showed active/node=14.8× (14,624
+  entities @ week 115) and was classified as "dynamic-temporal exceeds
+  engine contract." Ω5 identified `recognize_entities` non-idempotency
+  as the actual root cause. Post-fix: **11 active entities @ week 115**,
+  ratio 0.01×, Born 177 ≈ Merge 161 (balanced steady state). The
+  "out-of-scope" claim is **retracted**. EU email now a valid oracle
+  for churn-heavy workloads. NMI=0.078 vs 42 depts reinterpreted as
+  "engine finds ~11 cross-dept communication cores, not administrative
+  partition" — informative, not a failure. Finding in
+  `docs/eu-email-finding.md`.
 - **Ω2. 16 → ~13 knob reduction.** ✓ **Partial (2026-04-19)**: 16 → 14.
   `min_activity_threshold`/`min_bridge_activity` demoted to private fields
   with escape-hatch builders — all workspace tests pass. Remaining:
@@ -306,12 +315,25 @@ Holding these explicit so scope creep is visible.
 Decisions that changed item scope. Most recent first. Pre-2026-04-18
 entries archived in `docs/archived/phase2-state.md` history.
 
-- **2026-04-19 — Ω5 HEP-PH discovery run.** 34,546 papers / 421K citations.
-  24m window: ratio 0.15×, all 7 transitions fire (including Revived on
-  DECAY=0.5 — first uncurated data). 60m window: second failure mode
-  (hub-membership accumulation), distinct from Ω4. Removes
-  `MembershipDelta`/`CoherenceShift` from Finding 2a demotion shortlist.
-  Finding in `docs/hep-ph-finding.md`.
+- **2026-04-19 — Ω5 complete: `recognize_entities` fixpoint fix shipped.**
+  Investigation on HEP-PH 60m stress region isolated non-idempotent
+  `recognize_entities` as root cause of entity explosion — not
+  hub-membership accumulation as initially hypothesised, not EU email
+  churn incompatibility either. Single-pass `perspective.recognize`
+  produced a proposal set that a second pass immediately collapsed via
+  late Merges; the residue accumulated every tick. Fix in
+  `crates/graph-engine/src/engine/world_ops.rs`: fixpoint loop (max 8
+  passes). 229-test regression suite unchanged. Post-fix HEP-PH 122m:
+  716 active entities on 30,566 papers (ratio 0.02×). Post-fix EU email
+  115w: 11 active entities on 986 nodes (14,624 → 11, −99.92%). Both
+  Ω4 and Ω5 "failure mode" narratives retracted. Finding 2a demotion
+  shortlist withdrawn — all 7 LayerTransitions confirmed load-bearing.
+  CLAUDE.md gains "Feature removal policy" binding future demotions to
+  three-axis diversity verification.
+- **2026-04-19 — Ω5 HEP-PH discovery run (PRE-FIX, superseded).** 34,546
+  papers / 421K citations. Initial framing: 24m contract region + 60m
+  stress region with hub-membership failure mode. Superseded by
+  non-idempotency discovery above.
 - **2026-04-19 — Ω4 EU email discovery run.** 986 nodes, 332,334 edges,
   115 weekly batches. Entity lifecycle code verified correct (Split →
   Dormant in `entity_mutation.rs:460–483`). Active-entity explosion is a
