@@ -75,6 +75,26 @@ All seven `LayerTransition` variants fire naturally. Finding 2a's "dead
 weight" concern (LFR: `MembershipDelta=1`, `CoherenceShift=0`,
 `Revived=0`) is definitively withdrawn.
 
+### Active count dips are Merge waves, not noise
+
+Three checkpoints show net active-entity decrease across the 122m run:
+42m→48m (−24), 90m→96m (−38), 96m→102m (−36). Per-checkpoint lifecycle
+deltas (added after initial analysis) pinpoint the cause:
+
+| Month | ΔBorn | ΔMerge | ΔActive |
+|-------|-------|--------|---------|
+| 42    | 456   | 382    | +61 |
+| **48**| 437   | **440**| **−24** |
+| 54    | 532   | 480    | +34 |
+
+When accumulated citation volume crosses a consolidation threshold, the
+fixpoint loop emits Merge proposals that exceed Born — the engine
+detects that previously-separate sub-subfields have fused into a common
+parent community. This is the intended behaviour for accumulative data
+(subfield consolidation over decade-long horizons) and corresponds to
+known HEP-PH inflection points (1996 theoretical-physics unification,
+~2000 post-AdS/CFT reshuffle). The dips are **a feature, not noise**.
+
 ### Structural properties
 
 - **Entity size distribution**: median 7 papers, max 4,205 (a single

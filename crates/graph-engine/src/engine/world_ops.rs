@@ -58,6 +58,14 @@ pub(crate) const RECOGNIZE_MAX_FIXPOINT_PASSES: usize = 8;
 pub(crate) static RECOGNIZE_LAST_PASSES: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+/// Number of proposals still pending when the fixpoint loop hit its pass
+/// cap. 0 means convergence; non-zero means the loop aborted before the
+/// perspective's proposal set became empty — the world is potentially
+/// mid-consolidation and the next tick will see residue. Surfaces through
+/// `last_recognize_unconverged_proposals()` so callers can warn.
+pub(crate) static RECOGNIZE_LAST_UNCONVERGED_PROPOSALS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 pub(crate) fn recognize_entities(
     world: &mut World,
     influence_registry: &InfluenceKindRegistry,
@@ -74,10 +82,12 @@ pub(crate) fn recognize_entities(
     let t1 = std::time::Instant::now();
 
     let mut passes = 0usize;
+    let mut last_proposals_count = 0usize;
     for _ in 0..RECOGNIZE_MAX_FIXPOINT_PASSES {
         let batch = world.current_batch();
         let proposals = perspective.recognize(world.relationships(), world.entities(), batch);
         passes += 1;
+        last_proposals_count = proposals.len();
         if proposals.is_empty() {
             break;
         }
@@ -85,6 +95,14 @@ pub(crate) fn recognize_entities(
         events.extend(proposal_events);
     }
     RECOGNIZE_LAST_PASSES.store(passes, std::sync::atomic::Ordering::Relaxed);
+    RECOGNIZE_LAST_UNCONVERGED_PROPOSALS.store(
+        if passes == RECOGNIZE_MAX_FIXPOINT_PASSES && last_proposals_count > 0 {
+            last_proposals_count
+        } else {
+            0
+        },
+        std::sync::atomic::Ordering::Relaxed,
+    );
 
     #[cfg(feature = "perf-timing")]
     let recognize_us = t1.elapsed().as_micros();
@@ -106,6 +124,13 @@ pub(crate) fn recognize_entities(
 /// subsequent pass — see HEP-PH Finding 5 §4c.
 pub fn last_recognize_passes() -> usize {
     RECOGNIZE_LAST_PASSES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// If the last `recognize_entities` call exhausted its fixpoint pass cap
+/// without emptying the proposal queue, returns the count still pending.
+/// 0 means convergence.
+pub fn last_recognize_unconverged_proposals() -> usize {
+    RECOGNIZE_LAST_UNCONVERGED_PROPOSALS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 pub(crate) fn weather_entities(world: &mut World, policy: &dyn EntityWeatheringPolicy) {

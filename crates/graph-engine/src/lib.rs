@@ -22,7 +22,10 @@ pub use self::{
         DefaultEmergencePerspective, EmergencePerspective, debug_exclusivity_counters,
         debug_last_component_count, reset_exclusivity_counters,
     },
-    engine::{Engine, EngineConfig, TickResult, last_recognize_passes},
+    engine::{
+        Engine, EngineConfig, TickResult, last_recognize_passes,
+        last_recognize_unconverged_proposals,
+    },
     handle::{EngineHandle, LocalHandle},
     plasticity::{
         PairObservationTargets, PairObservationWindow, PairPredictionObjective,

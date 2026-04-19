@@ -37,7 +37,7 @@ use graph_core::{
 use graph_engine::{
     DefaultEmergencePerspective, Engine, EngineConfig, InfluenceKindConfig, InfluenceKindRegistry,
     LocusKindRegistry, debug_exclusivity_counters, debug_last_component_count,
-    last_recognize_passes, reset_exclusivity_counters,
+    last_recognize_passes, last_recognize_unconverged_proposals, reset_exclusivity_counters,
 };
 use graph_world::World;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -333,6 +333,9 @@ fn run_scenario(label: &str, decay: f32, threshold: Option<f32>) {
     let total_months = buckets.len();
     // (month, active_entities, relationship_count, median_activity, component_count, idempotent_delta)
     let mut snapshots: Vec<(usize, usize, usize, f32, usize, i64)> = Vec::new();
+    // (month, born_delta, split_delta, merge_delta, dormant_delta, revived_delta, member_delta)
+    let mut lifecycle_deltas: Vec<(usize, usize, usize, usize, usize, usize, usize)> = Vec::new();
+    let mut prev_lc = LifecycleCounts::default();
 
     for (month, pairs) in buckets.iter().enumerate() {
         if pairs.is_empty() {
@@ -346,6 +349,14 @@ fn run_scenario(label: &str, decay: f32, threshold: Option<f32>) {
             engine.recognize_entities(&mut world, &inf_reg, &perspective);
             let n_components_first = debug_last_component_count();
             let passes_first = last_recognize_passes();
+            let unconverged = last_recognize_unconverged_proposals();
+            if unconverged > 0 {
+                println!(
+                    "  WARN: month {} hit fixpoint cap with {} residual proposals",
+                    month + 1,
+                    unconverged
+                );
+            }
             let active_first = world
                 .entities()
                 .iter()
@@ -376,6 +387,26 @@ fn run_scenario(label: &str, decay: f32, threshold: Option<f32>) {
             acts.sort_by(|a, b| a.partial_cmp(b).unwrap());
             let median_act = acts.get(acts.len() / 2).copied().unwrap_or(0.0);
             let active = active_second;
+            let cur_lc = count_lifecycle(&world);
+            let d_born = cur_lc.born.saturating_sub(prev_lc.born);
+            let d_split = cur_lc.split.saturating_sub(prev_lc.split);
+            let d_merge = cur_lc.merge.saturating_sub(prev_lc.merge);
+            let d_dormant = cur_lc.dormant.saturating_sub(prev_lc.dormant);
+            let d_revived = cur_lc.revived.saturating_sub(prev_lc.revived);
+            let d_member = cur_lc
+                .membership_delta
+                .saturating_sub(prev_lc.membership_delta);
+            lifecycle_deltas.push((
+                month + 1,
+                d_born,
+                d_split,
+                d_merge,
+                d_dormant,
+                d_revived,
+                d_member,
+            ));
+            prev_lc = cur_lc;
+
             snapshots.push((
                 month + 1,
                 active,
@@ -385,14 +416,17 @@ fn run_scenario(label: &str, decay: f32, threshold: Option<f32>) {
                 idempotent_delta,
             ));
             println!(
-                "  [month {:>3}] active={:>7} comps={:>7} rels={:>7} median_act={:.4} passes1={} passes2={} Δidempotent={:+}",
+                "  [month {:>3}] active={:>5} comps={:>5} rels={:>6} ΔB={:>4} ΔS={:>3} ΔM={:>4} ΔD={:>3} ΔR={:>2} passes1={} Δidem={:+}",
                 month + 1,
                 active,
                 n_components_first,
                 rel_count,
-                median_act,
+                d_born,
+                d_split,
+                d_merge,
+                d_dormant,
+                d_revived,
                 passes_first,
-                passes_second,
                 idempotent_delta
             );
             let cap = max_entities();

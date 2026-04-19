@@ -1,12 +1,19 @@
 # Roadmap
 
-Last updated: 2026-04-19.
+Last updated: 2026-04-19 (post-Ω5 fixpoint fix).
 
 This document plans forward-looking work. The substrate (`docs/redesign.md`)
 is feature-complete; the current chapter is **making the surface honest**:
 shrinking the tuning vocabulary to what benchmarks actually require, proving
 emergence claims are falsifiable, and turning declared-vs-observed drift
 into a visible workflow.
+
+**2026-04-19 correction**: Ω4 (EU email) and Ω5 (HEP-PH) initially framed
+as "data-characteristic failure modes" were both the same latent
+non-idempotency bug in `recognize_entities`, now fixed via fixpoint loop.
+EU email 14,624 → 11 active entities; HEP-PH 122m converges to 716
+entities on 30,566 papers. All seven `LayerTransition` variants confirmed
+load-bearing. See `docs/hep-ph-finding.md` and `docs/eu-email-finding.md`.
 
 ---
 
@@ -45,10 +52,20 @@ These bind every track below.
    flamegraph or committed bench pointing at the site comes first. The E4
    negative result (`docs/e4-design.md §12`) is the binding precedent.
 3. **Benchmarks drive knob decisions.** The dataset queue — Karate → Davis
-   → LFR → SocioPatterns → Enron — is the ground truth for which
-   abstractions are load-bearing. Each produces a Finding in
-   `docs/complexity-audit.md`.
-4. **Declarative anchor + observed drift is the differentiator.** The
+   → LFR → SocioPatterns → Enron → EU email → HEP-PH — is the ground
+   truth for which abstractions are load-bearing. Each produces a Finding
+   in `docs/complexity-audit.md`.
+   **Bias correction (2026-04-19)**: planted / curated / sub-critical
+   datasets systematically under-trigger gradual-drift features. New
+   demotion proposals must pass the three-axis diversity check in
+   `CLAUDE.md` "Feature removal policy". HEP-PH rescued three
+   `LayerTransition` variants (`MembershipDelta`, `CoherenceShift`,
+   `Revived`) from the demotion shortlist.
+4. **Non-idempotent passes are bugs.** `recognize_entities` now iterates
+   to fixpoint (max 8 passes). Any perspective that does not converge
+   within the budget surfaces via `last_recognize_unconverged_proposals()`
+   — investigate before shipping.
+5. **Declarative anchor + observed drift is the differentiator.** The
    `graph-boundary` Confirmed/Ghost/Shadow/Null quadrants are what lets
    this engine say something the user did not already know. This remains
    the long-term product wedge.
@@ -133,6 +150,25 @@ Folds old Track H closure-remainder + new evidence loop into one program.
   Success = positive pair-grain Ψ survives with documented seed-level
   variance. This is the *only* remaining item on Track H; closing it
   firmly retires emergence as an open question.
+- **Ω6. Post-fix housekeeping (next up).** Close loose ends from the Ω5
+  fixpoint investigation.
+  - **Ω6a. Entity-size sanity check on HEP-PH max=4,205.** Sample the
+    top-5 entity member papers; validate subject coherence. If the
+    mega-entity lumps multiple subfields, revisit detection threshold;
+    if it is a single well-known area (QCD phenomenology), close.
+  - **Ω6b. Exclusivity filter audit.** `filtered+collapsed` at 0.9% on
+    full HEP-PH run. Decision: keep as-is (principle-encoding), reduce
+    to a doc-comment-only assertion (remove the code but preserve the
+    rule), or delete. Requires ≥1 dataset where the filter changes an
+    entity count by >2%.
+  - **Ω6c. `MAX_FIXPOINT_PASSES` calibration.** Cap hit once at HEP-PH
+    month 90. Observe `last_recognize_unconverged_proposals()` across
+    SocioPatterns, Enron, LFR, Karate, Davis, EU email at all DECAY
+    values; if any non-zero, raise cap or investigate the perspective.
+  - **Ω6d. DECAY ∈ {0.5, 0.98} on HEP-PH 122m.** Post-fix long-horizon
+    comparison. Pre-fix tested DECAY=0.5/0.98 only at 24m. Confirm
+    Revived fire counts, Merge rates, and median size distributions
+    across the full corpus.
 
 ### Track G — Boundary maturity *(priority 2, shipping visible value)*
 
@@ -315,6 +351,14 @@ Holding these explicit so scope creep is visible.
 Decisions that changed item scope. Most recent first. Pre-2026-04-18
 entries archived in `docs/archived/phase2-state.md` history.
 
+- **2026-04-19 — Ω5 post-validation + Ω6 scoped.** EU email three
+  scenarios all converge post-fix (17 / 11 / 24 active entities; NMI
+  0.10 / 0.08 / 0.18). HEP-PH checkpoint-delta analysis identifies
+  active-count dips at m48/m96/m102 as **natural subfield Merge waves**
+  (ΔMerge > ΔBorn) — intended consolidation behaviour, not a bug.
+  `last_recognize_unconverged_proposals()` added to surface fixpoint-cap
+  hits. Four Ω6 housekeeping items enumerated (entity-size sanity,
+  exclusivity audit, fixpoint cap calibration, DECAY sweep at 122m).
 - **2026-04-19 — Ω5 complete: `recognize_entities` fixpoint fix shipped.**
   Investigation on HEP-PH 60m stress region isolated non-idempotent
   `recognize_entities` as root cause of entity explosion — not

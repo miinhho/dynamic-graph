@@ -21,7 +21,7 @@ mod types;
 pub(crate) mod world_ops;
 
 #[doc(hidden)]
-pub use world_ops::last_recognize_passes;
+pub use world_ops::{last_recognize_passes, last_recognize_unconverged_proposals};
 
 use graph_core::{
     BatchId, Change, ChangeId, ChangeSubject, InfluenceKindId, LocusId, ProposedChange,

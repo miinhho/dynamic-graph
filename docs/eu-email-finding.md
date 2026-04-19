@@ -111,6 +111,21 @@ Checkpoints every 10 weeks (recognize_every interval):
 Active entity count stabilises at ~11 from week 30 onward. Merge dominates
 consolidation: 161 merges vs 177 Born.
 
+### All three scenarios converge post-fix (2026-04-19 validation)
+
+| Scenario | Active @115w | NMI | Born | Merge | Split | Revived |
+|----------|--------------|-----|------|-------|-------|---------|
+| DECAY=0.5, auto-threshold (default) | **17** | 0.100 | 256 | 242 | 49 | 0 |
+| DECAY=0.9, auto-threshold (slow) | **11** | 0.078 | 177 | 161 | 52 | 0 |
+| DECAY=0.5, fixed threshold=0.3 | **24** | **0.180** | 228 | — | — | **4** |
+
+- All three produce `active ≤ 24` on 986 nodes (pre-fix: 14K–87K).
+- Fixed-threshold run has the highest NMI and the only natural Revived
+  events — consistent with sparse-threshold allowing dormancy+revival
+  cycles that DECAY-balanced auto runs damp.
+- DECAY=0.9 keeps activities high enough that dormancy is rare, hence
+  Revived=0.
+
 ### NMI = 0.0780 against 42 department labels
 
 Lower than SocioPatterns (class structure) or Enron (planted communities)
@@ -169,12 +184,13 @@ this dataset.
 
 ---
 
-## 8. Remaining open question
+## 8. Remaining open question — resolved
 
-Why does DECAY=0.5 still produce meaningfully different numbers from
-DECAY=0.9 (the pre-fix had DECAY=0.5 → 87,626 active; post-fix needs
-verification)? This is a legitimate tuning question, not an engine
-bug. Rerun DECAY=0.5 with fixpoint and document.
+Post-fix DECAY=0.5 (default) converges to 17 active entities (vs
+DECAY=0.9 → 11). The ~55% difference is the normal decay-rate effect:
+shorter half-life lets weakly-connected sub-clusters dormancy-out and
+be detected as separate entities. Both are sane outcomes; DECAY choice
+remains a domain knob, not an engine correctness question.
 
 ---
 
