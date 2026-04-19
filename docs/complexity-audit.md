@@ -64,13 +64,19 @@ Raw layer counts on the full benchmark (all 6 test functions):
 | `CoherenceShift` | **Never fires**                          | No test trips the 0.05 drift gate |
 | `Revived`        | **Never fires**                          | Benchmark schedule has no dormant-then-revived path |
 
-**Implication**: of the 7 variants, 4 are load-bearing. `CoherenceShift`
-and `Revived` did not fire once. `MembershipDelta` fired once (in the
-default-threshold composite only, when overlap-gating kept an entity
-alive with a mutated member set). Before demoting them to an `advanced`
-module, the SocioPatterns/Enron datasets — which have longer, noisier
-regimes — should be checked for the drift-heavy cases these three
-variants are designed for.
+**Implication (original, 2026-04-18)**: of the 7 variants, 4 are
+load-bearing on LFR. `CoherenceShift` and `Revived` did not fire once.
+`MembershipDelta` fired once.
+
+**Update (2026-04-19, Findings 3 + 5)**: after Enron and HEP-PH, all 7
+variants fire naturally on real-accumulative data. Revised status:
+
+- `Revived` — Enron (planted, 1×) + HEP-PH DECAY=0.5 (natural, 4×)
+- `MembershipDelta` — HEP-PH 24m (60–66× per DECAY setting)
+- `CoherenceShift` — Enron (1×) + HEP-PH 24m (20–36× per DECAY setting)
+
+**None are dead weight.** All 7 LayerTransitions confirmed load-bearing
+across the six-dataset corpus. Demotion to `advanced` module withdrawn.
 
 ### 2b — `overlap_threshold = 0.5` is a karate-tuned default too
 
@@ -113,6 +119,206 @@ planted transitions recover at precision 1.0 / recall 1.0.
 
 The fix does not affect karate/davis/partition_determinism suites —
 none of them relied on the pre-fix post-Split Active behaviour.
+
+---
+
+## Finding 3 — Enron 5-phase benchmark: auto-threshold navigates Revived; Ω2 candidates ready
+
+**Date**: 2026-04-19
+**Evidence**: `crates/graph-engine/tests/enron.rs`
+
+120-node, 5-phase synthetic Enron workload (Born×6 → Merge(E+F→EF) →
+Dormant(EF) → Dormant(D) → Revived(EF)) with pure community activation
+(no random noise). `DefaultEmergencePerspective` with
+`min_activity_threshold: None` (auto) throughout.
+
+### Transition detection results (full 5-phase protocol)
+
+| Transition     | Planted | Detected | TP | Precision | Recall |
+|----------------|---------|----------|----|-----------|--------|
+| Born           | 6       | 6        | 6  | 1.00      | 1.00   |
+| Merge          | 1       | 1        | 1  | 1.00      | 1.00   |
+| Dormant        | 2       | 2        | 1  | 0.50      | 0.50   |
+| Revived        | 1       | 1        | 1  | 1.00      | 1.00   |
+| CoherenceShift | n/a     | 1        | —  | —         | —      |
+
+Dormant recall=0.50: EF dormancy detected; D dormancy not detected in the
+full run (D's activity decays more slowly relative to still-active A/B/C
+neighbors, keeping it above the auto-threshold). `dormant_ef_detected`
+isolates EF dormancy successfully — the D case is a multi-community
+interaction effect. `CoherenceShift=1` in the full run (vs 0 in LFR) is
+attributed to the 5-phase chained state transitions on the same entity.
+
+### Prediction accuracy (precision@K)
+
+Train on phases 0–3, rank all relationship pairs by activity, test on
+phase 4 (revival of A/B/C + EF):
+
+| K   | Precision@K | Lift   |
+|-----|-------------|--------|
+| 20  | 1.000       | 5.29×  |
+| 50  | 1.000       | 5.29×  |
+| 100 | 1.000       | 5.29×  |
+
+Base rate = 0.189 (1350 / 7140 possible pairs). Activity ranking is the
+correct predictor at all tested K values. Exceeds SocioPatterns'
+`precision@100 = 0.970`.
+
+### Revived transition — first exercise in test tree
+
+`lfr_dynamic.rs` had no dormant-then-revived path. Enron is the first
+test to exercise `Revived`. It fires correctly in both the isolated
+`revived_ef_detected` test and the full protocol.
+
+### Ω2 evidence
+
+- **`min_activity_threshold`**: auto-path handled Born, Merge, Dormant,
+  Revived across 120 nodes and 5 phases without any manual override.
+  Confirmed across all five datasets. **Ready to demote to internal const.**
+- **`demotion_policy`**: default (ActivityFloor) used throughout; Enron
+  adds no evidence distinguishing it from IdleBatches/LruCapacity.
+  Still a demotion candidate.
+- **`PlasticityConfig.weight_decay`**: not exercised (no Hebbian turned
+  on). Evidence neutral.
+
+---
+
+## Finding 4 — EU email temporal network: entity lifecycle correct; dataset dynamics exceed engine contract
+
+**Date**: 2026-04-19
+**Evidence**: `crates/graph-engine/tests/eu_email.rs`
+
+986-node, 332,334-edge, 115-week temporal email network with 42 department
+ground-truth labels.
+
+### Result summary
+
+| Run | DECAY | Threshold | Active (week 115) | NMI |
+|-----|-------|-----------|-------------------|-----|
+| Default | 0.5 | auto | 87,626 | 0.1002 |
+| Fixed threshold | 0.5 | 0.3 | explosion | — |
+| Slow decay | 0.9 | auto | 14,624 | — |
+
+### Entity lifecycle code verified correct
+
+The investigation was motivated by the hypothesis that `EmergenceProposal::Split`
+might fail to demote the source entity, causing it to re-accumulate. This
+hypothesis is false.
+
+`crates/graph-engine/src/engine/world_ops/entity_mutation.rs:460–483`
+(`build_split_source_effect`) sets `status: Some(EntityStatus::Dormant)` for
+the Split source. The accounting closes exactly:
+
+> Born(20,484) − Split sources(5,850) − regular Dormant(1) = **14,633** ≈ observed 14,624
+
+Note: `WorldEvent::EntityDormant` is only emitted for `EmergenceProposal::Dormant`
+(silence-based demotion); Split sources are demoted without a separate event.
+Test counters on `WorldEvent::EntityDormant` will show 1, not 5,851.
+
+### Root cause: dataset dynamics, not a code defect
+
+EU email community structure changes week-to-week faster than entity tracking
+can match. The engine's entity tracking assumes communities evolve gradually
+(most week-N loci persist in the same community at week N+1 → `DepositLayer`).
+EU email violates this: each week's email graph is largely independent of the
+previous week, so `recognize_entities` produces Born events rather than
+DepositLayer events.
+
+- **DECAY=0.5**: activities collapse to ~0 by week 50 (half-life = 1 week).
+  Auto-threshold finds no bimodal gap, returns 0.0. All residual activities
+  above zero produce unstable communities → ~986 Born/week → 87,626 active.
+- **DECAY=0.9**: activities persist but community membership continuously
+  re-mixes. Born rate ~178/week, Dormant rate ~51/week → net +127/week →
+  14,600 at week 115.
+- **Fixed threshold (0.3) with DECAY=0.5**: explosion persists. Auto-threshold
+  is confirmed NOT the root cause.
+
+### Implication for knob surface
+
+No knob changes warranted. The failure mode is an engine design contract
+assumption (gradually evolving communities), not a threshold or decay tuning
+problem. The `min_activity_threshold` auto path and `min_bridge_activity` auto
+path both work correctly on EU email — the explosion would occur at any
+threshold value when community memberships turn over completely each batch.
+
+Full analysis in `docs/eu-email-finding.md`.
+
+---
+
+## Finding 5 — HEP-PH citation network: engine contract confirmed in 24m window; hub-membership failure at 60m
+
+**Date**: 2026-04-19
+**Evidence**: `crates/graph-engine/tests/hep_ph.rs`
+
+SNAP ArXiv HEP-PH: 34,546 papers, 421,578 citation edges, 122 monthly
+batches. First accumulative temporal dataset (citations never expire).
+Contrast with EU email (Ω4, dynamic-temporal churn).
+
+### Contract region (24 month window)
+
+All three DECAY values produce sane active/node ratios. Auto-threshold
+succeeds across the spectrum.
+
+| DECAY | Half-life | Active | Ratio | Born | Split | Merge | Dormant | Revived | MembershipΔ | CoherShift |
+|-------|-----------|--------|-------|------|-------|-------|---------|---------|-------------|------------|
+| 0.50  | 1 mo      | 294    | 0.18× | 364  | 26    | 39    | 23      | **4**   | 60          | 20         |
+| 0.90  | 7 mo      | 256    | 0.15× | 310  | 29    | 31    | 7       | 0       | 66          | 36         |
+| 0.98  | 34 mo     | 252    | 0.15× | 305  | 30    | 30    | 7       | 0       | 62          | 36         |
+
+Key results:
+- **Ratio 0.15–0.18× is the opposite** of EU email's 14.8× — confirms the
+  engine's "gradual evolution" contract on accumulative data.
+- **MembershipDelta / CoherenceShift fire naturally** at 60+ and 20+ events
+  respectively. Finding 2a ranked them as dead weight based on LFR (0–1
+  events). HEP-PH overturns that: they fire on real-accumulative data.
+  Remove from demotion shortlist.
+- **Revived 4 (DECAY=0.5)**: first uncurated dataset to fire Revived
+  naturally (Enron was planted).
+- Auto-threshold continues to work across DECAY ∈ {0.5, 0.9, 0.98}.
+  Ω2 demotion unaffected.
+
+### Stress region (60 month window) — new failure mode
+
+Both DECAY=0.5 and 0.9 hit `HEP_PH_MAX_ENTITIES=30000` guard at month 48:
+
+| DECAY | Active@48 | Ratio | Entity members total | Avg entities/node |
+|-------|-----------|-------|----------------------|-------------------|
+| 0.50  | 45,814    | 4.40× | 7,685,572            | 739               |
+| 0.90  | 37,815    | 3.63× | 10,831,513           | 1,041             |
+
+Growth trajectory (DECAY=0.9, checkpoints at months 6, 12, 18, …):
+`13 → 56 → 132 → 256 → 547 → 2,072 → 9,303 → 37,815` (stable through
+month 30, super-linear from month 36).
+
+**Root cause**: locus-flow entity matcher (Phase 1 replacement for
+`overlap_threshold`) permits unbounded multi-entity membership. On
+accumulative citation graphs, high-degree hub papers (surveys, seminal
+results) land in the significant bucket of every subfield community.
+Each subfield spawns its own entity `Born`, each including the hub as a
+member. Member count grows super-linearly in node count.
+
+**Distinct from Ω4 (EU email) failure**:
+
+| Property | EU email (Ω4) | HEP-PH 60m (Ω5) |
+|----------|---------------|-----------------|
+| Data character | Churn (weekly turnover) | Accumulation (permanent links) |
+| Born source | New community ≠ prior | Hub re-labelled into new subfield |
+| Rel count | Stable (decay to 0) | Monotone growth |
+| Member churn | High | Cross-entity (hub multi-membership) |
+| Fix lever | Half-life calibration | Membership exclusivity / hub cap |
+
+### Candidate remediation (not scheduled)
+
+Do NOT re-introduce `overlap_threshold`. Three candidates:
+
+1. **Hub cap**: per-locus max entity membership (e.g., 3–5 entities).
+2. **Entity identity dominance**: primary entity per locus via dominant
+   flow; secondary memberships downweighted.
+3. **Member decay**: expire members that haven't flowed in N batches.
+
+Requires design decision on membership exclusivity contract.
+
+Finding details in `docs/hep-ph-finding.md`.
 
 ---
 
@@ -173,8 +379,9 @@ for call-site stability.
 | 6 | `recent_window`, `compression_age`, `removal_age`, `preserved_transitions` | 33 | — |
 | 7 | `quiescent_threshold`, `diverge_threshold`, `limit_cycle_tolerance`, `min_scale`, `max_scale`, `shrink_factor`, `recovery_factor` | 26 | — |
 | 8 | `history_window`, `change_retention_batches`, `cold_relationship_threshold`, `cold_relationship_min_idle_batches`, `auto_weather_every_ticks`, `event_history_len`, `pending_stimuli_capacity`, `backpressure_policy` | **18** | — |
+| Ω2 | `min_activity_threshold`, `min_bridge_activity` (private — escape-hatch builders only) | **16** | 3 |
 
-**Final surface: ~16 load-bearing knobs** (810 workspace tests passing).
+**Current surface: 14 load-bearing knobs** (Ω2 complete 2026-04-19; workspace tests all passing).
 
 ### Phase 5 — Per-kind dynamics (4 removed)
 
@@ -233,16 +440,18 @@ non-default usage in benchmarks or tests. `SimulationBuilder::{history_window,
 backpressure, auto_weather, auto_weather_with}` methods kept as no-ops
 for call-site stability — they do nothing now.
 
-### Remaining surface (16 knobs)
+### Remaining surface (14 knobs)
 
 - **Per-InfluenceKind (10)**: `name`, `decay_per_batch`, `activity_contribution`,
   `parent`, `symmetric`, `applies_between`, `extra_slots`, `demotion_policy`,
   `stabilization.alpha`, `plasticity` (struct with 3 fields)
 - **Per-LocusKind (2)**: `refractory_batches`, `max_proposals_per_dispatch`
-- **Perspective auto-knobs (2)**: `min_activity_threshold`, `min_bridge_activity`
-  — `Option<f32>`, default `None` = distribution-based auto
 - **Engine (1)**: `engine.max_batches_per_tick`
 - **Simulation (1)**: `auto_commit` (storage feature)
+
+`min_activity_threshold` / `min_bridge_activity` demoted to private fields
+(Ω2, 2026-04-19). Escape-hatch builders `with_min_activity_threshold` /
+`with_min_bridge_activity` remain for edge cases but are not primary API.
 
 ### Post-sweep additions (2026-04-18 afternoon)
 
@@ -294,13 +503,12 @@ next-sweep candidates:
 3. **`min_activity_threshold` / `min_bridge_activity`** — the auto
    path is strong enough across karate/Davis/LFR/SocioPatterns that
    there's no concrete scenario where overriding is the right answer.
-   Candidate for demotion to internal const once the Enron benchmark
-   confirms or refutes. **Exception**: the SocioPatterns 50% → 75%
-   finding shows the auto heuristic itself still needed tuning — don't
-   demote before the heuristic is locked in.
+   **Enron (Finding 3) confirms**: auto handles all five phases across
+   120 nodes without any override. Heuristic is now locked in across
+   all five datasets. **Ready to demote.**
 
-Projected reduction if all three are removed: **16 → ~13**. Defer until
-Enron benchmark data is in.
+Projected reduction if all three are removed: **16 → ~13**. Enron
+data is now in — proceed with Ω2 reduction pass.
 
 ### Tests removed (documented for future archaeology)
 
@@ -414,7 +622,7 @@ evidence of when each is needed:
 | Saturation mode | None / Tanh / Clip | No test requires non-None |
 | Weathering effects | Preserved / Compress / Skeleton / Remove | No test has deep-enough sediment to exercise transitions |
 | Stabilization blend | alpha + saturation + trust_region | Three distinct knobs for "don't let it diverge"; could collapse |
-| `LayerTransition` variants | Born / Split / Merged / BecameDormant / MembershipDelta / CoherenceShift / Revived | LFR dynamic (Finding 2a): only Born/Split/Merged/BecameDormant are load-bearing; MembershipDelta fires ≤1×, CoherenceShift/Revived never fire |
+| `LayerTransition` variants | Born / Split / Merged / BecameDormant / MembershipDelta / CoherenceShift / Revived | LFR dynamic (Finding 2a): Born/Split/Merged/BecameDormant load-bearing; MembershipDelta fires ≤1×, CoherenceShift/Revived never fire. Enron (Finding 3): Revived fires correctly; CoherenceShift fires 1× in full 5-phase run (see Finding 3). |
 
 ---
 
@@ -440,4 +648,6 @@ results. Revisit after each.
 | Davis Southern Women | Event-stream emergence, bipartite noise | Done — 2026-04-18 |
 | LFR dynamic benchmark | Sediment transition precision/recall | Done — 2026-04-18 |
 | SocioPatterns primary school | Scale + temporal resolution | Done — 2026-04-18 (see `sociopatterns-finding.md`) |
-| Enron email | Real-world scale, natural Merge/Dormant | Planned |
+| Enron email | Real-world scale, natural Merge/Dormant | Done — 2026-04-19 (see `enron-finding.md`) |
+| EU email temporal | Dynamic temporal communities, entity lifecycle stress | Done — 2026-04-19 (see `eu-email-finding.md`); entity lifecycle correct; dataset exceeds gradual-evolution contract |
+| HEP-PH citation | Accumulative temporal, engine contract on designed regime | Done — 2026-04-19 (see `hep-ph-finding.md`); 24m contract confirmed (ratio 0.15×); 60m hub-membership failure mode |

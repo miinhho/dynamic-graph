@@ -46,6 +46,18 @@ pub(crate) fn extract_cohere(
         .update_at(perspective.name(), coheres, batch);
 }
 
+/// Max fixpoint passes per `recognize_entities` call. The HEP-PH diagnosis
+/// (`docs/hep-ph-finding.md §4c`) showed the perspective's single-pass
+/// proposal set is not self-consistent on accumulative citation graphs —
+/// a second pass over the post-apply world collapsed up to 40% of newly
+/// Born entities via Merge. Iterating to fixpoint closes that gap.
+/// Empirically 2–3 passes converge; 8 is a safe guard against pathology.
+pub(crate) const RECOGNIZE_MAX_FIXPOINT_PASSES: usize = 8;
+
+/// Counter used by diagnostics/tests to confirm fixpoint convergence.
+pub(crate) static RECOGNIZE_LAST_PASSES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 pub(crate) fn recognize_entities(
     world: &mut World,
     influence_registry: &InfluenceKindRegistry,
@@ -61,27 +73,39 @@ pub(crate) fn recognize_entities(
     #[cfg(feature = "perf-timing")]
     let t1 = std::time::Instant::now();
 
-    let batch = world.current_batch();
-    let proposals = perspective.recognize(world.relationships(), world.entities(), batch);
+    let mut passes = 0usize;
+    for _ in 0..RECOGNIZE_MAX_FIXPOINT_PASSES {
+        let batch = world.current_batch();
+        let proposals = perspective.recognize(world.relationships(), world.entities(), batch);
+        passes += 1;
+        if proposals.is_empty() {
+            break;
+        }
+        let proposal_events = entity_mutation::apply_proposals(world, proposals, batch);
+        events.extend(proposal_events);
+    }
+    RECOGNIZE_LAST_PASSES.store(passes, std::sync::atomic::Ordering::Relaxed);
 
     #[cfg(feature = "perf-timing")]
     let recognize_us = t1.elapsed().as_micros();
-    #[cfg(feature = "perf-timing")]
-    let t2 = std::time::Instant::now();
-
-    let proposal_events = entity_mutation::apply_proposals(world, proposals, batch);
-    events.extend(proposal_events);
 
     #[cfg(feature = "perf-timing")]
     {
-        let apply_us = t2.elapsed().as_micros();
         let rel_count = world.relationships().iter().count();
         eprintln!(
-            "[perf-timing] recognize_entities: flush={flush_us}µs recognize={recognize_us}µs apply={apply_us}µs rels={rel_count}"
+            "[perf-timing] recognize_entities: flush={flush_us}µs recognize+apply={recognize_us}µs passes={passes} rels={rel_count}"
         );
     }
 
     events
+}
+
+/// Number of perspective.recognize passes the last `recognize_entities` call
+/// took. 1 = converged on the first pass (fully idempotent). >1 indicates
+/// the perspective emitted proposals on a pass that were reversed by a
+/// subsequent pass — see HEP-PH Finding 5 §4c.
+pub fn last_recognize_passes() -> usize {
+    RECOGNIZE_LAST_PASSES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 pub(crate) fn weather_entities(world: &mut World, policy: &dyn EntityWeatheringPolicy) {

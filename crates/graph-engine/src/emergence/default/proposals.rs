@@ -1,10 +1,32 @@
 use graph_core::{
-    BatchId, EmergenceProposal, Entity, EntityId, EntityLayer, EntitySnapshot, EntityStatus,
-    LayerTransition, LifecycleCause, LocusId, RelationshipId,
+    BatchId, EmergenceProposal, Endpoints, Entity, EntityId, EntityLayer, EntitySnapshot,
+    EntityStatus, LayerTransition, LifecycleCause, LocusId, RelationshipId,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::{AdjMap, EntityDecision, MIN_SIGNIFICANT_BUCKET, ProposalContext, community};
+
+/// Diagnostic counters for the exclusivity filter. Process-wide, reset-able
+/// from tests. See `docs/hep-ph-finding.md §4` for the investigation these
+/// counters support.
+pub static EXCLUSIVITY_UNCHANGED: AtomicUsize = AtomicUsize::new(0);
+pub static EXCLUSIVITY_FILTERED: AtomicUsize = AtomicUsize::new(0);
+pub static EXCLUSIVITY_COLLAPSED: AtomicUsize = AtomicUsize::new(0);
+
+pub fn reset_exclusivity_counters() {
+    EXCLUSIVITY_UNCHANGED.store(0, Ordering::Relaxed);
+    EXCLUSIVITY_FILTERED.store(0, Ordering::Relaxed);
+    EXCLUSIVITY_COLLAPSED.store(0, Ordering::Relaxed);
+}
+
+pub fn exclusivity_counters() -> (usize, usize, usize) {
+    (
+        EXCLUSIVITY_UNCHANGED.load(Ordering::Relaxed),
+        EXCLUSIVITY_FILTERED.load(Ordering::Relaxed),
+        EXCLUSIVITY_COLLAPSED.load(Ordering::Relaxed),
+    )
+}
 
 struct ComponentAssembly {
     members: Vec<LocusId>,
@@ -87,17 +109,132 @@ pub(super) fn resolve_component_proposal(
     coherence: f32,
     context: &mut ProposalContext<'_>,
 ) {
+    // Single-perspective exclusivity (redesign §3.4, HEP-PH Finding 5):
+    // loci already owned by a Claims-decision entity may not end up in a
+    // different entity's membership. Accumulative hub-heavy graphs cause
+    // explosion when this is unenforced.
+    //
+    // Born path ([]): exclude every owned locus.
+    // Claim path ([entity]): exclude loci owned by OTHER Claims entities —
+    //   the claimer's own members are protected.
+    // Merge path ([_, _, ...]): not filtered yet — the merge routing will
+    //   own all absorbed entities' members anyway.
+    let (members_vec, component_set_ref, member_rels) = match claimers {
+        [] => match apply_exclusivity_filter(members, &empty_set(), member_rels, context) {
+            ExclusivityOutcome::Collapsed => return,
+            ExclusivityOutcome::Unchanged(rels) => (members.to_vec(), None, rels),
+            ExclusivityOutcome::Filtered {
+                members,
+                set,
+                rels,
+            } => (members, Some(set), rels),
+        },
+        &[entity] => {
+            let protected: FxHashSet<LocusId> = context
+                .existing
+                .get(entity)
+                .map(|e| e.current.members.iter().copied().collect())
+                .unwrap_or_default();
+            match apply_exclusivity_filter(members, &protected, member_rels, context) {
+                ExclusivityOutcome::Collapsed => return,
+                ExclusivityOutcome::Unchanged(rels) => (members.to_vec(), None, rels),
+                ExclusivityOutcome::Filtered {
+                    members,
+                    set,
+                    rels,
+                } => (members, Some(set), rels),
+            }
+        }
+        _ => (members.to_vec(), None, member_rels),
+    };
+
+    let component_set_owned: FxHashSet<LocusId>;
+    let effective_set: &FxHashSet<LocusId> = match &component_set_ref {
+        Some(set) => set,
+        None => {
+            component_set_owned = component_set.clone();
+            &component_set_owned
+        }
+    };
+
     let assembly = ComponentAssembly {
-        members: members.to_vec(),
+        members: members_vec,
         member_relationships: member_rels,
         coherence,
     };
     if let Some(verdict) =
-        derive_component_proposal_verdict(batch, &assembly, component_set, claimers, context)
+        derive_component_proposal_verdict(batch, &assembly, effective_set, claimers, context)
     {
         context
             .proposals
             .push(assemble_component_proposal(assembly, verdict));
+    }
+}
+
+enum ExclusivityOutcome {
+    /// No owned loci in this component — proceed with original data.
+    Unchanged(Vec<RelationshipId>),
+    /// Filtered set still ≥ `MIN_SIGNIFICANT_BUCKET` members.
+    Filtered {
+        members: Vec<LocusId>,
+        set: FxHashSet<LocusId>,
+        rels: Vec<RelationshipId>,
+    },
+    /// Filtered set dropped below significance — do not emit a proposal.
+    Collapsed,
+}
+
+fn empty_set() -> FxHashSet<LocusId> {
+    FxHashSet::default()
+}
+
+/// Unified exclusivity filter. `protected` is the set of loci that may stay
+/// in the proposed members even if they are `owned_loci` elsewhere — it is
+/// empty on the Born path and equals the claimer's own prev members on the
+/// Claim path.
+fn apply_exclusivity_filter(
+    members: &[LocusId],
+    protected: &FxHashSet<LocusId>,
+    member_rels: Vec<RelationshipId>,
+    context: &ProposalContext<'_>,
+) -> ExclusivityOutcome {
+    let owned = context.owned_loci;
+    let is_foreign = |l: &LocusId| owned.contains(l) && !protected.contains(l);
+
+    if members.iter().all(|l| !is_foreign(l)) {
+        EXCLUSIVITY_UNCHANGED.fetch_add(1, Ordering::Relaxed);
+        return ExclusivityOutcome::Unchanged(member_rels);
+    }
+
+    let filtered_members: Vec<LocusId> = members.iter().copied().filter(|l| !is_foreign(l)).collect();
+    if filtered_members.len() < MIN_SIGNIFICANT_BUCKET {
+        EXCLUSIVITY_COLLAPSED.fetch_add(1, Ordering::Relaxed);
+        return ExclusivityOutcome::Collapsed;
+    }
+    EXCLUSIVITY_FILTERED.fetch_add(1, Ordering::Relaxed);
+    let filtered_set: FxHashSet<LocusId> = filtered_members.iter().copied().collect();
+
+    let filtered_rels: Vec<RelationshipId> = member_rels
+        .into_iter()
+        .filter(|rid| {
+            context
+                .relationships
+                .get(*rid)
+                .map(|rel| {
+                    let (a, b) = match rel.endpoints {
+                        Endpoints::Directed { from, to } => (from, to),
+                        Endpoints::Symmetric { a, b } => (a, b),
+                    };
+                    filtered_set.contains(&a) && filtered_set.contains(&b)
+                })
+                .unwrap_or(false)
+        })
+        .collect();
+
+    ExclusivityOutcome::Filtered {
+        members: filtered_members,
+        set: filtered_set,
+        rels: filtered_rels,
     }
 }
 

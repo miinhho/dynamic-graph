@@ -144,6 +144,37 @@ Events are recorded when proposals are applied via `StructuralProposal::Subscrib
 - `events_in_range(from, to)` — iterate audit log entries in a batch range.
 - `trim_audit_before(batch)` — discard old audit entries to keep the log bounded.
 
+### Feature removal policy (evidence-based demotion)
+
+Adopted 2026-04-19 after HEP-PH Finding 5 (`docs/hep-ph-finding.md`).
+Three `LayerTransition` variants (`MembershipDelta`, `CoherenceShift`,
+`Revived`) were incorrectly classified as dead weight based on
+LFR/Enron evidence; HEP-PH on real accumulative data showed all three
+fire naturally. To prevent recurrence, every demotion/removal proposal
+must pass this checklist:
+
+1. **Name the trigger condition in prose.** "This feature is designed
+   to fire when [data condition X] produces [observable Y]." If you
+   cannot articulate this, do not propose removal — read the code that
+   emits it until you can.
+2. **Verify the trigger condition is reachable under current test
+   datasets.** Planted schedules (LFR), static snapshots (Karate/Davis),
+   and small curated runs (Enron 120-node) systematically miss gradual
+   drift, accumulation pressure, and coherence state accumulation.
+   *Non-firing in such a suite is not evidence of uselessness.*
+3. **Require coverage across at least three diversity axes**: scale
+   (≥1K nodes), temporality (static / churn / accumulation), curation
+   (planted vs real). If the feature never fires across all three
+   classes, then removal is evidence-backed. Otherwise it is blind.
+4. **Document the trigger condition next to the feature.** If a
+   transition / knob survives this round, its docstring must include
+   "Trigger: [condition]" so future demotion proposals can check (1)
+   quickly.
+
+This policy is binding for any removal from the 14-knob surface and
+any `LayerTransition` demotion. See Finding 5 §3b for the missed case
+that motivated the policy.
+
 ### Design invariants
 
 - `ChangeLog` is append-only; trimming via `trim_before_batch` requires no live predecessor references point into the trimmed range.

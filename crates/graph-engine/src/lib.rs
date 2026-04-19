@@ -18,8 +18,11 @@ mod simulation;
 pub use self::{
     cohere::{CoherePerspective, DefaultCoherePerspective},
     controller::{EngineController, TickPolicy},
-    emergence::{DefaultEmergencePerspective, EmergencePerspective},
-    engine::{Engine, EngineConfig, TickResult},
+    emergence::{
+        DefaultEmergencePerspective, EmergencePerspective, debug_exclusivity_counters,
+        debug_last_component_count, reset_exclusivity_counters,
+    },
+    engine::{Engine, EngineConfig, TickResult, last_recognize_passes},
     handle::{EngineHandle, LocalHandle},
     plasticity::{
         PairObservationTargets, PairObservationWindow, PairPredictionObjective,

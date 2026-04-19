@@ -10,7 +10,10 @@
 
 mod default;
 
-pub use default::DefaultEmergencePerspective;
+pub use default::{
+    DefaultEmergencePerspective, debug_exclusivity_counters, debug_last_component_count,
+    reset_exclusivity_counters,
+};
 
 use graph_core::{BatchId, EmergenceProposal};
 use graph_world::{EntityStore, RelationshipStore};

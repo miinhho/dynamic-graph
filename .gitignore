@@ -15,3 +15,6 @@ Cargo.lock.bak
 
 # code-review-graph local cache
 .code-review-graph/
+
+# External benchmark datasets (download on demand; see tests/*.rs headers)
+/data/

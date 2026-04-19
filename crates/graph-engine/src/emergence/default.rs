@@ -32,6 +32,32 @@
 mod community;
 mod proposals;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Diagnostic-only: last component count observed in `recognize`.
+/// Lets tests distinguish detection-layer fragmentation from matching failure
+/// without threading returns through the trait surface.
+static LAST_COMPONENT_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+#[doc(hidden)]
+pub fn debug_last_component_count() -> usize {
+    LAST_COMPONENT_COUNT.load(Ordering::Relaxed)
+}
+
+/// Diagnostic-only: read the exclusivity-filter counters.
+/// Returns `(unchanged, filtered, collapsed)`. Tests call
+/// `reset_exclusivity_counters` before a run and read this after.
+/// See `docs/hep-ph-finding.md §4` for the investigation these counters support.
+#[doc(hidden)]
+pub fn debug_exclusivity_counters() -> (usize, usize, usize) {
+    proposals::exclusivity_counters()
+}
+
+#[doc(hidden)]
+pub fn reset_exclusivity_counters() {
+    proposals::reset_exclusivity_counters();
+}
+
 use graph_core::{BatchId, EmergenceProposal, EntityId, LocusId, RelationshipId};
 use graph_world::{EntityStore, RelationshipStore};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -64,7 +90,7 @@ pub struct DefaultEmergencePerspective {
     /// (label-propagation's weighted voting does the filtering). See
     /// `auto_activity_threshold`. Setting `Some(x)` pins the threshold
     /// and bypasses the auto detector entirely.
-    pub min_activity_threshold: Option<f32>,
+    min_activity_threshold: Option<f32>,
 }
 
 /// Distribution-aware activity threshold.
@@ -155,6 +181,12 @@ pub(super) struct ProposalContext<'a> {
     relationships: &'a RelationshipStore,
     threshold: f32,
     proposals: &'a mut Vec<EmergenceProposal>,
+    /// Loci already claimed by a Claims-decision active entity this tick.
+    /// Used by `resolve_component_proposal` to enforce single-perspective
+    /// membership exclusivity on new Born proposals (redesign §3.4).
+    /// Without this gate, high-degree hub loci accumulate as members of
+    /// every subfield community — HEP-PH Finding 5 (`docs/hep-ph-finding.md`).
+    owned_loci: &'a FxHashSet<LocusId>,
 }
 
 struct RecognitionContext<'a> {
@@ -293,6 +325,14 @@ fn decide_entity_flow(buckets: &EntityBuckets) -> EntityDecision {
 }
 
 impl DefaultEmergencePerspective {
+    /// Override the distribution-based auto-threshold. Only use when the
+    /// auto heuristic picks the wrong cut for your specific activity
+    /// distribution. Leave unset for standard workloads.
+    pub fn with_min_activity_threshold(mut self, threshold: f32) -> Self {
+        self.min_activity_threshold = Some(threshold);
+        self
+    }
+
     fn build_recognition_context<'a>(
         &self,
         relationships: &'a RelationshipStore,
@@ -359,6 +399,30 @@ fn prepare_component_proposals(
         .collect()
 }
 
+/// Collect loci belonging to active entities that will continue this tick
+/// (Claims decision). These loci are excluded from new Born proposals to
+/// enforce single-perspective membership exclusivity (redesign §3.4).
+///
+/// Split-source entities are intentionally excluded: their members are being
+/// redistributed to offspring entities and should not block those offspring
+/// from being Born. Dormant-decision entities are also excluded for the same
+/// reason (they will no longer be active after this tick).
+fn collect_claimed_loci(
+    decisions: &FxHashMap<EntityId, EntityDecision>,
+    existing: &EntityStore,
+) -> FxHashSet<LocusId> {
+    let mut owned: FxHashSet<LocusId> = FxHashSet::default();
+    for (&entity_id, decision) in decisions {
+        if !matches!(decision, EntityDecision::Claims(_)) {
+            continue;
+        }
+        if let Some(entity) = existing.get(entity_id) {
+            owned.extend(entity.current.members.iter().copied());
+        }
+    }
+    owned
+}
+
 fn emit_component_proposals(
     state: &RecognitionState,
     prepared: &[ComponentProposalPrep],
@@ -387,13 +451,16 @@ impl EmergencePerspective for DefaultEmergencePerspective {
     ) -> Vec<EmergenceProposal> {
         let recognition = self.build_recognition_context(relationships, existing, batch);
         let state = prepare_recognition(&recognition);
+        LAST_COMPONENT_COUNT.store(state.components.len(), Ordering::Relaxed);
 
         let mut proposals: Vec<EmergenceProposal> = Vec::new();
+        let owned_loci = collect_claimed_loci(&state.flow.decisions, recognition.existing);
         let mut context = ProposalContext {
             existing: recognition.existing,
             relationships: recognition.relationships,
             threshold: recognition.threshold,
             proposals: &mut proposals,
+            owned_loci: &owned_loci,
         };
         let split_offspring_components = proposals::emit_entity_proposals(
             &state.flow.decisions,

@@ -20,6 +20,9 @@ mod pipeline;
 mod types;
 pub(crate) mod world_ops;
 
+#[doc(hidden)]
+pub use world_ops::last_recognize_passes;
+
 use graph_core::{
     BatchId, Change, ChangeId, ChangeSubject, InfluenceKindId, LocusId, ProposedChange,
     RelationshipId, StateVector, WorldEvent,
