@@ -23,7 +23,8 @@
 //! - Post-apply tension = 0.000 (aligned).
 
 use graph_boundary::{
-    BoundaryAction, PrescriptionConfig, analyze_boundary, apply_prescriptions, prescribe_updates,
+    BoundaryAction, PrescriptionConfig, analyze_boundary, apply_prescriptions, locus_tension,
+    prescribe_updates,
 };
 use graph_core::{
     Change, ChangeId, InfluenceKindId, Locus, LocusContext, LocusId, LocusProgram,
@@ -189,6 +190,42 @@ fn prescribe_updates_produces_two_retractions_and_one_assertion() {
         asserted.0,
         asserted.1,
     );
+}
+
+#[test]
+fn cto_is_the_per_locus_hotspot() {
+    let (sim, schema, ids) = build_scenario();
+    let report = analyze_boundary(&*sim.world(), &schema, Some(0.05));
+    let rows = locus_tension(&report, &*sim.world());
+
+    // CTO receives both Carol→CTO and Dave→CTO ghosts, so it carries
+    // the highest absolute drift count in the scenario.
+    let top = rows.first().expect("at least one locus ranked");
+    assert_eq!(top.locus, ids["CTO"], "CTO expected to top the ranking");
+    assert_eq!(top.ghost, 2, "CTO ghost count");
+    assert_eq!(top.shadow, 0, "CTO shadow count");
+
+    // Carol and Dave should each show a single ghost with no confirmed.
+    for name in &["Carol", "Dave"] {
+        let row = rows
+            .iter()
+            .find(|r| r.locus == ids[*name])
+            .unwrap_or_else(|| panic!("{name} missing from per-locus breakdown"));
+        assert_eq!(row.confirmed, 0);
+        assert_eq!(row.ghost, 1);
+        assert_eq!(row.shadow, 0);
+        assert_eq!(row.tension, 1.0);
+    }
+
+    // Alice and Eve: 1 confirmed + 1 shadow each (cross-team collab).
+    for name in &["Alice", "Eve"] {
+        let row = rows
+            .iter()
+            .find(|r| r.locus == ids[*name])
+            .unwrap_or_else(|| panic!("{name} missing"));
+        assert_eq!(row.confirmed, 1);
+        assert_eq!(row.shadow, 1);
+    }
 }
 
 #[test]

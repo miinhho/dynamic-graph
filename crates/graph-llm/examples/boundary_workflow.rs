@@ -27,7 +27,7 @@
 
 use graph_boundary::{
     BoundaryAction, BoundaryReport, PrescriptionConfig, RetractReason, analyze_boundary,
-    apply_prescriptions, prescribe_updates,
+    apply_prescriptions, locus_tension, prescribe_updates,
 };
 use graph_core::{
     Change, ChangeId, InfluenceKindId, Locus, LocusContext, LocusId, LocusProgram,
@@ -190,6 +190,24 @@ fn main() {
     // ── 3. Boundary analysis ───────────────────────────────────────────────
     let report = analyze_boundary(&*sim.world(), &schema, Some(0.05));
     print_report("Initial boundary report", &report, &*sim.world(), &schema);
+
+    // ── 3a. Per-locus hotspot ranking ──────────────────────────────────────
+    let per_locus = locus_tension(&report, &*sim.world());
+    println!("\n── Per-locus drift (top 5) ──");
+    {
+        let w = sim.world();
+        let names = NameMap::from_world(&*w);
+        for row in per_locus.iter().take(5) {
+            println!(
+                "  {:<6}  confirmed={}  ghost={}  shadow={}  tension={:.2}",
+                names.name(row.locus),
+                row.confirmed,
+                row.ghost,
+                row.shadow,
+                row.tension,
+            );
+        }
+    }
 
     // ── 3b. Narrate the raw state before proposing anything ────────────────
     let names = NameMap::from_world(&*sim.world());

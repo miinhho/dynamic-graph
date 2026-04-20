@@ -39,11 +39,13 @@
 
 pub mod analysis;
 pub mod layer;
+pub mod locus;
 pub mod prescribe;
 pub mod report;
 
 pub use analysis::{SignalMode, analyze_boundary, analyze_boundary_with_mode};
 pub use layer::{LayerReport, LayerTension, layer_tension};
+pub use locus::{LocusTension, locus_tension};
 pub use prescribe::{
     BoundaryAction, PrescriptionConfig, RetractReason, apply_prescriptions, prescribe_updates,
 };

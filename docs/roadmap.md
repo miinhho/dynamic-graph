@@ -239,9 +239,16 @@ Folds old Track H closure-remainder + new evidence loop into one program.
     the `boundary_workflow` example now prints `[sev X.YY]` per action.
   - New unit test `severity_scales_monotonically_with_signal_and_age`
     pins the ordering.
-- **G3. Per-entity / per-locus drift breakdown.** `layer_tension`
-  currently emits one number; drop it to per-node granularity so
-  hotspots are locatable.
+- **G3. Per-entity / per-locus drift breakdown.** ✓ **Closed
+  (2026-04-20)**. Added `graph_boundary::locus_tension(report, world)`
+  returning `Vec<LocusTension>` sorted descending by absolute drift
+  count `(ghost + shadow)`, with tension ratio as secondary sort. Each
+  row carries `confirmed`, `ghost`, `shadow`, and `tension` per locus.
+  The `boundary_workflow` example prints a top-5 hotspot table; on
+  the canonical scenario CTO tops it with 2 ghost edges (Carol→CTO
+  and Dave→CTO) aimed at it. New lib test
+  `hotspot_locus_ranks_highest` plus regression test
+  `cto_is_the_per_locus_hotspot` pin the ordering.
 - **G4. Regression fixture.** ✓ **Closed (2026-04-20)**. Shipped as
   `crates/graph-llm/tests/boundary_regression.rs`. Three tests pin the
   canonical boundary_workflow scenario: (a) analyze_boundary produces
