@@ -283,8 +283,17 @@ The surface is stable enough to lock once Enron clears.
 `graph-llm` ships; regression coverage is thin and prompt caching is
 not exploited.
 
-- **J1. Mock-backend regression harness.** Assert prompt *structure*,
-  not prose, for each `configure_*` / `narrate_*` call.
+- **J1. Mock-backend regression harness.** ✓ **Closed (2026-04-20)**.
+  New `CapturingLlmClient` records every `(system, user)` pair passed
+  through; alongside it `crates/graph-llm/tests/prompt_regression.rs`
+  pins the structural landmarks of each public entry point (13 tests
+  covering `narrate_counterfactual`, `narrate_entity_deviations`,
+  `narrate_boundary`, `narrate_prescriptions`, `configure_influence`,
+  `configure_emergence`, `configure_cohere`, `TextIngestor::extract`,
+  `answer_with_graph`, plus the canned-message short-circuits for the
+  narrate_* empty-input paths). Assertions target stable section
+  markers (quadrant headers, JSON field names, "PERSON, ORG" kind
+  lists) so prose wording is free to evolve.
 - **J2. `narrate_boundary(&BoundaryReport)`.** ✓ **Closed (2026-04-20)**.
   `graph_llm::narrate_boundary(client, report, world, names)` describes
   the raw Confirmed / Ghost / Shadow state (aligned worlds return a

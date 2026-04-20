@@ -228,6 +228,58 @@ impl LlmClient for MockLlmClient {
     }
 }
 
+/// An [`LlmClient`] that captures every `(system, user)` pair it is
+/// handed, then returns a configurable fixed response. Useful for
+/// prompt-structure regression tests — assert the prompt contains the
+/// expected fields without depending on any model's output.
+///
+/// ```
+/// use graph_llm::{CapturingLlmClient, LlmClient};
+///
+/// let client = CapturingLlmClient::new("response");
+/// let _ = client.complete("system text", "user text").unwrap();
+/// let calls = client.calls();
+/// assert_eq!(calls.len(), 1);
+/// assert_eq!(calls[0].0, "system text");
+/// assert_eq!(calls[0].1, "user text");
+/// ```
+pub struct CapturingLlmClient {
+    response: String,
+    calls: std::sync::Mutex<Vec<(String, String)>>,
+}
+
+impl CapturingLlmClient {
+    /// Create a client that returns `response` on every call.
+    pub fn new(response: impl Into<String>) -> Self {
+        Self {
+            response: response.into(),
+            calls: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Snapshot of every `(system, user)` pair seen so far, oldest
+    /// first.
+    pub fn calls(&self) -> Vec<(String, String)> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    /// The most recent `(system, user)` pair, or `None` if the client
+    /// has never been called.
+    pub fn last(&self) -> Option<(String, String)> {
+        self.calls.lock().unwrap().last().cloned()
+    }
+}
+
+impl LlmClient for CapturingLlmClient {
+    fn complete(&self, system: &str, user: &str) -> Result<String, LlmError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((system.to_owned(), user.to_owned()));
+        Ok(self.response.clone())
+    }
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -238,5 +290,17 @@ mod tests {
     fn mock_returns_fixed_response() {
         let c = MockLlmClient::new("pong");
         assert_eq!(c.complete("sys", "ping").unwrap(), "pong");
+    }
+
+    #[test]
+    fn capturing_records_calls_in_order() {
+        let c = CapturingLlmClient::new("ok");
+        c.complete("s1", "u1").unwrap();
+        c.complete("s2", "u2").unwrap();
+        let calls = c.calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0], ("s1".into(), "u1".into()));
+        assert_eq!(calls[1], ("s2".into(), "u2".into()));
+        assert_eq!(c.last(), Some(("s2".into(), "u2".into())));
     }
 }

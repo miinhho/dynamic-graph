@@ -91,7 +91,7 @@ mod narrate;
 mod rag;
 mod tension;
 
-pub use client::{LlmClient, MockLlmClient};
+pub use client::{CapturingLlmClient, LlmClient, MockLlmClient};
 pub use configure::{configure_cohere, configure_emergence, configure_influence};
 pub use error::LlmError;
 pub use facade::GraphLlm;
