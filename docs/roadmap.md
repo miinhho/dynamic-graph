@@ -232,8 +232,16 @@ Folds old Track H closure-remainder + new evidence loop into one program.
 - **G3. Per-entity / per-locus drift breakdown.** `layer_tension`
   currently emits one number; drop it to per-node granularity so
   hotspots are locatable.
-- **G4. Regression fixture.** Known-divergent canonical world; assert
-  Ghost/Shadow counts within tolerance. Protects G1 once shipped.
+- **G4. Regression fixture.** ✓ **Closed (2026-04-20)**. Shipped as
+  `crates/graph-llm/tests/boundary_regression.rs`. Three tests pin the
+  canonical boundary_workflow scenario: (a) analyze_boundary produces
+  confirmed=5 / ghost=2 / shadow=1 / tension≈0.375 ±0.01; (b)
+  prescribe_updates at default config yields exactly 2 retractions and
+  1 assertion, and the assertion pair is Alice↔Eve; (c) after
+  apply_prescriptions the boundary is aligned (ghost=0, shadow=0,
+  tension=0.0). Any engine change that shifts auto-emergence,
+  plasticity, decay, or the analyze_boundary matching logic fails this
+  fixture before reaching the example.
 
 ### Track I — Public API + cookbook *(priority 3, starts after Ω reaches ≤13 knobs)*
 
