@@ -51,7 +51,19 @@ pub(crate) fn extract_cohere(
 /// proposal set is not self-consistent on accumulative citation graphs —
 /// a second pass over the post-apply world collapsed up to 40% of newly
 /// Born entities via Merge. Iterating to fixpoint closes that gap.
-/// Empirically 2–3 passes converge; 8 is a safe guard against pathology.
+///
+/// Calibration (Ω6c, 2026-04-20): Karate / Davis / SocioPatterns / LFR /
+/// Enron / EU email all converge in ≤4 passes regardless of DECAY. HEP-PH
+/// 122m hits the cap at DECAY=0.9 (1× at m90) and DECAY=0.98 (3× at
+/// m114/120/122), with 2–4 residual proposals. Raising the cap to 16
+/// was tested: cap-hit frequency *increased* (0.98 hits the cap 5× at
+/// cap=16 vs 3× at cap=8) and the extra passes generate 80 transient
+/// Born→Dormant pairs that never existed at cap=8 — the residue is a
+/// perspective-level 2-cycle oscillation, not slow convergence. Final
+/// `active=319` is identical across both caps. Kept at 8 as the
+/// smallest value producing the same steady state with the cleanest
+/// change log. Deeper perspective-stability investigation tracked as a
+/// follow-up (see roadmap Ω6c note).
 pub(crate) const RECOGNIZE_MAX_FIXPOINT_PASSES: usize = 8;
 
 /// Counter used by diagnostics/tests to confirm fixpoint convergence.
@@ -95,14 +107,19 @@ pub(crate) fn recognize_entities(
         events.extend(proposal_events);
     }
     RECOGNIZE_LAST_PASSES.store(passes, std::sync::atomic::Ordering::Relaxed);
-    RECOGNIZE_LAST_UNCONVERGED_PROPOSALS.store(
-        if passes == RECOGNIZE_MAX_FIXPOINT_PASSES && last_proposals_count > 0 {
-            last_proposals_count
-        } else {
-            0
-        },
-        std::sync::atomic::Ordering::Relaxed,
-    );
+    let unconverged = if passes == RECOGNIZE_MAX_FIXPOINT_PASSES && last_proposals_count > 0 {
+        last_proposals_count
+    } else {
+        0
+    };
+    RECOGNIZE_LAST_UNCONVERGED_PROPOSALS.store(unconverged, std::sync::atomic::Ordering::Relaxed);
+    // Ω6c probe: env-gated fixpoint calibration trace. Emit a stderr line
+    // for every recognize call so cross-dataset audits (SocioPatterns,
+    // Enron, LFR, Karate, Davis, EU email, HEP-PH) can check whether the
+    // `MAX_FIXPOINT_PASSES=8` cap is reachable outside HEP-PH.
+    if std::env::var_os("OMEGA6C_PROBE").is_some() {
+        eprintln!("[Ω6C] passes={} uncon={}", passes, unconverged);
+    }
 
     #[cfg(feature = "perf-timing")]
     let recognize_us = t1.elapsed().as_micros();

@@ -152,23 +152,54 @@ Folds old Track H closure-remainder + new evidence loop into one program.
   firmly retires emergence as an open question.
 - **Ω6. Post-fix housekeeping (next up).** Close loose ends from the Ω5
   fixpoint investigation.
-  - **Ω6a. Entity-size sanity check on HEP-PH max=4,205.** Sample the
-    top-5 entity member papers; validate subject coherence. If the
-    mega-entity lumps multiple subfields, revisit detection threshold;
-    if it is a single well-known area (QCD phenomenology), close.
-  - **Ω6b. Exclusivity filter audit.** `filtered+collapsed` at 0.9% on
-    full HEP-PH run. Decision: keep as-is (principle-encoding), reduce
-    to a doc-comment-only assertion (remove the code but preserve the
-    rule), or delete. Requires ≥1 dataset where the filter changes an
-    entity count by >2%.
-  - **Ω6c. `MAX_FIXPOINT_PASSES` calibration.** Cap hit once at HEP-PH
-    month 90. Observe `last_recognize_unconverged_proposals()` across
-    SocioPatterns, Enron, LFR, Karate, Davis, EU email at all DECAY
-    values; if any non-zero, raise cap or investigate the perspective.
-  - **Ω6d. DECAY ∈ {0.5, 0.98} on HEP-PH 122m.** Post-fix long-horizon
-    comparison. Pre-fix tested DECAY=0.5/0.98 only at 24m. Confirm
-    Revived fire counts, Merge rates, and median size distributions
-    across the full corpus.
+  - **Ω6a. Entity-size sanity check on HEP-PH max=4,205.** ✓ **Closed
+    (2026-04-20)**. 8 arxiv papers sampled across the 1992–2002
+    id-range: all `hep-ph` primary category, subjects cluster in one
+    subfield (flavor physics + precision QCD / B-meson decays — the
+    dominant HEP-PH topic of the era). No threshold revisit. Probe
+    retained in `tests/hep_ph.rs` behind `HEP_PH_DUMP_TOP=N`. Result
+    table in `docs/hep-ph-finding.md §3 "Structural properties"`.
+  - **Ω6b. Exclusivity filter audit.** ✓ **Closed (2026-04-20,
+    retained)**. Ablation hatch `OMEGA6B_DISABLE_EXCLUSIVITY=1` added.
+    Final `active` count is invariant across all 7 tested workloads
+    (HEP-PH × 3 DECAY, Karate, Davis, SocioPatterns, LFR, Enron, EU
+    email) — the Ω5 fixpoint wrapper subsumes the filter's effect on
+    steady-state count. However: Revived shifts +46%/+50% on HEP-PH
+    DECAY=0.5/0.9 with the filter off (13→19, 4→6), so the event log
+    is not invariant. CLAUDE.md "Feature removal policy" blocks
+    deletion: the hub-heavy × accumulative quadrant has n=1 coverage
+    (HEP-PH only) and `redesign §3.4` is not proven to be a fixed
+    point of the convergence loop. Retained with hatch for future
+    re-evaluation when the next hub-heavy accumulative workload lands.
+    Table in `docs/hep-ph-finding.md §3 "Exclusivity filter ablation"`.
+  - **Ω6c. `MAX_FIXPOINT_PASSES` calibration.** ✓ **Closed
+    (2026-04-20)**. `OMEGA6C_PROBE=1` env-gated stderr trace added in
+    `engine/world_ops.rs::recognize_entities`. All six non-HEP-PH
+    datasets converge in ≤4 passes at their native DECAY (Karate /
+    Davis / SocioPatterns / LFR / Enron = 2, EU email = 4; all
+    unconverged=0). Cap=8 held. Raising to 16 tested and reverted:
+    final `active=319` identical on HEP-PH DECAY=0.98 but cap=16 emits
+    80 transient Born→Dormant pairs and increases cap-hit frequency
+    (3 → 5) — cap hits reveal a 2-proposal perspective oscillation
+    that longer loops re-traverse, not slow convergence. Table in
+    `docs/hep-ph-finding.md §3 "Fixpoint cap calibration"`.
+    **Follow-up (new track item)**: `Ω7. Perspective oscillation at
+    high-DECAY accumulative regime.** `DefaultEmergencePerspective`
+    emits a 2-proposal cycle on HEP-PH DECAY=0.98 (residue
+    2 proposals at cap-hit; `flush_relationship_decay` absorbs each
+    tick's residue so correctness holds). Diagnose and flatten. Not
+    blocking — correctness is maintained — but named so it isn't
+    forgotten.
+  - **Ω6d. DECAY ∈ {0.5, 0.98} on HEP-PH 122m.** ✓ **Closed
+    (2026-04-20)**. All 3 DECAY values (0.5 / 0.9 / 0.98) converge
+    idempotently across the full corpus; all 7 `LayerTransition`
+    variants fire on each. Active count scales inversely with DECAY
+    (1096 / 716 / 319), max size scales directly (1952 / 4205 / 4887),
+    Revived count scales inversely (13 / 4 / 1). Monotonic, matches
+    decay-knob semantics. Handoff to Ω6c: DECAY=0.98 hits the
+    `MAX_FIXPOINT_PASSES=8` cap 3× in the last 10 months (residual
+    proposals 2–4, `Δidempotent=+0`). Table in
+    `docs/hep-ph-finding.md §3 "DECAY sweep at 122m"`.
 
 ### Track G — Boundary maturity *(priority 2, shipping visible value)*
 

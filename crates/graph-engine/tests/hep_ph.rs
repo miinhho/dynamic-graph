@@ -517,6 +517,65 @@ fn run_scenario(label: &str, decay: f32, threshold: Option<f32>) {
         total_members_in_entities, median_size, max_size
     );
 
+    // Ω6a probe: dump top-N entities for arxiv subject-coherence check.
+    // Trigger: `HEP_PH_DUMP_TOP=N` env var (default 0 = no dump).
+    let dump_top: usize = std::env::var("HEP_PH_DUMP_TOP")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    if dump_top > 0 && !active_entities.is_empty() {
+        let mut ranked: Vec<&&graph_core::Entity> = active_entities.iter().collect();
+        ranked.sort_by(|a, b| b.current.members.len().cmp(&a.current.members.len()));
+        let take = dump_top.min(ranked.len());
+        println!("\n── Top-{} entities (Ω6a probe) ──", take);
+        for (rank, ent) in ranked.iter().take(take).enumerate() {
+            let mems = &ent.current.members;
+            let rels = ent.current.member_relationships.len();
+            let born_batch = ent
+                .layers
+                .first()
+                .map(|l| l.batch.0 as i64)
+                .unwrap_or(-1);
+            println!(
+                "  #{:>2}  entity={} size={} member_rels={} born_batch={} coherence={:.3} layers={}",
+                rank + 1,
+                ent.id.0,
+                mems.len(),
+                rels,
+                born_batch,
+                ent.current.coherence,
+                ent.layers.len(),
+            );
+            // Sample up to 20 members: spread evenly across the list so we
+            // get the largest arxiv-id range. For top-1 also dump the full
+            // member set so subject coherence can be verified structurally.
+            let n = mems.len();
+            let sample_count = 20.min(n);
+            let stride = if sample_count > 0 {
+                (n as f64 / sample_count as f64).max(1.0)
+            } else {
+                1.0
+            };
+            let sample: Vec<u64> = (0..sample_count)
+                .map(|i| mems[((i as f64) * stride) as usize % n].0)
+                .collect();
+            println!("       sample_ids: {:?}", sample);
+            if rank == 0 && n <= 5000 {
+                // Full dump for the mega-entity (bounded to avoid log spam).
+                use std::fmt::Write as _;
+                let mut buf = String::from("[");
+                for (i, m) in mems.iter().enumerate() {
+                    if i > 0 {
+                        buf.push(',');
+                    }
+                    let _ = write!(&mut buf, "{}", m.0);
+                }
+                buf.push(']');
+                println!("       all_{}_ids_json: {}", n, buf);
+            }
+        }
+    }
+
     let (excl_unchanged, excl_filtered, excl_collapsed) = debug_exclusivity_counters();
     println!("\n── Exclusivity filter trips (Born path) ──");
     println!(

@@ -190,6 +190,19 @@ fn apply_exclusivity_filter(
     member_rels: Vec<RelationshipId>,
     context: &ProposalContext<'_>,
 ) -> ExclusivityOutcome {
+    // Ω6b ablation hatch (2026-04-20). `OMEGA6B_DISABLE_EXCLUSIVITY=1`
+    // bypasses the filter so future datasets can re-measure its effect.
+    // Current evidence (7 datasets, HEP-PH at 3 DECAY values): under the
+    // Ω5 fixpoint wrapper final `active` count is unchanged with the
+    // filter off. Retained because the hub-heavy × accumulative quadrant
+    // has n=1 coverage (HEP-PH only) and `redesign §3.4` is not proven
+    // to be a theorem of the fixpoint loop. Revisit once a second
+    // hub-heavy accumulative workload lands.
+    // See `docs/hep-ph-finding.md §3 "Exclusivity filter ablation"`.
+    if std::env::var_os("OMEGA6B_DISABLE_EXCLUSIVITY").is_some() {
+        EXCLUSIVITY_UNCHANGED.fetch_add(1, Ordering::Relaxed);
+        return ExclusivityOutcome::Unchanged(member_rels);
+    }
     let owned = context.owned_loci;
     let is_foreign = |l: &LocusId| owned.contains(l) && !protected.contains(l);
 
