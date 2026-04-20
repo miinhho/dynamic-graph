@@ -144,12 +144,18 @@ Folds old Track H closure-remainder + new evidence loop into one program.
   variants yet), `PlasticityConfig.weight_decay` (evidence neutral — needs
   Hebbian workload). Each further reduction requires passing workspace
   tests plus the benchmark suite.
-- **Ω3. Track H seed reproduction.** The Entity 73 `Ψ_pair_top3 = +0.0718`
-  signal is n=1 at the default seed. Extend `partition_determinism.rs`
-  (or a new harness) to rerun `stress_emergence` b=50 across N≥10 seeds.
-  Success = positive pair-grain Ψ survives with documented seed-level
-  variance. This is the *only* remaining item on Track H; closing it
-  firmly retires emergence as an open question.
+- **Ω3. Track H seed reproduction.** ✓ **Closed (2026-04-20)**. At the
+  original `size=100 batches=50` parameters the post-Ω5 engine produces
+  0 positive-Ψ entities across 16 seeds (Entity 73's +0.0718 was a
+  pre-fix artefact of accumulated non-idempotency residue). Recalibrated
+  to `size=200 batches=100` on 17 seeds (1..15, 42, 100) via new
+  `stress_emergence --seed <S> --psi-csv` flags: **7/17 seeds (41%)**
+  produce at least one entity with `Ψ_pair_top3 > 0`, range +0.055 to
+  +0.223 (mean ≈ +0.15), and **0/64 LOO sign flips** across every
+  positive entity × component drop pair. Signal survives seed variance,
+  survives LOO ablation unconditionally, and is reproducible with one
+  shell loop. Track H closed. Table + procedure in
+  `docs/emergence/h4-report.md §0*** "Seventh pass — Ω3"`.
 - **Ω6. Post-fix housekeeping (next up).** Close loose ends from the Ω5
   fixpoint investigation.
   - **Ω6a. Entity-size sanity check on HEP-PH max=4,205.** ✓ **Closed

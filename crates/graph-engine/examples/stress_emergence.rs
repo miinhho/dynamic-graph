@@ -321,6 +321,14 @@ struct Args {
     /// When true, print an `EmergenceReport` in markdown to stderr on exit.
     /// H4 (roadmap Track H) uses this to audit Ψ distributions per workload.
     psi: bool,
+    /// Base seed for both topology and stimulus RNG. Default 42 (back-compat
+    /// with the H4 original run). Topology uses `seed`; stimulus uses
+    /// `seed.wrapping_add(1295)`. Ω3 (seed reproduction) varies this.
+    seed: u64,
+    /// When true, emit a single-line Ω3 summary to stderr:
+    /// `OMEGA3_CSV seed=<S> n_with_pair_top3=<N> max_pair_top3=<V> loo_sign_flips=<F> loo_total_drops=<D>`.
+    /// Suppresses the markdown emergence reports to keep stderr parseable.
+    psi_csv: bool,
 }
 
 fn parse_args() -> Args {
@@ -331,6 +339,8 @@ fn parse_args() -> Args {
     let mut burst_on: Option<usize> = None;
     let mut burst_off: Option<usize> = None;
     let mut psi = false;
+    let mut seed: u64 = 42;
+    let mut psi_csv = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -374,6 +384,15 @@ fn parse_args() -> Args {
                 psi = true;
                 i += 1;
             }
+            "--seed" if i + 1 < args.len() => {
+                seed = args[i + 1].parse().expect("--seed must be a u64");
+                i += 2;
+            }
+            "--psi-csv" => {
+                psi = true;
+                psi_csv = true;
+                i += 1;
+            }
             other => {
                 eprintln!("Unknown argument: {other}");
                 std::process::exit(1);
@@ -387,6 +406,8 @@ fn parse_args() -> Args {
         burst_on,
         burst_off,
         psi,
+        seed,
+        psi_csv,
     }
 }
 
@@ -400,7 +421,7 @@ fn main() {
     let demotion_policy = args.demotion_floor.map(DemotionPolicy::ActivityFloor);
 
     let t_build = Instant::now();
-    let topo = Arc::new(build_topology(n, 42));
+    let topo = Arc::new(build_topology(n, args.seed));
     let (world, loci, influences) =
         build_world_and_registries(n, Arc::clone(&topo), demotion_policy);
 
@@ -434,7 +455,7 @@ fn main() {
     let ep = DefaultEmergencePerspective::default();
     let cp = DefaultCoherePerspective::default();
 
-    let mut rng = Rng::new(1337);
+    let mut rng = Rng::new(args.seed.wrapping_add(1295));
     // Number of loci to stimulate per batch: ~10% of N, at least 1.
     let stim_count = (n / 10).max(1);
 
@@ -559,22 +580,59 @@ fn main() {
     if args.psi {
         let decay = sim.activity_decay_rates();
         let world = sim.world();
-        let report = graph_query::emergence_report_with_decay(&world, &decay);
-        eprintln!("\n{}", report.render_markdown());
         let synergy = graph_query::emergence_report_synergy_with_decay(&world, &decay);
-        eprintln!("\n{}", synergy.render_markdown());
 
-        // H4.2 — leave-one-out robustness for any entity with
-        // `psi_pair_top3 > 0`. Expected to be rare on this workload
-        // (fifth pass saw Entity 73 at b=50 as the sole such entity).
+        if !args.psi_csv {
+            let report = graph_query::emergence_report_with_decay(&world, &decay);
+            eprintln!("\n{}", report.render_markdown());
+            eprintln!("\n{}", synergy.render_markdown());
+        }
+
+        // H4.2 / Ω3 — leave-one-out robustness for any entity with
+        // `psi_pair_top3 > 0`.
+        let mut n_with_pair_top3 = 0usize;
+        let mut max_pair_top3 = f64::NEG_INFINITY;
+        let mut best_entity: Option<graph_core::EntityId> = None;
+        let mut loo_sign_flips = 0usize;
+        let mut loo_total_drops = 0usize;
         for entry in synergy.emergent.iter().chain(synergy.spurious.iter()) {
             if entry.psi.psi_pair_top3 > 0.0 {
+                n_with_pair_top3 += 1;
+                if entry.psi.psi_pair_top3 > max_pair_top3 {
+                    max_pair_top3 = entry.psi.psi_pair_top3;
+                    best_entity = Some(entry.entity);
+                }
                 if let Some(loo) =
                     graph_query::psi_synergy_leave_one_out_with_decay(&world, entry.entity, &decay)
                 {
-                    eprintln!("\n{}", loo.render_markdown());
+                    if !args.psi_csv {
+                        eprintln!("\n{}", loo.render_markdown());
+                    }
+                    loo_sign_flips += loo.sign_flips_pair_top3();
+                    loo_total_drops += loo.drops.len();
                 }
             }
+        }
+        if args.psi_csv {
+            let max_str = if max_pair_top3.is_finite() {
+                format!("{:.6}", max_pair_top3)
+            } else {
+                "nan".to_string()
+            };
+            let best_str = match best_entity {
+                Some(e) => e.0.to_string(),
+                None => "-".to_string(),
+            };
+            eprintln!(
+                "OMEGA3_CSV seed={} n_entities={} n_with_pair_top3={} max_pair_top3={} best_entity={} loo_sign_flips={} loo_total_drops={}",
+                args.seed,
+                synergy.n_entities,
+                n_with_pair_top3,
+                max_str,
+                best_str,
+                loo_sign_flips,
+                loo_total_drops,
+            );
         }
     }
 }
