@@ -211,11 +211,22 @@ Folds old Track H closure-remainder + new evidence loop into one program.
 
 `graph-boundary` is wired; nothing downstream consumes it end-to-end.
 
-- **G1. End-to-end boundary example.** `crates/graph-engine/examples/boundary_workflow.rs`:
-  load a declared schema, run a real workload, produce a
-  `BoundaryReport`, derive `BoundaryAction`s, narrate via `graph-llm`,
-  apply a subset. Must exercise all four quadrants. Becomes a cookbook
-  anchor under Track I.
+- **G1. End-to-end boundary example.** ✓ **Closed (2026-04-20)**. Shipped
+  as `crates/graph-llm/examples/boundary_workflow.rs` (placed in
+  `graph-llm` because `graph-llm` already depends on `graph-engine` +
+  `graph-boundary` + `graph-schema`; reversing the dep would be
+  circular). Walks the full pipeline against an 8-person org chart:
+  `SchemaWorld::assert_fact` × 7 → `interact()` over 6 active pairs
+  × 6 rounds → `analyze_boundary` (5 confirmed / 2 ghost / 1 shadow /
+  tension 0.375) → `prescribe_updates` (2 retractions + 1 assertion) →
+  `narrate_prescriptions` via `MockLlmClient` (hermetic, swap for
+  Anthropic / Ollama client for real model) → `apply_prescriptions` →
+  re-analyse (6 confirmed / 0 ghost / 0 shadow / tension 0.000). Four
+  quadrants all exercised: Confirmed by active declared pairs, Ghost
+  by Carol/Dave never-interact, Shadow by Alice↔Eve cross-team, Null
+  by the silent majority. Run: `cargo run -p graph-llm --example
+  boundary_workflow`. Unlocks J2 (`narrate_boundary`) and is the
+  boundary-workflow anchor for the cookbook under Track I.
 - **G2. `prescribe_updates` severity tags.** Each `BoundaryAction`
   gains a `severity: LayerTension` so callers filter by magnitude.
 - **G3. Per-entity / per-locus drift breakdown.** `layer_tension`
