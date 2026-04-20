@@ -52,19 +52,26 @@
 //!
 //! ### Schema-tension narration
 //!
-//! [`narrate_prescriptions`] translates [`graph_boundary::BoundaryAction`]
-//! proposals into plain-language recommendations.
+//! Two narration entry points cover the boundary story:
+//! [`narrate_boundary`] describes the raw declared-vs-observed state
+//! (Confirmed / Ghost / Shadow), while [`narrate_prescriptions`]
+//! translates proposed [`graph_boundary::BoundaryAction`] updates into
+//! plain-language recommendations. Use the first to *observe* and the
+//! second to *decide*.
 //!
 //! ```ignore
-//! # use graph_llm::{AnthropicClient, narrate_prescriptions};
+//! # use graph_llm::{AnthropicClient, narrate_boundary, narrate_prescriptions};
 //! # use graph_schema::SchemaWorld;
 //! # use graph_query::NameMap;
-//! # use graph_boundary::BoundaryAction;
-//! let client  = AnthropicClient::from_env().unwrap();
-//! let schema  = SchemaWorld::new();
-//! let names   = NameMap::default();
-//! let actions: Vec<BoundaryAction> = vec![];
-//! let prose   = narrate_prescriptions(&client, &actions, &schema, &names).unwrap();
+//! # use graph_boundary::{analyze_boundary, prescribe_updates, PrescriptionConfig};
+//! # let client = AnthropicClient::from_env().unwrap();
+//! # let schema = SchemaWorld::new();
+//! # let names  = NameMap::default();
+//! # let world  = graph_world::World::default();
+//! let report  = analyze_boundary(&world, &schema, None);
+//! let story   = narrate_boundary(&client, &report, &world, &names).unwrap();
+//! let actions = prescribe_updates(&report, &schema, &world, &PrescriptionConfig::default());
+//! let advice  = narrate_prescriptions(&client, &actions, &schema, &names).unwrap();
 //! ```
 //!
 //! ## LLM backends
@@ -91,7 +98,7 @@ pub use facade::GraphLlm;
 pub use ingest::{ExtractedNode, TextIngestor};
 pub use narrate::{narrate_counterfactual, narrate_entity_deviations, score_prediction};
 pub use rag::answer_with_graph;
-pub use tension::narrate_prescriptions;
+pub use tension::{narrate_boundary, narrate_prescriptions};
 
 #[cfg(feature = "anthropic")]
 pub use client::AnthropicClient;

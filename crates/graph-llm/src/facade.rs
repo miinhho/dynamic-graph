@@ -127,6 +127,17 @@ impl<'a> GraphLlm<'a> {
         crate::tension::narrate_prescriptions(self.client, &actions, schema, &self.names)
     }
 
+    /// Narrate the raw declared-vs-observed boundary state (no
+    /// prescriptions derived).
+    ///
+    /// Runs [`analyze_boundary`] internally and describes the four
+    /// quadrants — use [`GraphLlm::narrate_schema_tension`] when the
+    /// caller wants action-oriented prose instead.
+    pub fn narrate_boundary(&self, schema: &SchemaWorld) -> Result<String, LlmError> {
+        let report = analyze_boundary(self.world, schema, None);
+        crate::tension::narrate_boundary(self.client, &report, self.world, &self.names)
+    }
+
     // ── Ingestion ─────────────────────────────────────────────────────────────
 
     /// Extract named entities from `text`.

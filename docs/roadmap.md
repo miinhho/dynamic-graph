@@ -260,8 +260,16 @@ not exploited.
 
 - **J1. Mock-backend regression harness.** Assert prompt *structure*,
   not prose, for each `configure_*` / `narrate_*` call.
-- **J2. `narrate_boundary(&BoundaryReport)`.** Depends on G1 (consumer
-  exists). Ties Track G to Track J.
+- **J2. `narrate_boundary(&BoundaryReport)`.** ✓ **Closed (2026-04-20)**.
+  `graph_llm::narrate_boundary(client, report, world, names)` describes
+  the raw Confirmed / Ghost / Shadow state (aligned worlds return a
+  canned message without hitting the LLM). Paired with existing
+  `narrate_prescriptions`: the first *observes*, the second *decides*.
+  Also added `GraphLlm::narrate_boundary(&schema)` facade method and
+  wired both narrators into `examples/boundary_workflow.rs`. All 25
+  `graph-llm` unit tests pass including 2 new MockLlmClient-driven
+  cases for `narrate_boundary` (aligned → canned message, drift →
+  client invoked).
 - **J3. Anthropic prompt caching.** Tag long stable prompts (system +
   graph snapshot) as cache-eligible. Target > 80% hit rate across
   repeated narration on identical snapshots.

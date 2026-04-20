@@ -34,7 +34,7 @@ use graph_core::{
     ProposedChange, StabilizationConfig, props,
 };
 use graph_engine::{InfluenceKindConfig, PlasticityConfig, Simulation, SimulationBuilder};
-use graph_llm::{MockLlmClient, narrate_prescriptions};
+use graph_llm::{MockLlmClient, narrate_boundary, narrate_prescriptions};
 use graph_query::NameMap;
 use graph_schema::{DeclaredRelKind, SchemaWorld};
 
@@ -191,6 +191,22 @@ fn main() {
     let report = analyze_boundary(&*sim.world(), &schema, Some(0.05));
     print_report("Initial boundary report", &report, &*sim.world(), &schema);
 
+    // ── 3b. Narrate the raw state before proposing anything ────────────────
+    let names = NameMap::from_world(&*sim.world());
+    let observer_client = MockLlmClient::new(
+        "The declared reporting lines from CTO up to CEO and from CMO up to \
+         CEO are all behaviourally confirmed, as are the eng leads (Alice, \
+         Bob) reporting into the CTO and Eve reporting into the CMO. Two \
+         declared lines — Carol→CTO and Dave→CTO — show no observed \
+         interaction at all (ghosts). Meanwhile Alice and Eve appear to be \
+         collaborating across the eng/marketing boundary without any \
+         declaration (shadow)."
+    );
+    match narrate_boundary(&observer_client, &report, &*sim.world(), &names) {
+        Ok(prose) => println!("\n── Observer narration ──\n{prose}"),
+        Err(e) => eprintln!("narrate_boundary failed: {e}"),
+    }
+
     // ── 4. Prescriptions ───────────────────────────────────────────────────
     let config = PrescriptionConfig {
         ghost_version_threshold: Some(3),
@@ -204,10 +220,9 @@ fn main() {
         print_action(action, &schema, &*sim.world(), &ids);
     }
 
-    // ── 5. Narrate via MockLlmClient ───────────────────────────────────────
+    // ── 5. Narrate the prescriptions ───────────────────────────────────────
     // Swap `MockLlmClient::new(...)` for `AnthropicClient::from_env()` or
     // `OllamaClient::new(...)` when a real model should respond.
-    let names = NameMap::from_world(&*sim.world());
     let client = MockLlmClient::new(
         "Two declared reporting lines (Carol→CTO and Dave→CTO) have not been exercised \
          in observed behaviour — treat them as stale structure unless you can name a \
