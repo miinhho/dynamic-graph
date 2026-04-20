@@ -227,8 +227,18 @@ Folds old Track H closure-remainder + new evidence loop into one program.
   by the silent majority. Run: `cargo run -p graph-llm --example
   boundary_workflow`. Unlocks J2 (`narrate_boundary`) and is the
   boundary-workflow anchor for the cookbook under Track I.
-- **G2. `prescribe_updates` severity tags.** Each `BoundaryAction`
-  gains a `severity: LayerTension` so callers filter by magnitude.
+- **G2. `prescribe_updates` severity tags.** ✓ **Closed (2026-04-20)**.
+  Each `BoundaryAction` variant now carries a `severity: f32` in
+  `[0, 1]` plus a `.severity()` accessor on the enum.
+  - `RetractFact` severity = `age / (age + threshold)` → a ghost at
+    exactly the retract threshold scores 0.5; older ghosts asymptote
+    toward 1.0.
+  - `AssertFact` severity = `signal / (signal + 1.0)` — saturating
+    normalisation of the shadow relationship's signal value.
+  - Callers filter with `actions.retain(|a| a.severity() > 0.5)` and
+    the `boundary_workflow` example now prints `[sev X.YY]` per action.
+  - New unit test `severity_scales_monotonically_with_signal_and_age`
+    pins the ordering.
 - **G3. Per-entity / per-locus drift breakdown.** `layer_tension`
   currently emits one number; drop it to per-node granularity so
   hotspots are locatable.

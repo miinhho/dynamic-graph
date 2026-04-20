@@ -85,6 +85,17 @@ impl Default for PrescriptionConfig {
 }
 
 /// A concrete proposal to reduce boundary tension.
+///
+/// Each action carries a `severity` in `[0.0, 1.0]` — higher means
+/// stronger evidence that the action is warranted. Callers can filter
+/// by magnitude (e.g. `actions.retain(|a| a.severity() > 0.5)`) before
+/// narrating or applying.
+///
+/// - `RetractFact` severity = `age / (age + threshold)`, so a ghost
+///   that has been silent for exactly `threshold` versions scores 0.5
+///   and older ghosts approach 1.0.
+/// - `AssertFact` severity = `signal / (signal + 1.0)` (saturating
+///   normalisation of the shadow relationship's signal).
 #[derive(Debug, Clone, PartialEq)]
 pub enum BoundaryAction {
     /// Retract a ghost fact: it has been declared but never behaviourally
@@ -92,6 +103,7 @@ pub enum BoundaryAction {
     RetractFact {
         fact_id: DeclaredFactId,
         reason: RetractReason,
+        severity: f32,
     },
     /// Assert a new fact for a shadow: the dynamic relationship is behaviourally
     /// active but has no declared counterpart.
@@ -100,7 +112,20 @@ pub enum BoundaryAction {
         predicate: DeclaredRelKind,
         object: LocusId,
         shadow_rel: RelationshipId,
+        severity: f32,
     },
+}
+
+impl BoundaryAction {
+    /// Relative magnitude of this proposal in `[0.0, 1.0]`. Higher =
+    /// stronger evidence. See the type-level docs for the normalisation
+    /// formula per variant.
+    pub fn severity(&self) -> f32 {
+        match self {
+            BoundaryAction::RetractFact { severity, .. }
+            | BoundaryAction::AssertFact { severity, .. } => *severity,
+        }
+    }
 }
 
 /// Why a ghost fact is being proposed for retraction.
@@ -136,7 +161,7 @@ pub fn prescribe_updates(
     let retractions = collect_ghost_candidates(report, schema)
         .into_iter()
         .filter(|candidate| should_retract_ghost(candidate, config))
-        .map(assemble_retraction);
+        .map(|candidate| assemble_retraction(candidate, config));
     let assertions = collect_shadow_candidates(report, dynamic, config.signal_mode)
         .into_iter()
         .filter(|candidate| should_assert_shadow(candidate, config))
@@ -312,6 +337,87 @@ mod tests {
         assert!(matches!(&actions[0], BoundaryAction::AssertFact {
             shadow_rel, predicate, ..
         } if *shadow_rel == rel_id && predicate == &kind("inferred_influence")));
+    }
+
+    #[test]
+    fn severity_scales_monotonically_with_signal_and_age() {
+        // Ghost path: two facts of different age → older has higher severity.
+        let dynamic = World::default();
+        let mut schema = SchemaWorld::new();
+        let old_id = schema.assert_fact(LocusId(1), kind("old"), LocusId(2));
+        for _ in 0..20 {
+            let fid = schema.assert_fact(LocusId(8_000), kind("filler"), LocusId(8_001));
+            schema.retract_fact(fid);
+        }
+        let young_id = schema.assert_fact(LocusId(3), kind("young"), LocusId(4));
+        for _ in 0..2 {
+            let fid = schema.assert_fact(LocusId(8_100), kind("filler2"), LocusId(8_101));
+            schema.retract_fact(fid);
+        }
+
+        let report = crate::analysis::analyze_boundary(&dynamic, &schema, None);
+        let cfg = PrescriptionConfig {
+            ghost_version_threshold: Some(1),
+            shadow_signal_threshold: None,
+            signal_mode: SignalMode::Activity,
+            shadow_predicate: kind("_"),
+        };
+        let actions = prescribe_updates(&report, &schema, &dynamic, &cfg);
+
+        let old_sev = actions
+            .iter()
+            .find_map(|a| match a {
+                BoundaryAction::RetractFact {
+                    fact_id, severity, ..
+                } if *fact_id == old_id => Some(*severity),
+                _ => None,
+            })
+            .expect("old fact retraction");
+        let young_sev = actions
+            .iter()
+            .find_map(|a| match a {
+                BoundaryAction::RetractFact {
+                    fact_id, severity, ..
+                } if *fact_id == young_id => Some(*severity),
+                _ => None,
+            })
+            .expect("young fact retraction");
+        assert!(
+            old_sev > young_sev,
+            "older ghost should score higher: old={old_sev:.3} young={young_sev:.3}"
+        );
+        assert!((0.0..=1.0).contains(&old_sev));
+        assert!((0.0..=1.0).contains(&young_sev));
+
+        // Shadow path: strong shadow → higher severity than weak shadow.
+        let (dyn_strong, _) = make_world_with_rel(5, 6, 3.0);
+        let (dyn_weak, _) = make_world_with_rel(5, 6, 0.2);
+        let empty_schema = SchemaWorld::new();
+        let cfg_s = PrescriptionConfig {
+            ghost_version_threshold: None,
+            shadow_signal_threshold: Some(0.05),
+            signal_mode: SignalMode::Activity,
+            shadow_predicate: kind("inferred"),
+        };
+        let rep_strong = crate::analysis::analyze_boundary_with_mode(
+            &dyn_strong,
+            &empty_schema,
+            Some(0.05),
+            SignalMode::Activity,
+        );
+        let rep_weak = crate::analysis::analyze_boundary_with_mode(
+            &dyn_weak,
+            &empty_schema,
+            Some(0.05),
+            SignalMode::Activity,
+        );
+        let strong = prescribe_updates(&rep_strong, &empty_schema, &dyn_strong, &cfg_s);
+        let weak = prescribe_updates(&rep_weak, &empty_schema, &dyn_weak, &cfg_s);
+        assert_eq!(strong.len(), 1);
+        assert_eq!(weak.len(), 1);
+        assert!(strong[0].severity() > weak[0].severity());
+        assert!(strong[0].severity() < 1.0);
+        assert!(weak[0].severity() > 0.0);
     }
 
     #[test]

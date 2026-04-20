@@ -192,7 +192,7 @@ fn format_actions(actions: &[BoundaryAction], schema: &SchemaWorld, names: &Name
     actions
         .iter()
         .map(|action| match action {
-            BoundaryAction::RetractFact { fact_id, reason } => {
+            BoundaryAction::RetractFact { fact_id, reason, .. } => {
                 let fact_desc = schema
                     .facts
                     .active_facts()
@@ -306,6 +306,7 @@ mod tests {
             predicate: DeclaredRelKind::new("collaborates_with"),
             object: LocusId(2),
             shadow_rel: RelationshipId(0),
+            severity: 0.5,
         }];
 
         let result = narrate_prescriptions(&client, &actions, &schema, &names).unwrap();

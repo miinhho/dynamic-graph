@@ -318,8 +318,9 @@ fn print_action(
             .map(|(k, _)| k.to_string())
             .unwrap_or_else(|| format!("locus#{}", id.0))
     };
+    let sev = action.severity();
     match action {
-        BoundaryAction::RetractFact { fact_id, reason } => {
+        BoundaryAction::RetractFact { fact_id, reason, .. } => {
             let desc = schema
                 .facts
                 .active_facts()
@@ -329,7 +330,7 @@ fn print_action(
             let age = match reason {
                 RetractReason::LongRunningGhost { age_versions } => *age_versions,
             };
-            println!("  RETRACT  {desc}  (ghost for {age} versions)");
+            println!("  RETRACT  [sev {sev:.2}]  {desc}  (ghost for {age} versions)");
         }
         BoundaryAction::AssertFact {
             subject,
@@ -338,7 +339,7 @@ fn print_action(
             ..
         } => {
             println!(
-                "  ASSERT   {} -[{}]→ {}",
+                "  ASSERT   [sev {sev:.2}]  {} -[{}]→ {}",
                 lookup(*subject),
                 predicate,
                 lookup(*object),
