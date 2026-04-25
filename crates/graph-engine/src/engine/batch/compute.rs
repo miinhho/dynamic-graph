@@ -308,6 +308,15 @@ fn locus_change_effect(
 /// the pre-decided `EmergenceResolution` (Update vs Create) ready for the
 /// apply phase. New evidence variants added in later phases extend this
 /// match arm; the rest of the pipeline does not need to change.
+///
+/// **Phase 2a.i (2026-04-25)**: when the kind's `EmergenceThreshold` is
+/// the bypass constant (every registered kind today), this function takes
+/// the same fast path as before Phase 2 — `resolve_emergence` decides
+/// Update vs Create directly against `RelationshipStore` and the
+/// `PreRelationshipBuffer` is never touched. The bypass branch is the
+/// invariant that keeps `partition_determinism::ring_p4` and the rest of
+/// the bit-equivalence canary suite green. The threshold-active branch
+/// (`else` arm) lands in Phase 2b.
 fn interpret_evidence(
     world: &World,
     locus_id: LocusId,
@@ -317,6 +326,15 @@ fn interpret_evidence(
     resolved_slots: &[RelationshipSlotDef],
     evidence: Vec<EmergenceEvidence>,
 ) -> Vec<CrossLocusPred> {
+    let bypass = kind_cfg
+        .map(|cfg| cfg.emergence_threshold.is_bypass())
+        .unwrap_or(true);
+    debug_assert!(
+        bypass,
+        "Phase 2b will implement the threshold-active path; in 2a.i no \
+         influence kind can opt in to a non-bypass `EmergenceThreshold` \
+         from user code, so this branch should be unreachable."
+    );
     evidence
         .into_iter()
         .map(|ev| match ev {

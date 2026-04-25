@@ -29,6 +29,7 @@ use crate::store::cohere_store::CohereStore;
 use crate::store::entity_store::EntityStore;
 use crate::store::locus_store::LocusStore;
 use crate::store::name_index::NameIndex;
+use crate::store::pre_relationship_buffer::PreRelationshipBuffer;
 use crate::store::property_store::PropertyStore;
 use crate::store::relationship_store::RelationshipStore;
 use crate::store::subscription_store::SubscriptionStore;
@@ -56,6 +57,15 @@ pub struct World {
     /// parallelism. `None` (the default) means single-partition mode with no
     /// overhead.
     partition_index: Option<PartitionIndex>,
+    /// Phase 2 of the trigger-axis roadmap: graded-evidence buffer for
+    /// relationships that are accumulating evidence but have not yet
+    /// crossed the per-kind `EmergenceThreshold`.
+    ///
+    /// **Phase 2a.i (2026-04-25)**: every registered influence kind uses
+    /// `EmergenceThreshold::bypass()` and the engine never inserts here;
+    /// the field exists so Phase 2b can plug in the threshold-active
+    /// write path without re-touching `World`.
+    pub(crate) pre_relationships: PreRelationshipBuffer,
 }
 
 impl World {
@@ -109,6 +119,27 @@ impl World {
 
     pub fn subscriptions_mut(&mut self) -> &mut SubscriptionStore {
         &mut self.subscriptions
+    }
+
+    /// Read-only access to the graded-evidence buffer (Phase 2 of the
+    /// trigger-axis roadmap). Empty under the default `EmergenceThreshold::
+    /// bypass()` policy; populated only when at least one influence kind is
+    /// registered with a non-bypass threshold.
+    pub fn pre_relationships(&self) -> &PreRelationshipBuffer {
+        &self.pre_relationships
+    }
+
+    /// Engine-internal mutable access. Crate-private so user code cannot
+    /// inject pending evidence outside the engine's `interpret_evidence`
+    /// pathway, which keeps the buffer's invariants (window expiry,
+    /// promotion-then-removal, lookup-order discipline) under one author.
+    ///
+    /// **Phase 2a.i (2026-04-25)**: unused — the engine still takes the
+    /// bypass branch in `interpret_evidence` for every kind. Phase 2b
+    /// wires this into the threshold-active write path.
+    #[allow(dead_code)]
+    pub(crate) fn pre_relationships_mut(&mut self) -> &mut PreRelationshipBuffer {
+        &mut self.pre_relationships
     }
 
     pub fn log(&self) -> &ChangeLog {

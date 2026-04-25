@@ -235,6 +235,86 @@ pub struct InfluenceKindConfig {
     /// no benchmark currently distinguishes them, so any choice is
     /// equally unvalidated.
     pub demotion_policy: Option<DemotionPolicy>,
+    /// Phase 2 of the trigger-axis roadmap: graded-evidence threshold for
+    /// relationship promotion. See [`EmergenceThreshold`].
+    ///
+    /// **Default**: `EmergenceThreshold::bypass()` — instant promotion on
+    /// the first cross-locus predecessor (the pre-Phase-2 behaviour). With
+    /// this default the engine never touches `PreRelationshipBuffer`, so
+    /// the f32 arithmetic order is bit-identical to before Phase 2.
+    ///
+    /// **Override when**: the domain produces frequent transient causal
+    /// flows that should not crystallise into permanent relationships
+    /// (e.g. citation graphs where one-shot cross-references are common,
+    /// or chat logs where a single mention does not imply durable
+    /// coupling). Setting `min_evidence > 0` requires accumulated evidence
+    /// across `window_batches` before a `Relationship` materialises and
+    /// `WorldEvent::RelationshipEmerged` fires.
+    ///
+    /// **Phase 2a.i status (2026-04-25)**: the field and the bypass-check
+    /// machinery exist; the threshold-active code path lands in Phase 2b.
+    /// Until then no public builder accepts a non-default value, so this
+    /// field is unreachable from user code.
+    pub emergence_threshold: EmergenceThreshold,
+}
+
+/// Graded-evidence promotion policy (Phase 2 of the trigger-axis roadmap).
+///
+/// In the pre-Phase-2 model, a single cross-locus predecessor is sufficient
+/// to materialise a `Relationship`: one observed causal flow → one permanent
+/// edge in the graph. That over-attributes coupling to transient or
+/// one-shot interactions whose evidence does not actually persist.
+///
+/// `EmergenceThreshold` lets a kind require *accumulated* evidence (signed
+/// pre-signal contributions) within a sliding *window* of batches before
+/// the engine promotes a `(EndpointKey, InfluenceKindId)` from the
+/// `PreRelationshipBuffer` into the `RelationshipStore`.
+///
+/// **Bypass invariant**: when `min_evidence == 0.0` and `window_batches
+/// == 1` (the default), the engine routes around the buffer entirely —
+/// no allocation, no extra arithmetic. This guarantees
+/// `partition_determinism::ring_p4_matches_single_partition_after_20_ticks`
+/// and the rest of the bit-equivalence canary suite remain untouched
+/// when threshold is not in use.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EmergenceThreshold {
+    /// Minimum accumulated evidence magnitude (`|sum of signed
+    /// pre-signal contributions|`) required to promote pending evidence
+    /// into a `Relationship`. `0.0` means "promote on first observation"
+    /// — combined with `window_batches == 1` this is the bypass case.
+    pub min_evidence: f32,
+    /// Number of consecutive batches over which evidence accumulates
+    /// before timing out. A pending entry whose `last_touched_batch`
+    /// falls more than `window_batches` behind the current batch is
+    /// evicted from the buffer without producing a relationship. `1`
+    /// means single-batch (instant decision); the buffer is unused.
+    pub window_batches: u64,
+}
+
+impl Default for EmergenceThreshold {
+    fn default() -> Self {
+        Self::bypass()
+    }
+}
+
+impl EmergenceThreshold {
+    /// The pre-Phase-2 behaviour: promote on the first observation, no
+    /// buffer, no accumulation. The engine special-cases this constant to
+    /// preserve bit-equivalence with the pre-buffer arithmetic path.
+    pub const fn bypass() -> Self {
+        Self {
+            min_evidence: 0.0,
+            window_batches: 1,
+        }
+    }
+
+    /// Returns `true` when this threshold is the bypass constant — the
+    /// engine takes the pre-Phase-2 fast path. Used by `interpret_evidence`
+    /// to keep the default code path arithmetic-identical to before.
+    #[inline]
+    pub fn is_bypass(&self) -> bool {
+        self.min_evidence == 0.0 && self.window_batches == 1
+    }
 }
 
 /// Condition under which a relationship is automatically demoted to cold storage (E3).
@@ -266,6 +346,7 @@ impl InfluenceKindConfig {
             symmetric: false,
             applies_between: Vec::new(),
             demotion_policy: None,
+            emergence_threshold: EmergenceThreshold::bypass(),
         }
     }
 

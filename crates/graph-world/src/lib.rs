@@ -19,6 +19,7 @@ pub use store::cohere_store::{CohereSnapshot, CohereStore};
 pub use store::entity_store::EntityStore;
 pub use store::locus_store::LocusStore;
 pub use store::name_index::NameIndex;
+pub use store::pre_relationship_buffer::{PendingEvidence, PreRelationshipBuffer};
 pub use store::property_store::PropertyStore;
 pub use store::relationship_store::RelationshipStore;
 pub use store::subscription_store::{SubscriptionEvent, SubscriptionScope, SubscriptionStore};

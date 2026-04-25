@@ -8,6 +8,7 @@ pub mod cohere_store;
 pub mod entity_store;
 pub mod locus_store;
 pub mod name_index;
+pub mod pre_relationship_buffer;
 pub mod property_store;
 pub mod relationship_store;
 pub mod subscription_store;
