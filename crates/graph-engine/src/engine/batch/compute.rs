@@ -30,9 +30,20 @@ pub(crate) fn resolve_emergence(
         "resolve_emergence: InfluenceKindId {kind:?} is not registered — call influence_registry.register() before ticking"
     );
 
+    // Lookup discipline (advisor's #4 from Phase 2 design review):
+    //   1. RelationshipStore first — existing relationship → Update
+    //   2. Else inspect the kind's threshold:
+    //      - bypass → Create immediately (pre-Phase-2 fast path, byte-identical arithmetic)
+    //      - non-bypass → Pending (apply phase touches PreRelationshipBuffer)
+    // Single function, single source of truth for which path each evidence takes.
     if let Some(rel_id) = world.relationships().lookup(&key, kind) {
-        EmergenceResolution::Update { rel_id }
-    } else {
+        return EmergenceResolution::Update { rel_id };
+    }
+
+    let threshold = cfg
+        .map(|c| c.emergence_threshold)
+        .unwrap_or_else(crate::registry::EmergenceThreshold::bypass);
+    if threshold.is_bypass() {
         EmergenceResolution::Create {
             endpoints,
             kind,
@@ -43,6 +54,13 @@ pub(crate) fn resolve_emergence(
             ),
             pre_signal,
             activity_contribution,
+        }
+    } else {
+        EmergenceResolution::Pending {
+            endpoints,
+            kind,
+            contribution: signed_activity_contribution(activity_contribution, pre_signal),
+            threshold,
         }
     }
 }
@@ -309,14 +327,13 @@ fn locus_change_effect(
 /// apply phase. New evidence variants added in later phases extend this
 /// match arm; the rest of the pipeline does not need to change.
 ///
-/// **Phase 2a.i (2026-04-25)**: when the kind's `EmergenceThreshold` is
-/// the bypass constant (every registered kind today), this function takes
-/// the same fast path as before Phase 2 — `resolve_emergence` decides
-/// Update vs Create directly against `RelationshipStore` and the
-/// `PreRelationshipBuffer` is never touched. The bypass branch is the
-/// invariant that keeps `partition_determinism::ring_p4` and the rest of
-/// the bit-equivalence canary suite green. The threshold-active branch
-/// (`else` arm) lands in Phase 2b.
+/// **Phase 2b (2026-04-25)**: when the kind's `EmergenceThreshold` is
+/// the bypass constant, `resolve_emergence` takes the byte-identical
+/// pre-Phase-2 fast path (Update vs Create against `RelationshipStore`).
+/// When the threshold is active and no relationship exists yet, the
+/// resolution is `Pending` — apply phase records the contribution into
+/// `PreRelationshipBuffer` and only mints a `Relationship` when
+/// accumulated evidence crosses `min_evidence` within `window_batches`.
 fn interpret_evidence(
     world: &World,
     locus_id: LocusId,
@@ -326,15 +343,6 @@ fn interpret_evidence(
     resolved_slots: &[RelationshipSlotDef],
     evidence: Vec<EmergenceEvidence>,
 ) -> Vec<CrossLocusPred> {
-    let bypass = kind_cfg
-        .map(|cfg| cfg.emergence_threshold.is_bypass())
-        .unwrap_or(true);
-    debug_assert!(
-        bypass,
-        "Phase 2b will implement the threshold-active path; in 2a.i no \
-         influence kind can opt in to a non-bypass `EmergenceThreshold` \
-         from user code, so this branch should be unreachable."
-    );
     evidence
         .into_iter()
         .map(|ev| match ev {

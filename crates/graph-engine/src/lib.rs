@@ -36,8 +36,8 @@ pub use self::{
         DynamicsRegime, Learnable, PerKindLearnable, RegimeClassifier,
     },
     registry::{
-        DemotionPolicy, InfluenceKindConfig, InfluenceKindRegistry, LocusKindConfig,
-        LocusKindRegistry, PlasticityConfig, SlotDefsMap,
+        DemotionPolicy, EmergenceThreshold, InfluenceKindConfig, InfluenceKindRegistry,
+        LocusKindConfig, LocusKindRegistry, PlasticityConfig, SlotDefsMap,
     },
     simulation::{
         BackpressurePolicy, EventHistory, IngestError, Simulation, SimulationBuilder,

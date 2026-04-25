@@ -90,6 +90,126 @@ impl PreRelationshipBuffer {
     ) -> impl Iterator<Item = (&(EndpointKey, InfluenceKindId), &PendingEvidence)> + '_ {
         self.pending.iter()
     }
+
+    /// Engine-only by convention (the buffer's invariants — single
+    /// transition point, lookup-order discipline — assume this is the
+    /// only mutating entry point used by the apply pipeline). Returns the
+    /// resulting outcome — either the entry stayed pending (no
+    /// relationship action), or it crossed `min_evidence` within the
+    /// `window_batches` window and the caller should now mint a
+    /// `Relationship`.
+    ///
+    /// **Reset-on-fresh-contribution semantics**: this is the *attempt*
+    /// window. When `current_batch − first_seen_batch > window_batches`
+    /// and a fresh contribution arrives, the existing accumulation is
+    /// reset and the contribution seeds a *new* attempt starting at
+    /// `current_batch`. Without reset we would lose the evidence
+    /// entirely; the call would still arrive but the entry would behave
+    /// like a stale ghost.
+    ///
+    /// This is **not** the same as `evict_expired`'s sweep — see that
+    /// method's doc for the housekeeping path that drops idle entries
+    /// without ever seeing a fresh contribution.
+    ///
+    /// Public so `graph-engine::emergence_apply` can call it across the
+    /// crate boundary; the discipline is enforced by `pending` being a
+    /// private field (no `insert`/`remove` reachable from user code).
+    pub fn record_evidence(
+        &mut self,
+        key: EndpointKey,
+        kind: InfluenceKindId,
+        contribution: f32,
+        change_id: ChangeId,
+        current_batch: BatchId,
+        window_batches: u64,
+        min_evidence: f32,
+    ) -> RecordOutcome {
+        let entry_key = (key, kind);
+        let entry = self.pending.entry(entry_key.clone()).or_insert_with(|| PendingEvidence {
+            accumulated: 0.0,
+            first_seen_batch: current_batch,
+            last_touched_batch: current_batch,
+            contributing_changes: SmallVec::new(),
+        });
+
+        // Window expiry — the entry is older than its window allows.
+        // Reset rather than drop: this contribution itself is fresh evidence
+        // and seeds the next window. Without reset we'd lose the signal
+        // entirely.
+        let age = current_batch.0.saturating_sub(entry.first_seen_batch.0);
+        if age > window_batches {
+            entry.accumulated = 0.0;
+            entry.first_seen_batch = current_batch;
+            entry.contributing_changes.clear();
+        }
+
+        entry.accumulated += contribution;
+        entry.last_touched_batch = current_batch;
+        entry.contributing_changes.push(change_id);
+
+        if entry.accumulated.abs() >= min_evidence {
+            // Promotion: hand the accumulated state back to the caller and
+            // remove the entry. Single transition point — once an entry
+            // promotes, it lives in `RelationshipStore`, never both stores
+            // simultaneously (advisor's #4 in the Phase 2 design review).
+            let promoted = self.pending.remove(&entry_key).expect("entry was just inserted");
+            RecordOutcome::Promoted {
+                accumulated: promoted.accumulated,
+                contributing_changes: promoted.contributing_changes,
+            }
+        } else {
+            RecordOutcome::StillPending
+        }
+    }
+
+    /// Housekeeping sweep: drop entries that have been idle (no fresh
+    /// contribution) for longer than `default_window_batches`. **Idle
+    /// expiry semantics** — measured against `last_touched_batch`, not
+    /// `first_seen_batch`. This complements `record_evidence`'s
+    /// reset-on-fresh-contribution semantics: `record_evidence` handles
+    /// the case where new evidence arrives after a stale window
+    /// (restart), while `evict_expired` handles the case where no
+    /// further evidence ever arrives (garbage-collect).
+    ///
+    /// **Phase 2b status (2026-04-25)**: the engine does **not** call
+    /// this from any per-tick housekeeping path yet. Idle entries
+    /// therefore persist in the buffer until either a fresh contribution
+    /// triggers `record_evidence`'s reset path or a caller invokes this
+    /// method directly. Wiring an automatic sweep is deferred to a
+    /// follow-up — the per-tick cost vs. memory-leak trade-off is one
+    /// `EmergenceThreshold` configurations in real datasets need to
+    /// inform.
+    ///
+    /// Returns the count of entries evicted, for telemetry.
+    pub fn evict_expired(
+        &mut self,
+        current_batch: BatchId,
+        default_window_batches: u64,
+    ) -> usize {
+        let before = self.pending.len();
+        self.pending.retain(|_, entry| {
+            let age = current_batch.0.saturating_sub(entry.last_touched_batch.0);
+            age <= default_window_batches
+        });
+        before - self.pending.len()
+    }
+}
+
+/// Outcome of `PreRelationshipBuffer::record_evidence`.
+#[derive(Debug, Clone)]
+pub enum RecordOutcome {
+    /// Evidence was added but the running magnitude is still below
+    /// `min_evidence`. No relationship action; the entry remains in the
+    /// buffer for future contributions or window expiry.
+    StillPending,
+    /// Accumulated evidence crossed `min_evidence` on this contribution.
+    /// The entry has been removed from the buffer; the engine must now
+    /// mint a `Relationship` whose initial activity is `accumulated` and
+    /// whose `Change.predecessors` is `contributing_changes`.
+    Promoted {
+        accumulated: f32,
+        contributing_changes: SmallVec<[ChangeId; 4]>,
+    },
 }
 
 #[cfg(test)]

@@ -134,11 +134,12 @@ impl World {
     /// pathway, which keeps the buffer's invariants (window expiry,
     /// promotion-then-removal, lookup-order discipline) under one author.
     ///
-    /// **Phase 2a.i (2026-04-25)**: unused — the engine still takes the
-    /// bypass branch in `interpret_evidence` for every kind. Phase 2b
-    /// wires this into the threshold-active write path.
-    #[allow(dead_code)]
-    pub(crate) fn pre_relationships_mut(&mut self) -> &mut PreRelationshipBuffer {
+    /// Public so `graph-engine` can call `record_evidence` /
+    /// `evict_expired` across the crate boundary. Mutating the underlying
+    /// `pending` map directly is impossible from user code — the field is
+    /// private, and the only exposed mutators are the engine-discipline
+    /// methods.
+    pub fn pre_relationships_mut(&mut self) -> &mut PreRelationshipBuffer {
         &mut self.pre_relationships
     }
 

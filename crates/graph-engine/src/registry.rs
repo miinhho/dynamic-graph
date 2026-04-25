@@ -426,6 +426,27 @@ impl InfluenceKindConfig {
         self
     }
 
+    /// Require accumulated cross-locus evidence before this kind's
+    /// relationships materialise (Phase 2 of the trigger-axis roadmap).
+    ///
+    /// Pre-Phase-2 default: every cross-locus predecessor instantly
+    /// creates a Relationship. Setting `threshold` non-bypass routes new
+    /// (endpoints, kind) pairs through `PreRelationshipBuffer`; the engine
+    /// only promotes when `|accumulated evidence| >= min_evidence` within
+    /// `window_batches` consecutive batches. Pending evidence is **not**
+    /// recorded in the ChangeLog — only the eventual promotion fires
+    /// `WorldEvent::RelationshipEmerged`, with `Change.predecessors`
+    /// carrying every contributing change.
+    ///
+    /// **Override when**: the domain produces frequent transient causal
+    /// flows that should not crystallise into permanent relationships
+    /// (citation graphs with one-shot cross-references, chat logs where a
+    /// single mention does not imply durable coupling).
+    pub fn with_emergence_threshold(mut self, threshold: EmergenceThreshold) -> Self {
+        self.emergence_threshold = threshold;
+        self
+    }
+
     /// Mark this kind as symmetric: auto-emerged edges use
     /// `Endpoints::Symmetric` so A↔B co-occurrence produces one edge
     /// instead of two directed ones.

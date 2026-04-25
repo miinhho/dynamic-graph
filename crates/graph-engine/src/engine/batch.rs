@@ -157,6 +157,25 @@ pub(crate) enum EmergenceResolution {
         pre_signal: f32,
         activity_contribution: f32,
     },
+    /// Phase 2b: the kind's `EmergenceThreshold` is active and no
+    /// relationship currently exists for this `(endpoints, kind)`. The
+    /// apply phase records the contribution into `PreRelationshipBuffer`,
+    /// checks for window expiry and threshold crossing, and only mints
+    /// a `Relationship` when the accumulated evidence promotes.
+    ///
+    /// Carries the minimum apply-side needs: `endpoints` + `kind` for
+    /// buffer key, `contribution` (signed pre-computed magnitude added to
+    /// the running sum), and `threshold` (Copy) for window/promotion
+    /// arithmetic. The `resolved_slots` slice is plumbed separately
+    /// through the apply call chain (it would force a Vec allocation per
+    /// evidence item if duplicated here), and is what
+    /// `apply_emergence_pending` reads at promotion time.
+    Pending {
+        endpoints: Endpoints,
+        kind: InfluenceKindId,
+        contribution: f32,
+        threshold: crate::registry::EmergenceThreshold,
+    },
 }
 
 /// Interpreted evidence: the result of the interpretation step that
@@ -291,7 +310,17 @@ use rustc_hash::{FxHashMap, FxHashSet};
 pub(crate) struct PartitionAccumulator {
     pub batch_changes: Vec<Change>,
     /// (rel_id, trigger_change_id, kind, initial_state) — for Pass B3 log entries.
-    pub new_emerged_rels: Vec<(RelationshipId, ChangeId, InfluenceKindId, StateVector)>,
+    /// Records produced by the apply phase for relationships that came
+    /// into being during this batch — both bypass-Create (one trigger
+    /// change, length-1 predecessors) and Phase 2b promotion-from-buffer
+    /// (N contributing changes, length-N predecessors).
+    /// Tuple: `(rel_id, predecessors, kind, initial_state)`.
+    pub new_emerged_rels: Vec<(
+        RelationshipId,
+        smallvec::SmallVec<[ChangeId; 4]>,
+        InfluenceKindId,
+        StateVector,
+    )>,
     pub committed_ids_by_locus: FxHashMap<LocusId, Vec<ChangeId>>,
     pub affected_loci: Vec<LocusId>,
     pub affected_loci_set: FxHashSet<LocusId>,

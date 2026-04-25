@@ -227,6 +227,12 @@ pub(super) struct AppliedCrossLocusEmergence {
     record: EmergenceRecord,
     new_emerged_state: Option<StateVector>,
     schema_violation: Option<(graph_core::LocusKindId, graph_core::LocusKindId)>,
+    /// Phase 2b promotion path: when a `Pending` resolution accumulates
+    /// past threshold and mints a relationship, this carries the full
+    /// `contributing_changes` list so the resulting `Change.predecessors`
+    /// reflects every observation that fed into the promotion. `None` for
+    /// bypass-Create (single trigger, length-1 predecessors).
+    promotion_predecessors: Option<smallvec::SmallVec<[ChangeId; 4]>>,
 }
 
 pub(super) fn apply_cross_locus_emergence(
@@ -286,8 +292,8 @@ fn apply_cross_locus_prediction(
         emergence,
         ..
     } = pred;
-    let (rel_id, is_new, new_emerged_state) = emergence_apply::apply_emergence(
-        context.world.relationships_mut(),
+    let outcome = emergence_apply::apply_emergence(
+        context.world,
         emergence,
         context.trigger_id,
         context.batch,
@@ -302,9 +308,9 @@ fn apply_cross_locus_prediction(
             from_locus,
             to_locus: context.locus_id,
             kind: context.kind,
-            rel_id,
+            rel_id: outcome.rel_id,
             trigger_id: context.trigger_id,
-            is_new,
+            is_new: outcome.is_new,
             pre_signal,
             pred_batch,
             is_feedback,
@@ -312,8 +318,9 @@ fn apply_cross_locus_prediction(
             post_signal: context.post_signal,
             post_locus: context.locus_id,
         },
-        new_emerged_state,
+        new_emerged_state: outcome.initial_state,
         schema_violation,
+        promotion_predecessors: outcome.promotion_predecessors,
     })
 }
 
@@ -350,9 +357,12 @@ pub(super) fn record_relationship_emergence(
         kind: record.kind,
         trigger_change_id: record.trigger_id,
     });
+    let predecessors = applied
+        .promotion_predecessors
+        .unwrap_or_else(|| smallvec::smallvec![record.trigger_id]);
     state.acc.new_emerged_rels.push((
         record.rel_id,
-        record.trigger_id,
+        predecessors,
         record.kind,
         applied
             .new_emerged_state
@@ -444,13 +454,13 @@ pub(super) fn append_emergence_changes(
         .new_emerged_rels
         .iter()
         .enumerate()
-        .map(|(i, (rel_id, trigger_id, kind, initial_state))| {
+        .map(|(i, (rel_id, predecessors, kind, initial_state))| {
             let before = StateVector::zeros(initial_state.dim());
             Change {
                 id: ChangeId(emerge_base.0 + i as u64),
                 subject: ChangeSubject::Relationship(*rel_id),
                 kind: *kind,
-                predecessors: vec![*trigger_id],
+                predecessors: predecessors.to_vec(),
                 before,
                 after: initial_state.clone(),
                 batch,
