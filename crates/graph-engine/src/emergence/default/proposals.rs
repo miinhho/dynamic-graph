@@ -278,7 +278,10 @@ fn collect_decayed_relationships(
                     context
                         .relationships
                         .get(*rid)
-                        .map(|r| r.activity() < context.threshold)
+                        // Magnitude — Phase 1 signed activity: an inhibitory
+                        // edge below the magnitude threshold is dormant; one
+                        // above remains structurally relevant.
+                        .map(|r| r.activity().abs() < context.threshold)
                         .unwrap_or(true)
                 })
                 .collect()

@@ -36,10 +36,18 @@ pub enum SignalMode {
 }
 
 pub(crate) fn signal(rel: &Relationship, mode: SignalMode) -> f32 {
+    // Magnitude is what `analyze_boundary` compares against `threshold` to
+    // decide Confirmed/Ghost/Shadow. Phase 1 of the trigger-axis roadmap
+    // allows `activity()` to be signed (inhibitory predecessors); we abs
+    // here so an edge with strong negative activity is still recognised as
+    // "alive" by the alignment check. `Strength` sums the magnitudes of
+    // both components rather than taking `|activity + weight|` so that an
+    // excitatory and inhibitory contribution don't numerically cancel —
+    // both convey real coupling.
     match mode {
-        SignalMode::Activity => rel.activity(),
-        SignalMode::Weight => rel.weight(),
-        SignalMode::Strength => rel.strength(),
+        SignalMode::Activity => rel.activity().abs(),
+        SignalMode::Weight => rel.weight().abs(),
+        SignalMode::Strength => rel.activity().abs() + rel.weight().abs(),
     }
 }
 

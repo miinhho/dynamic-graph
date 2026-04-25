@@ -179,7 +179,10 @@ fn collect_demoted_relationships(
         DemotionPolicy::ActivityFloor(floor) => world
             .relationships()
             .iter()
-            .filter(|rel| rel.kind == kind && rel.activity() < floor)
+            // Magnitude floor — Phase 1 signed activity preserves the original
+            // intent ("not enough current signal to be load-bearing") under
+            // inhibitory edges by comparing against absolute value.
+            .filter(|rel| rel.kind == kind && rel.activity().abs() < floor)
             .map(|rel| rel.id)
             .collect(),
         DemotionPolicy::IdleBatches(n) => world

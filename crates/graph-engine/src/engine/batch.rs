@@ -2,6 +2,7 @@
 //! staging, and the two relationship-graph mutations that fire inside tick.
 
 mod compute;
+mod evidence;
 mod structural;
 
 use graph_core::{
@@ -11,6 +12,7 @@ use graph_core::{
 };
 
 pub(crate) use compute::{build_computed_change, compute_pending_change};
+pub(crate) use evidence::{signed_activity_contribution, EmergenceEvidence};
 pub(crate) use structural::apply_structural_proposals;
 
 #[allow(dead_code)]
@@ -157,9 +159,15 @@ pub(crate) enum EmergenceResolution {
     },
 }
 
-/// A cross-locus predecessor extracted in the compute phase.
-/// Carried into the apply phase so relationship mutations can run
-/// there with full write access to the relationship store.
+/// Interpreted evidence: the result of the interpretation step that
+/// follows detection. Carries the resolved `EmergenceResolution`, schema
+/// check, and pre/post timing data required by the apply phase.
+///
+/// **Phase 0 todo**: rename to `InterpretedEvidence` to mirror
+/// `EmergenceEvidence` on the detection side. Deferred from the initial
+/// Phase 0 PR to keep the diff scoped to the new seam; rename is a
+/// straightforward find-and-replace once the trigger-axis roadmap moves
+/// past Phase 1.
 pub(crate) struct CrossLocusPred {
     pub(crate) from_locus: LocusId,
     /// Activation value of `from_locus` at the time the predecessor fired.

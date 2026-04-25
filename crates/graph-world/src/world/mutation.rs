@@ -70,7 +70,10 @@ impl World {
         self.relationships
             .iter()
             .filter(|relationship| {
-                relationship.activity() < threshold
+                // Compare magnitude — Phase 1 of the trigger-axis roadmap allows
+                // signed activity (inhibitory edges decrement); a strongly
+                // negative edge is not "cold".
+                relationship.activity().abs() < threshold
                     && current_batch
                         .0
                         .saturating_sub(relationship.last_decayed_batch)

@@ -4,7 +4,7 @@ use graph_core::{
 };
 use graph_world::RelationshipStore;
 
-use super::batch::EmergenceResolution;
+use super::batch::{signed_activity_contribution, EmergenceResolution};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn apply_emergence(
@@ -117,19 +117,21 @@ fn apply_emergence_create(
 struct EmergenceDecay {
     activity_decay: f32,
     weight_decay: f32,
-    activity_contribution: f32,
-    abs_signal: f32,
+    /// Pre-computed activity contribution (`activity_contribution × |pre_signal|`).
+    /// Centralised through `signed_activity_contribution` so Phase 1
+    /// of the trigger-axis roadmap has one place to revisit signed semantics.
+    activity_input: f32,
 }
 
 fn emergence_decay(
     kind_cfg: Option<&crate::registry::InfluenceKindConfig>,
     pre_signal: f32,
 ) -> EmergenceDecay {
+    let activity_contribution = kind_cfg.map_or(1.0, |cfg| cfg.activity_contribution);
     EmergenceDecay {
         activity_decay: kind_cfg.map_or(1.0, |cfg| cfg.decay_per_batch),
         weight_decay: kind_cfg.map_or(1.0, |cfg| cfg.plasticity.weight_decay),
-        activity_contribution: kind_cfg.map_or(1.0, |cfg| cfg.activity_contribution),
-        abs_signal: pre_signal.abs(),
+        activity_input: signed_activity_contribution(activity_contribution, pre_signal),
     }
 }
 
@@ -148,7 +150,7 @@ fn apply_emergence_update_slots(
         .as_mut_slice()
         .get_mut(Relationship::ACTIVITY_SLOT)
     {
-        *activity += decay.activity_contribution * decay.abs_signal;
+        *activity += decay.activity_input;
     }
 }
 
@@ -162,7 +164,7 @@ fn apply_decay_step(
     let weight_factor = pow_decay(decay.weight_decay, delta);
     let slots = rel.state.as_mut_slice();
     if let Some(activity) = slots.get_mut(Relationship::ACTIVITY_SLOT) {
-        *activity = *activity * activity_factor + decay.activity_contribution * decay.abs_signal;
+        *activity = *activity * activity_factor + decay.activity_input;
     }
     if let Some(weight) = slots.get_mut(Relationship::WEIGHT_SLOT) {
         *weight *= weight_factor;
@@ -218,7 +220,7 @@ fn apply_existing_emergent_relationship(
         .as_mut_slice()
         .get_mut(Relationship::ACTIVITY_SLOT)
     {
-        *activity += activity_contribution * create_pre_signal.abs();
+        *activity += signed_activity_contribution(activity_contribution, create_pre_signal);
     }
     touch_emergent_relationship(rel, change_id, rel_kind, batch);
 }

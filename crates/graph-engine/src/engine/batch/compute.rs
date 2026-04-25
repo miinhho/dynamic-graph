@@ -7,8 +7,9 @@ use graph_world::World;
 use crate::registry::InfluenceKindRegistry;
 
 use super::{
-    BuiltChange, BuiltLocusChange, BuiltRelChange, ComputedChange, ComputedLocusChange,
-    ComputedRelChange, CrossLocusPred, EmergenceResolution, PendingChange,
+    signed_activity_contribution, BuiltChange, BuiltLocusChange, BuiltRelChange, ComputedChange,
+    ComputedLocusChange, ComputedRelChange, CrossLocusPred, EmergenceEvidence, EmergenceResolution,
+    PendingChange,
 };
 
 pub(crate) fn resolve_emergence(
@@ -63,7 +64,7 @@ fn emergence_initial_state(
     pre_signal: f32,
     resolved_slots: &[RelationshipSlotDef],
 ) -> StateVector {
-    let initial_activity = activity_contribution * pre_signal.abs();
+    let initial_activity = signed_activity_contribution(activity_contribution, pre_signal);
     let mut values = vec![initial_activity, 0.0f32];
     values.extend(resolved_slots.iter().map(|slot| slot.default));
     StateVector::from_slice(&values)
@@ -182,14 +183,14 @@ fn compute_locus_change(
     let before = &locus.state;
     let to_kind = locus.kind;
     let kind_cfg = influence_registry.get(kind);
-    let cross_locus_pairs = if predecessors.is_empty() {
+    let evidence = if predecessors.is_empty() {
         Vec::new()
     } else {
-        cross_locus_predecessors(world, &predecessors, locus_id)
+        detect_cross_locus_evidence(world, &predecessors, locus_id)
     };
     let stabilized_after = stabilize_locus_after(kind_cfg, before, proposed.after);
     if !predecessors.is_empty()
-        && cross_locus_pairs.is_empty()
+        && evidence.is_empty()
         && stabilized_after == *before
         && proposed.metadata.is_none()
         && proposed.property_patch.is_none()
@@ -205,7 +206,7 @@ fn compute_locus_change(
         kind_cfg,
         resolved_slots: &resolved_slots,
     };
-    let locus_effect = locus_change_effect(inputs, &stabilized_after, cross_locus_pairs);
+    let locus_effect = locus_change_effect(inputs, &stabilized_after, evidence);
     ComputedChange::Locus(ComputedLocusChange {
         locus_id,
         kind,
@@ -220,14 +221,6 @@ fn compute_locus_change(
         plasticity_active: locus_effect.plasticity_active,
         post_signal: locus_effect.post_signal,
     })
-}
-
-struct CrossLocusPredecessor {
-    from_locus: LocusId,
-    from_kind: graph_core::LocusKindId,
-    pre_signal: f32,
-    pred_batch: BatchId,
-    pred_change_id: ChangeId,
 }
 
 struct LocusChangeEffect {
@@ -245,18 +238,25 @@ struct LocusChangeEffectInputs<'a> {
     resolved_slots: &'a [RelationshipSlotDef],
 }
 
-fn cross_locus_predecessors(
+/// Detection step (Phase 0): scan the predecessor list for changes whose
+/// subject is a *different* locus than `to_locus_id`. Each such predecessor
+/// becomes one `EmergenceEvidence::CrossLocusFlow`.
+///
+/// This step is purely observational — it does not look at relationship
+/// state, schema constraints, or registry config. Its only job is to
+/// extract what was *seen*. Interpretation happens in `interpret_evidence`.
+fn detect_cross_locus_evidence(
     world: &World,
     predecessors: &[ChangeId],
-    locus_id: LocusId,
-) -> Vec<CrossLocusPredecessor> {
+    to_locus_id: LocusId,
+) -> Vec<EmergenceEvidence> {
     predecessors
         .iter()
         .filter_map(|pid| world.log().get(*pid))
         .filter_map(|pred| match pred.subject {
-            ChangeSubject::Locus(predecessor_locus) if predecessor_locus != locus_id => {
+            ChangeSubject::Locus(predecessor_locus) if predecessor_locus != to_locus_id => {
                 let from_kind = world.locus(predecessor_locus)?.kind;
-                Some(CrossLocusPredecessor {
+                Some(EmergenceEvidence::CrossLocusFlow {
                     from_locus: predecessor_locus,
                     from_kind,
                     pre_signal: pred.after.as_slice().first().copied().unwrap_or(0.0),
@@ -283,17 +283,17 @@ fn stabilize_locus_after(
 fn locus_change_effect(
     inputs: LocusChangeEffectInputs<'_>,
     stabilized_after: &StateVector,
-    cross_locus_pairs: Vec<CrossLocusPredecessor>,
+    evidence: Vec<EmergenceEvidence>,
 ) -> LocusChangeEffect {
     LocusChangeEffect {
-        cross_locus_preds: cross_locus_predictions(
+        cross_locus_preds: interpret_evidence(
             inputs.world,
             inputs.locus_id,
             inputs.to_kind,
             inputs.kind,
             inputs.kind_cfg,
             inputs.resolved_slots,
-            cross_locus_pairs,
+            evidence,
         ),
         plasticity_active: inputs
             .kind_cfg
@@ -303,37 +303,46 @@ fn locus_change_effect(
     }
 }
 
-fn cross_locus_predictions(
+/// Interpretation step (Phase 0): translate raw `EmergenceEvidence` into
+/// `CrossLocusPred` — a fully resolved record carrying the schema check and
+/// the pre-decided `EmergenceResolution` (Update vs Create) ready for the
+/// apply phase. New evidence variants added in later phases extend this
+/// match arm; the rest of the pipeline does not need to change.
+fn interpret_evidence(
     world: &World,
     locus_id: LocusId,
     to_kind: graph_core::LocusKindId,
     kind: InfluenceKindId,
     kind_cfg: Option<&crate::registry::InfluenceKindConfig>,
     resolved_slots: &[RelationshipSlotDef],
-    cross_locus_pairs: Vec<CrossLocusPredecessor>,
+    evidence: Vec<EmergenceEvidence>,
 ) -> Vec<CrossLocusPred> {
-    cross_locus_pairs
+    evidence
         .into_iter()
-        .map(|predecessor| CrossLocusPred {
-            from_locus: predecessor.from_locus,
-            pre_signal: predecessor.pre_signal,
-            pred_batch: predecessor.pred_batch,
-            pred_change_id: predecessor.pred_change_id,
-            is_feedback: false,
-            schema_violation: cross_locus_schema_violation(
-                kind_cfg,
-                predecessor.from_kind,
-                to_kind,
-            ),
-            emergence: resolve_emergence(
-                world,
-                predecessor.from_locus,
-                locus_id,
-                kind,
-                kind_cfg,
-                resolved_slots,
-                predecessor.pre_signal,
-            ),
+        .map(|ev| match ev {
+            EmergenceEvidence::CrossLocusFlow {
+                from_locus,
+                from_kind,
+                pre_signal,
+                pred_batch,
+                pred_change_id,
+            } => CrossLocusPred {
+                from_locus,
+                pre_signal,
+                pred_batch,
+                pred_change_id,
+                is_feedback: false,
+                schema_violation: cross_locus_schema_violation(kind_cfg, from_kind, to_kind),
+                emergence: resolve_emergence(
+                    world,
+                    from_locus,
+                    locus_id,
+                    kind,
+                    kind_cfg,
+                    resolved_slots,
+                    pre_signal,
+                ),
+            },
         })
         .collect()
 }

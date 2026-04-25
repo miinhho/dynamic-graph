@@ -201,3 +201,118 @@ fn endpoints_pair(rel: &Relationship) -> (LocusId, LocusId) {
         Endpoints::Symmetric { a, b } => (*a, *b),
     }
 }
+
+#[cfg(test)]
+mod phase1_signed_tests {
+    //! Phase 1 of the trigger-axis roadmap: demonstrate that signed activity
+    //! changes community partition outcomes.
+    //!
+    //! Setup: two pairs of loci — `(L0, L1)` and `(L2, L3)` — each tightly
+    //! coupled by a strong intra-pair edge. A single bridge edge connects
+    //! `L1` and `L2`. We measure how the partition responds to the *sign*
+    //! of the bridge.
+    //!
+    //! Expectation:
+    //! - Excitatory bridge (positive activity) → label propagation pulls
+    //!   the two pairs into a single community.
+    //! - Inhibitory bridge (negative activity, magnitude above threshold)
+    //!   → repulsion in propagation keeps the pairs separate.
+    //!
+    //! This is the gate-closing test for Phase 1: it proves signed
+    //! semantics is observable at the partition layer, not merely an
+    //! arithmetic refactor.
+    use super::*;
+    use graph_core::{
+        BatchId, Endpoints, InfluenceKindId, KindObservation, RelationshipLineage, StateVector,
+    };
+    use smallvec::smallvec;
+
+    fn make_rel(id: u64, a: u64, b: u64, activity: f32) -> Relationship {
+        Relationship {
+            id: RelationshipId(id),
+            kind: InfluenceKindId(0),
+            endpoints: Endpoints::Symmetric {
+                a: LocusId(a),
+                b: LocusId(b),
+            },
+            state: StateVector::from_slice(&[activity, 0.0]),
+            lineage: RelationshipLineage {
+                created_by: None,
+                last_touched_by: None,
+                change_count: 0,
+                kinds_observed: smallvec![KindObservation::synthetic(InfluenceKindId(0))],
+            },
+            created_batch: BatchId(0),
+            last_decayed_batch: 0,
+            metadata: None,
+        }
+    }
+
+    /// Two-pairs-plus-bridge fixture. All edges share magnitude 5.0 so the
+    /// only experimental variable is the **sign** of the bridge — isolating
+    /// what Phase 1 unlocks.
+    ///
+    /// Pair 1: L0—L1 (excitatory, +5)
+    /// Pair 2: L2—L3 (excitatory, +5)
+    /// Bridge: L1—L2 (sign varies, |activity|=5)
+    fn two_pairs_bridge(bridge_activity: f32) -> RelationshipStore {
+        let mut store = RelationshipStore::default();
+        store.insert(make_rel(0, 0, 1, 5.0));
+        store.insert(make_rel(1, 2, 3, 5.0));
+        store.insert(make_rel(2, 1, 2, bridge_activity));
+        store
+    }
+
+    #[test]
+    fn excitatory_bridge_merges_pairs() {
+        // All three edges weighted +5. Label propagation has no negative
+        // votes anywhere → connected component is the whole graph.
+        let store = two_pairs_bridge(5.0);
+        let result = find_communities(&store, 0.5);
+        assert_eq!(
+            result.components.len(),
+            1,
+            "positive bridge of equal weight should merge both pairs: {:?}",
+            result.components
+        );
+    }
+
+    #[test]
+    fn inhibitory_bridge_separates_pairs() {
+        // Same magnitude, sign flipped. Label propagation treats the bridge
+        // as a strong negative vote against shared labels → pairs split.
+        // This is the **load-bearing demonstration** for Phase 1: identical
+        // magnitudes, identical topology, only the sign differs, and the
+        // partition responds.
+        let store = two_pairs_bridge(-5.0);
+        let result = find_communities(&store, 0.5);
+        assert_eq!(
+            result.components.len(),
+            2,
+            "negative bridge should repel pairs into separate communities: {:?}",
+            result.components
+        );
+        for component in &result.components {
+            assert_eq!(
+                component.len(),
+                2,
+                "intra-pair excitatory edges should keep each pair together"
+            );
+        }
+    }
+
+    #[test]
+    fn weak_inhibitory_bridge_below_threshold_is_dropped() {
+        // |activity| = 0.3 < threshold = 0.5 → bridge edge filtered out
+        // before propagation. Verifies the magnitude threshold in
+        // `build_active_adjacency` respects sign (uses .abs()).
+        let store = two_pairs_bridge(-0.3);
+        let result = find_communities(&store, 0.5);
+        assert_eq!(
+            result.components.len(),
+            2,
+            "below-threshold bridge (regardless of sign) drops out: {:?}",
+            result.components
+        );
+    }
+}

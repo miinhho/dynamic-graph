@@ -366,11 +366,20 @@ impl Relationship {
         current_batch.0.saturating_sub(self.created_batch.0)
     }
 
-    /// Combined signal strength: `activity + weight`.
+    /// Combined signal: `activity + weight`.
     ///
     /// Useful for ranking relationships by overall "importance" — high
     /// activity alone means a recently active edge, high weight alone means
     /// a well-learned structural edge, and high strength means both.
+    ///
+    /// **Phase 1 (2026-04-25)**: this returns the *signed* sum because
+    /// downstream consumers depend on the sign — notably the structural-
+    /// balance triangle test in `graph-query::centrality::balance` (Heider
+    /// 1946) which classifies a triangle as balanced/unstable from the
+    /// product of edge signs. Callers that want a magnitude ranking should
+    /// take the absolute value of each component themselves
+    /// (`activity.abs() + weight.abs()`); see `graph-boundary::signal()`
+    /// for the canonical pattern.
     #[inline]
     pub fn strength(&self) -> f32 {
         self.activity() + self.weight()

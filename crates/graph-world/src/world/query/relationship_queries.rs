@@ -55,7 +55,9 @@ pub(super) fn relationships_active_above(
     world
         .relationships
         .iter()
-        .filter(move |relationship| relationship.activity() > threshold)
+        // Magnitude comparison — Phase 1 signed activity: a strongly inhibitory
+        // edge is "active" in the structural sense even though its sign is negative.
+        .filter(move |relationship| relationship.activity().abs() > threshold)
 }
 
 pub(super) fn induced_subgraph<'a>(world: &'a World, loci: &[LocusId]) -> Vec<&'a Relationship> {
