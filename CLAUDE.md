@@ -184,6 +184,7 @@ that motivated the policy.
 - `PlasticityConfig::is_active()` is `pub(crate)` — callers outside engine should not gate on it.
 - **Schema versioning**: `graph-storage` stores a `META_SCHEMA_VERSION` key. Current version = 2. `open_and_migrate()` handles v1→v2 automatically (added `wall_time`/`metadata` to `Change`). Never open the same redb file with two `Storage` instances simultaneously — redb uses an exclusive file lock.
 - **Subscription generation**: `SubscriptionStore::generation()` is a monotone counter incremented only on actual mutations (not idempotent no-ops). `Storage::commit_batch` compares this against the last-saved generation to skip unnecessary SUBSCRIPTIONS rewrites.
+- **GSOS-format policy for new `StructuralProposal` / `WorldEvent` variants**: a new variant must read its operand only via 1-step observations from `LocusContext` (state at start of batch), not via deep recursive unfolding of operand behavior. PR description must answer the three GSOS-format questions in `docs/coalgebra-advanced.md` §2 before merge. Adopted to keep bisimulation a congruence under structural proposals; existing 9 variants pass trivially. See also `graph-core::coinvariant` for the predicate-lifting classification of the rest of this list (`OneStep` / `Trace` / `Boundary`).
 
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph

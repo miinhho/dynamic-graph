@@ -40,6 +40,8 @@
 mod api_dogfood;
 pub mod causal_strength;
 mod causality;
+pub mod coalgebra;
+pub mod metric;
 mod centrality;
 mod counterfactual;
 mod debug;
